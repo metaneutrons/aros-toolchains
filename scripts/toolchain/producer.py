@@ -221,6 +221,8 @@ def validate_manifest(manifest: dict, context: str = "toolchain manifest") -> No
 
 
 def validate_source_lock(lock: dict) -> list[dict]:
+    if set(lock) != {"schema", "family", "version", "sources", "host_python_packages"}:
+        fail("source lock has unexpected or missing fields")
     if lock.get("schema") != SOURCE_SCHEMA or lock.get("family") != "llvm":
         fail("unsupported source-lock schema or family")
     if not isinstance(lock.get("version"), str) or not re.fullmatch(
@@ -234,10 +236,15 @@ def validate_source_lock(lock: dict) -> list[dict]:
     for source in sources:
         if not isinstance(source, dict):
             fail("source entry is not an object")
+        if set(source) != {"component", "filename", "url", "sha256", "size"}:
+            fail("source entry has unexpected or missing fields")
+        component = source.get("component")
         filename = source.get("filename")
         checksum = source.get("sha256")
         url = source.get("url")
         size = source.get("size")
+        if not isinstance(component, str) or not re.fullmatch(r"[A-Za-z0-9+._-]+", component):
+            fail(f"invalid source component: {component!r}")
         if not isinstance(filename, str) or Path(filename).name != filename:
             fail(f"unsafe source filename: {filename!r}")
         if filename in seen:
@@ -251,7 +258,84 @@ def validate_source_lock(lock: dict) -> list[dict]:
             fail(f"source URL must use HTTPS: {filename}")
         if not isinstance(size, int) or size <= 0:
             fail(f"invalid size for {filename}")
+
+    for package in validate_host_python_packages(lock):
+        if package["filename"] in seen:
+            fail(f"duplicate source filename: {package['filename']}")
     return sources
+
+
+def validate_host_python_packages(lock: dict) -> list[dict]:
+    packages = lock.get("host_python_packages")
+    if not isinstance(packages, list) or not packages:
+        fail("source lock contains no host Python packages")
+    names: set[str] = set()
+    filenames: set[str] = set()
+    roots: set[str] = set()
+    for package in packages:
+        if not isinstance(package, dict):
+            fail("host Python package entry is not an object")
+        if set(package) != {
+            "name",
+            "version",
+            "filename",
+            "url",
+            "sha256",
+            "size",
+            "source_root",
+            "python_path",
+        }:
+            fail("host Python package entry has unexpected or missing fields")
+        name = package.get("name")
+        version = package.get("version")
+        filename = package.get("filename")
+        url = package.get("url")
+        checksum = package.get("sha256")
+        size = package.get("size")
+        source_root = package.get("source_root")
+        python_path = package.get("python_path")
+        if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9+._-]+", name):
+            fail(f"invalid host Python package name: {name!r}")
+        if name in names:
+            fail(f"duplicate host Python package name: {name}")
+        names.add(name)
+        if not isinstance(version, str) or not re.fullmatch(r"[A-Za-z0-9+._-]+", version):
+            fail(f"invalid host Python package version for {name}: {version!r}")
+        if not isinstance(filename, str) or Path(filename).name != filename:
+            fail(f"unsafe host Python package filename: {filename!r}")
+        if filename in filenames:
+            fail(f"duplicate host Python package filename: {filename}")
+        filenames.add(filename)
+        if not isinstance(url, str) or not url.startswith("https://"):
+            fail(f"host Python package URL must use HTTPS: {filename}")
+        if not isinstance(checksum, str) or len(checksum) != 64 or any(
+            character not in "0123456789abcdef" for character in checksum
+        ):
+            fail(f"invalid SHA-256 for host Python package {filename}")
+        if not isinstance(size, int) or size <= 0:
+            fail(f"invalid size for host Python package {filename}")
+        if not isinstance(source_root, str):
+            fail(f"invalid host Python source root for {name}: {source_root!r}")
+        source_root_path = PurePosixPath(source_root)
+        if (
+            source_root_path.is_absolute()
+            or len(source_root_path.parts) != 1
+            or source_root_path.parts[0] in {"", ".", ".."}
+        ):
+            fail(f"unsafe host Python source root for {name}: {source_root!r}")
+        if source_root in roots:
+            fail(f"duplicate host Python source root: {source_root}")
+        roots.add(source_root)
+        if not isinstance(python_path, str):
+            fail(f"invalid host Python import path for {name}: {python_path!r}")
+        python_path_value = PurePosixPath(python_path)
+        if (
+            python_path_value.is_absolute()
+            or ".." in python_path_value.parts
+            or (python_path != "." and not python_path_value.parts)
+        ):
+            fail(f"unsafe host Python import path for {name}: {python_path!r}")
+    return packages
 
 
 def validate_recipe(recipe: dict, context: str = "toolchain recipe") -> None:
@@ -311,7 +395,7 @@ def verify_source(path: Path, source: dict) -> None:
 def command_prefetch(args: argparse.Namespace) -> None:
     lock_path = args.lock.resolve()
     lock = read_json(lock_path)
-    sources = validate_source_lock(lock)
+    sources = [*validate_source_lock(lock), *validate_host_python_packages(lock)]
     destination = args.destination.resolve()
     destination.mkdir(parents=True, exist_ok=True)
     verified = []
@@ -584,6 +668,28 @@ def write_spdx(path: Path, manifest: dict, lock: dict) -> None:
                 "spdxElementId": "SPDXRef-Package-AROSToolchain",
                 "relationshipType": "GENERATED_FROM",
                 "relatedSpdxElement": identifier,
+            }
+        )
+    for index, package in enumerate(validate_host_python_packages(lock), start=1):
+        identifier = f"SPDXRef-HostPython-{index}"
+        packages.append(
+            {
+                "SPDXID": identifier,
+                "name": package["name"],
+                "versionInfo": package["version"],
+                "downloadLocation": package["url"],
+                "filesAnalyzed": False,
+                "checksums": [{"algorithm": "SHA256", "checksumValue": package["sha256"]}],
+                "licenseConcluded": "NOASSERTION",
+                "licenseDeclared": "NOASSERTION",
+                "copyrightText": "NOASSERTION",
+            }
+        )
+        relationships.append(
+            {
+                "spdxElementId": identifier,
+                "relationshipType": "BUILD_DEPENDENCY_OF",
+                "relatedSpdxElement": "SPDXRef-Package-AROSToolchain",
             }
         )
     document = {

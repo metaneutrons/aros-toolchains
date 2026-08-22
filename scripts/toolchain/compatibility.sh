@@ -2,7 +2,7 @@
 set -euo pipefail
 
 if [[ $# -ne 6 ]]; then
-    echo "usage: $0 ARCHIVE HOST PROFILE PROFILES_JSON UPSTREAM_COMMIT WORK_DIR" >&2
+    echo "usage: AROS_TOOLCHAIN_SOURCE_CACHE=DIR $0 ARCHIVE HOST PROFILE PROFILES_JSON UPSTREAM_COMMIT WORK_DIR" >&2
     exit 2
 fi
 
@@ -14,6 +14,26 @@ upstream_commit=$5
 work_dir=$6
 script_dir=$(cd "$(dirname "$0")" && pwd -P)
 source_root=$(cd "$script_dir/../.." && pwd -P)
+source_cache=${AROS_TOOLCHAIN_SOURCE_CACHE:-}
+source_lock=${AROS_TOOLCHAIN_SOURCE_LOCK:-"$source_root/toolchains/llvm-11.0.0.sources.json"}
+
+if [[ -z "$source_cache" || ! -d "$source_cache" ]]; then
+    echo "compatibility probe requires AROS_TOOLCHAIN_SOURCE_CACHE with verified host Python sources" >&2
+    exit 1
+fi
+if [[ ! -f "$source_lock" ]]; then
+    echo "compatibility probe cannot read the host Python source lock: $source_lock" >&2
+    exit 1
+fi
+source_cache=$(cd "$source_cache" && pwd -P)
+source_lock=$(cd "$(dirname "$source_lock")" && pwd -P)/$(basename "$source_lock")
+python3 "$script_dir/producer.py" prefetch \
+    --lock "$source_lock" --destination "$source_cache" --offline
+host_python_runner=(
+    python3 -B "$script_dir/host-python-env.py"
+    --lock "$source_lock"
+    --cache "$source_cache"
+)
 
 python3 "$script_dir/producer.py" verify \
     --archive "$archive" \
@@ -73,7 +93,8 @@ git -C "$work_dir/upstream-src" fetch -q --depth=1 origin "$upstream_commit"
 git -C "$work_dir/upstream-src" checkout -q --detach FETCH_HEAD
 (
     cd "$work_dir/upstream-build"
-    "$work_dir/upstream-src/configure" \
+    "${host_python_runner[@]}" --work-dir "$work_dir/host-python-upstream-configure" -- \
+        "$work_dir/upstream-src/configure" \
         --target="$configure_target" \
         --with-toolchain=llvm \
         --with-llvm-version="$llvm_version" \
@@ -84,6 +105,7 @@ make_program="make"
 if command -v gmake >/dev/null 2>&1; then
     make_program="gmake"
 fi
-"$make_program" -C "$work_dir/upstream-build" -j 2 includes linklibs
+"${host_python_runner[@]}" --work-dir "$work_dir/host-python-upstream-make" -- \
+    "$make_program" -C "$work_dir/upstream-build" -j 2 includes linklibs
 
 echo "AROS-NG CMake and upstream compatibility probes passed at $upstream_commit for $profile"

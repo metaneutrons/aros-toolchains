@@ -8,6 +8,13 @@ producer="$source_root/scripts/toolchain/producer.py"
 asset=aros-toolchain-v1-llvm11.0.0-linux-x86_64-pc-x86_64.tar.xz
 grep -Fq -- '--with-toolchain=llvm' "$source_root/scripts/toolchain/compatibility.sh"
 grep -Fq -- '--with-aros-toolchain=yes' "$source_root/scripts/toolchain/compatibility.sh"
+grep -Fq -- 'host-python-env.py' "$source_root/scripts/toolchain/build-release.sh"
+grep -Fq -- 'CMAKE_BUILD_PARALLEL_LEVEL' "$source_root/scripts/toolchain/build-release.sh"
+grep -Fq -- 'host-python-env.py' "$source_root/scripts/toolchain/compatibility.sh"
+grep -Fq -- 'AROS_TOOLCHAIN_SOURCE_CACHE' "$source_root/.github/workflows/toolchain-release.yml"
+python3 -B "$script_dir/test-host-python-env.py"
+python3 -B "$script_dir/test-llvm-patch.py"
+python3 -B "$script_dir/test-crosstools-release.py"
 temporary=$(mktemp -d "${TMPDIR:-/tmp}/aros-toolchain-producer-test.XXXXXX")
 case "$temporary" in
     "${TMPDIR:-/tmp}"/aros-toolchain-producer-test.*) ;;
@@ -205,6 +212,18 @@ assert manifest["tree_sha256"] == "946ecbea134cf9e109ac37cf28786765174228a64ed1d
 
 spdx = json.loads((directory / f"{asset}.spdx.json").read_text())
 assert spdx["documentDescribes"] == ["SPDXRef-Package-AROSToolchain"]
+host_python = {
+    package["name"]: package
+    for package in spdx["packages"]
+    if package["SPDXID"].startswith("SPDXRef-HostPython-")
+}
+assert host_python["mako"]["versionInfo"] == "1.3.10"
+assert host_python["markupsafe"]["versionInfo"] == "3.0.2"
+assert {
+    relationship["spdxElementId"]
+    for relationship in spdx["relationships"]
+    if relationship["relationshipType"] == "BUILD_DEPENDENCY_OF"
+} == {"SPDXRef-HostPython-1", "SPDXRef-HostPython-2"}
 
 index = json.loads((directory / "toolchain-index-v1.json").read_text())
 assert type(index["schema"]) is int and index["schema"] == 1

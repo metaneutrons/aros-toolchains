@@ -99,7 +99,7 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-      - name: Fetch and verify immutable LLVM sources
+      - name: Fetch and verify immutable toolchain and host Python sources
         run: |
           set -euo pipefail
           python3 scripts/toolchain/producer.py prefetch \
@@ -222,6 +222,10 @@ jobs:
         with:
           name: verified-${{ matrix.host }}-${{ matrix.profile }}
           path: verified
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: verified-toolchain-sources
+          path: source-cache
       - name: Install consumer prerequisites (Linux)
         if: runner.os == 'Linux'
         run: |
@@ -235,6 +239,8 @@ jobs:
           brew install autoconf automake bison cmake gawk libtool make ninja xz
           echo "$(brew --prefix bison)/bin" >> "$GITHUB_PATH"
       - name: Two-root relocation and pinned upstream compatibility
+        env:
+          AROS_TOOLCHAIN_SOURCE_CACHE: ${{ github.workspace }}/source-cache
         run: |
           set -euo pipefail
           asset="aros-toolchain-v1-llvm${LLVM_VERSION}-${{ matrix.host }}-${{ matrix.profile }}.tar.xz"

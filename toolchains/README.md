@@ -8,11 +8,13 @@ toolchain implementation.
 ## Trust and bootstrap
 
 `llvm-11.0.0.sources.json` pins the exact bytes served by the official LLVM
-GitHub release. The recorded SHA-256 values were calculated after downloading
-those HTTPS release assets. The producer verifies both size and SHA-256 before
-allowing the upstream fetcher to run, and release builds run through an
-offline guard. A new or changed source is rejected until its real digest is
-added to a reviewed lock file. Do not insert placeholders.
+GitHub release and the small pure-Python host runtime needed by upstream
+`configure`. The producer verifies both size and SHA-256 before allowing the
+upstream fetcher to run, and release builds run through an offline guard. The
+Mako runtime is extracted into a private work directory and exposed only via a
+locked `PYTHONPATH`; it is never installed with pip or resolved from host site
+packages. A new or changed source is rejected until its real digest is added
+to a reviewed lock file. Do not insert placeholders.
 
 The source lock establishes deterministic resolution. Bit-for-bit build
 reproducibility is a separate release gate: every host/profile lane is built
@@ -79,3 +81,26 @@ paths.
 
 The v1 producer covers Linux x86_64/aarch64 and macOS x86_64/aarch64 hosts for
 `pc-x86_64`, `arm-raspi` (`raspi-armhf` upstream), and `rpi-aarch64`.
+
+## Locked CMake C++ consumer contract
+
+A release prefix is a compiler/runtime distribution, not a copy of an AROS
+Developer sysroot.  A locked CMake consumer creates its own Developer tree and
+uses the prefix compiler only to compile target sources.  Its C++ *partial*
+links deliberately invoke the prefix's `ld.lld` directly with that Developer
+tree as `--sysroot`, the consumer-produced `cxx-startup.o`, and exactly these
+prefix-owned archives in one linker group:
+
+- `libc++.a`
+- `libc++abi.a`
+- `libunwind.a`
+- the target-specific `libclang_rt.builtins-*.a`
+
+This is intentionally independent of the host `PATH` and of the historical
+`collect-aros` linker wrapper.  It is the correct path for CMake modules such
+as Mesa's `alwayscxxlink=yes` targets; it does **not** yet claim that invoking
+the released `clang` or `clang++` directly can perform every final AROS link.
+The current collector embeds producer-local tool and library paths, so it must
+be made runtime-relocatable before it can be shipped as part of the general
+standalone-driver contract.  See [HANDOFF.md](HANDOFF.md) for the current
+build-check state and the exact continuation sequence.

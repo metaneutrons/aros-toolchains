@@ -100,24 +100,40 @@ export LANG=C
 export TZ=UTC
 export SOURCE_DATE_EPOCH="$source_epoch"
 export ZERO_AR_DATE=1
+# LLVM 11 still declares CMake policies from 3.5.  Current CMake releases
+# reject that project unless the externally supported compatibility floor is
+# explicit.  Keep it fixed for every producer lane rather than relying on a
+# runner-specific CMake version.
+export CMAKE_POLICY_VERSION_MINIMUM=3.5
 if [[ $(uname -s) == Linux ]]; then
     export ARFLAGS=crD
     export RANLIBFLAGS=-D
 fi
 export AROS_VERIFIED_SOURCE_INDEX="$source_cache/sources.verified.json"
 export AROS_UPSTREAM_FETCH="$source_root/scripts/fetch.sh"
+# `cmake --build` is not a GNU-make recursive recipe, so it cannot consume
+# the outer jobserver. Keep all nested CMake stages at the requested producer
+# parallelism instead of silently falling back to one job.
+export CMAKE_BUILD_PARALLEL_LEVEL="$jobs"
 prefix_maps="-ffile-prefix-map=$source_root=/usr/src/aros-ng -fdebug-prefix-map=$source_root=/usr/src/aros-ng -fmacro-prefix-map=$source_root=/usr/src/aros-ng -ffile-prefix-map=$work_dir=/usr/src/aros-build -fdebug-prefix-map=$work_dir=/usr/src/aros-build -fmacro-prefix-map=$work_dir=/usr/src/aros-build"
 export CFLAGS="${CFLAGS:-} $prefix_maps"
 export CXXFLAGS="${CXXFLAGS:-} $prefix_maps"
 umask 022
 
 mkdir -p "$build_dir" "$prefix"
+host_python_runner=(
+    python3 -B "$source_root/scripts/toolchain/host-python-env.py"
+    --lock "$lock"
+    --cache "$source_cache"
+)
 (
     cd "$build_dir"
-    "$source_root/configure" \
+    "${host_python_runner[@]}" --work-dir "$work_dir/host-python-configure" -- \
+        "$source_root/configure" \
         --target="$configure_target" \
         --with-toolchain=llvm \
         --with-llvm-version="$llvm_version" \
+        --enable-toolchain-release \
         --with-portssources="$source_cache" \
         --with-aros-toolchain-install="$prefix"
 )
@@ -126,7 +142,8 @@ make_program="make"
 if command -v gmake >/dev/null 2>&1; then
     make_program="gmake"
 fi
-"$make_program" -C "$build_dir" -j "$jobs" crosstools \
+"${host_python_runner[@]}" --work-dir "$work_dir/host-python-make" -- \
+    "$make_program" -C "$build_dir" -j "$jobs" crosstools-release \
     AROS_TOOLCHAIN_DEFAULT_SYSROOT= \
     FETCH="$source_root/scripts/toolchain/offline-fetch.py"
 
