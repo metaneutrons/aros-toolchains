@@ -1,0 +1,33 @@
+{
+  "schema": "aros-ng-toolchain-profiles-v1",
+  "upstream_commit": "6e196552834ec338072dda8675cf0c3f1d2df0d6",
+  "profiles": [
+    {
+      "name": "pc-x86_64",
+      "configure_target": "pc-x86_64",
+      "target_triple": "x86_64-unknown-aros",
+      "cpu": "x86_64",
+      "platform": "pc",
+      "float_abi": "",
+      "capabilities": ["c", "cxx", "objc", "compiler-rt", "compiler-rt32", "libcxx", "libcxxabi", "libunwind"]
+    },
+    {
+      "name": "arm-raspi",
+      "configure_target": "raspi-armhf",
+      "target_triple": "arm-unknown-aros",
+      "cpu": "arm",
+      "platform": "raspi",
+      "float_abi": "hard",
+      "capabilities": ["c", "cxx", "objc", "compiler-rt", "libcxx", "libcxxabi", "libunwind"]
+    },
+    {
+      "name": "rpi-aarch64",
+      "configure_target": "raspi-aarch64",
+      "target_triple": "aarch64-unknown-aros",
+      "cpu": "aarch64",
+      "platform": "raspi",
+      "float_abi": "",
+      "capabilities": ["c", "cxx", "objc", "compiler-rt", "libcxx", "libcxxabi", "libunwind"]
+    }
+  ]
+}

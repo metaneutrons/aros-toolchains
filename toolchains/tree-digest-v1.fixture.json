@@ -1,0 +1,30 @@
+{
+  "schema": "aros-ng-toolchain-tree-digest-fixture-v1",
+  "file_content_utf8": "AROS tree fixture\n",
+  "entries": [
+    {
+      "mode": "0755",
+      "path": "share",
+      "type": "directory"
+    },
+    {
+      "mode": "0755",
+      "path": "share/Größe",
+      "type": "directory"
+    },
+    {
+      "mode": "0644",
+      "path": "share/Größe/marker-ä.txt",
+      "sha256": "4ccf1e6a82136c5751f427f09855c182be7173dfe5c68b1c197901b587544287",
+      "size": 18,
+      "type": "file"
+    },
+    {
+      "mode": "0777",
+      "path": "share/vector-link",
+      "target": "Größe/marker-ä.txt",
+      "type": "symlink"
+    }
+  ],
+  "tree_sha256": "11cbd45962f89c54c02fc9c1ae55eb283774b76425c08564da060bd5ca9c840b"
+}
