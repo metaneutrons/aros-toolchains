@@ -1,0 +1,153 @@
+# Immutable AROS cross-toolchain selection for aros-cli.
+#
+# The release pipeline will replace these disabled declarations with published
+# content-addressed assets. Keeping the complete matrix here lets consumers
+# resolve host + target combinations exactly without ever guessing a URL or
+# downloading a placeholder.
+
+schema = 1
+release_id = "unpublished-v1"
+
+[[artifacts]]
+host = "macos-aarch64"
+target_profile = "pc-x86_64"
+target_triple = "x86_64-unknown-aros"
+asset = "aros-toolchain-v1-llvm11.0.0-macos-aarch64-pc-x86_64.tar.xz"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+tree_sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+llvm_version = "11.0.0"
+enabled = false
+disabled_reason = "No deterministic GitHub release has been published yet"
+required_paths = ["bin/clang", "bin/clang++", "bin/ld.lld", "bin/llvm-ar", "include/c++/v1", "lib/libc++.a", "lib/libc++abi.a", "lib/libunwind.a"]
+
+[[artifacts]]
+host = "macos-aarch64"
+target_profile = "arm-raspi"
+target_triple = "arm-unknown-aros"
+asset = "aros-toolchain-v1-llvm11.0.0-macos-aarch64-arm-raspi.tar.xz"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+tree_sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+llvm_version = "11.0.0"
+enabled = false
+disabled_reason = "No deterministic GitHub release has been published yet"
+required_paths = ["bin/clang", "bin/clang++", "bin/ld.lld", "bin/llvm-ar", "include/c++/v1", "lib/libc++.a", "lib/libc++abi.a", "lib/libunwind.a"]
+
+[[artifacts]]
+host = "macos-aarch64"
+target_profile = "rpi-aarch64"
+target_triple = "aarch64-unknown-aros"
+asset = "aros-toolchain-v1-llvm11.0.0-macos-aarch64-rpi-aarch64.tar.xz"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+tree_sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+llvm_version = "11.0.0"
+enabled = false
+disabled_reason = "No deterministic GitHub release has been published yet"
+required_paths = ["bin/clang", "bin/clang++", "bin/ld.lld", "bin/llvm-ar", "include/c++/v1", "lib/libc++.a", "lib/libc++abi.a", "lib/libunwind.a"]
+
+[[artifacts]]
+host = "macos-x86_64"
+target_profile = "pc-x86_64"
+target_triple = "x86_64-unknown-aros"
+asset = "aros-toolchain-v1-llvm11.0.0-macos-x86_64-pc-x86_64.tar.xz"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+tree_sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+llvm_version = "11.0.0"
+enabled = false
+disabled_reason = "No deterministic GitHub release has been published yet"
+required_paths = ["bin/clang", "bin/clang++", "bin/ld.lld", "bin/llvm-ar", "include/c++/v1", "lib/libc++.a", "lib/libc++abi.a", "lib/libunwind.a"]
+
+[[artifacts]]
+host = "macos-x86_64"
+target_profile = "arm-raspi"
+target_triple = "arm-unknown-aros"
+asset = "aros-toolchain-v1-llvm11.0.0-macos-x86_64-arm-raspi.tar.xz"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+tree_sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+llvm_version = "11.0.0"
+enabled = false
+disabled_reason = "No deterministic GitHub release has been published yet"
+required_paths = ["bin/clang", "bin/clang++", "bin/ld.lld", "bin/llvm-ar", "include/c++/v1", "lib/libc++.a", "lib/libc++abi.a", "lib/libunwind.a"]
+
+[[artifacts]]
+host = "macos-x86_64"
+target_profile = "rpi-aarch64"
+target_triple = "aarch64-unknown-aros"
+asset = "aros-toolchain-v1-llvm11.0.0-macos-x86_64-rpi-aarch64.tar.xz"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+tree_sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+llvm_version = "11.0.0"
+enabled = false
+disabled_reason = "No deterministic GitHub release has been published yet"
+required_paths = ["bin/clang", "bin/clang++", "bin/ld.lld", "bin/llvm-ar", "include/c++/v1", "lib/libc++.a", "lib/libc++abi.a", "lib/libunwind.a"]
+
+[[artifacts]]
+host = "linux-x86_64"
+target_profile = "pc-x86_64"
+target_triple = "x86_64-unknown-aros"
+asset = "aros-toolchain-v1-llvm11.0.0-linux-x86_64-pc-x86_64.tar.xz"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+tree_sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+llvm_version = "11.0.0"
+enabled = false
+disabled_reason = "No deterministic GitHub release has been published yet"
+required_paths = ["bin/clang", "bin/clang++", "bin/ld.lld", "bin/llvm-ar", "include/c++/v1", "lib/libc++.a", "lib/libc++abi.a", "lib/libunwind.a"]
+
+[[artifacts]]
+host = "linux-x86_64"
+target_profile = "arm-raspi"
+target_triple = "arm-unknown-aros"
+asset = "aros-toolchain-v1-llvm11.0.0-linux-x86_64-arm-raspi.tar.xz"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+tree_sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+llvm_version = "11.0.0"
+enabled = false
+disabled_reason = "No deterministic GitHub release has been published yet"
+required_paths = ["bin/clang", "bin/clang++", "bin/ld.lld", "bin/llvm-ar", "include/c++/v1", "lib/libc++.a", "lib/libc++abi.a", "lib/libunwind.a"]
+
+[[artifacts]]
+host = "linux-x86_64"
+target_profile = "rpi-aarch64"
+target_triple = "aarch64-unknown-aros"
+asset = "aros-toolchain-v1-llvm11.0.0-linux-x86_64-rpi-aarch64.tar.xz"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+tree_sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+llvm_version = "11.0.0"
+enabled = false
+disabled_reason = "No deterministic GitHub release has been published yet"
+required_paths = ["bin/clang", "bin/clang++", "bin/ld.lld", "bin/llvm-ar", "include/c++/v1", "lib/libc++.a", "lib/libc++abi.a", "lib/libunwind.a"]
+
+[[artifacts]]
+host = "linux-aarch64"
+target_profile = "pc-x86_64"
+target_triple = "x86_64-unknown-aros"
+asset = "aros-toolchain-v1-llvm11.0.0-linux-aarch64-pc-x86_64.tar.xz"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+tree_sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+llvm_version = "11.0.0"
+enabled = false
+disabled_reason = "No deterministic GitHub release has been published yet"
+required_paths = ["bin/clang", "bin/clang++", "bin/ld.lld", "bin/llvm-ar", "include/c++/v1", "lib/libc++.a", "lib/libc++abi.a", "lib/libunwind.a"]
+
+[[artifacts]]
+host = "linux-aarch64"
+target_profile = "arm-raspi"
+target_triple = "arm-unknown-aros"
+asset = "aros-toolchain-v1-llvm11.0.0-linux-aarch64-arm-raspi.tar.xz"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+tree_sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+llvm_version = "11.0.0"
+enabled = false
+disabled_reason = "No deterministic GitHub release has been published yet"
+required_paths = ["bin/clang", "bin/clang++", "bin/ld.lld", "bin/llvm-ar", "include/c++/v1", "lib/libc++.a", "lib/libc++abi.a", "lib/libunwind.a"]
+
+[[artifacts]]
+host = "linux-aarch64"
+target_profile = "rpi-aarch64"
+target_triple = "aarch64-unknown-aros"
+asset = "aros-toolchain-v1-llvm11.0.0-linux-aarch64-rpi-aarch64.tar.xz"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+tree_sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+llvm_version = "11.0.0"
+enabled = false
+disabled_reason = "No deterministic GitHub release has been published yet"
+required_paths = ["bin/clang", "bin/clang++", "bin/ld.lld", "bin/llvm-ar", "include/c++/v1", "lib/libc++.a", "lib/libc++abi.a", "lib/libunwind.a"]
