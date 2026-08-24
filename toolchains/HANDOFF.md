@@ -43,6 +43,41 @@ step, not a completed release result.
   archives because a final producer prefix did not yet exist; it is not a
   substitute for the fresh package/consumer gate below.
 
+## Gate before committing
+
+The five commands listed above are what passed for one particular change. They
+have been read as the gate, and as a gate they were short by three checks:
+
+```text
+cargo fmt --all --check
+cargo clippy --workspace --all-targets
+cargo test --workspace
+for t in cmake/tests/*Test.cmake; do cmake -P "$t" || echo "FAIL $t"; done
+git diff --check
+```
+
+Run the first four from `tools/aros-tools`, the last two from the repository
+root.
+
+Why each of the three was added:
+
+- `cargo test --workspace` covers `aros-verify`, which no list mentioned. Its
+  suite was red for as long as one hand-pinned digest was stale, and while it
+  was red the eight inventory counts behind that digest were never evaluated at
+  all (OPEN-POINTS 7).
+- `cargo fmt --all --check` was missing, and nine files had drifted from it
+  (OPEN-POINTS 8).
+- the fixture sweep was missing, and seven of the 21 fixtures were red, each
+  from a commit that had passed the shorter gate (OPEN-POINTS 45). It costs
+  about five minutes, 254 seconds of that `GrubBuildTest` alone; the other
+  twenty take 45 seconds together, so run GrubBuildTest on its own schedule if
+  that is what decides between running the sweep and skipping it.
+
+`cargo clippy --workspace --all-targets` only started compiling again once
+three deny-level lints were fixed, and cargo stops linting dependent crates
+after the first failure, so a red clippy hides the rest of the workspace as
+well.
+
 ## Important open issue: standalone Clang driver
 
 The release prefix currently promises the locked CMake partial-link contract,
