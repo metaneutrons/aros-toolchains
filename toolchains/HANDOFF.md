@@ -78,6 +78,45 @@ three deny-level lints were fixed, and cargo stops linting dependent crates
 after the first failure, so a red clippy hides the rest of the workspace as
 well.
 
+## Refactoring the transpiler: the baseline
+
+A refactor of `aros-transpiler` claims that moving code changed no generated
+CMake. `aros golden` is what turns that claim into a check:
+
+```text
+cargo build --release -p aros-transpiler -p aros-cli
+aros golden capture          # before the change
+# ... refactor, rebuild the release binary ...
+aros golden verify           # after each step
+```
+
+`capture` runs the transpiler twice per preset and refuses to store a baseline
+if the two runs disagree, because a baseline from a producer that varies would
+report noise as regression forever. It found exactly that on its first run: one
+report file came out with the same bytes and the same line count in a different
+order, from a candidate list built while iterating a `HashMap`.
+
+`verify` names the file, the byte and line delta, and the first differing line,
+and exits non-zero. `verify --update` accepts the new output as the baseline
+when the change was the point.
+
+Three properties are worth knowing before relying on it:
+
+- **It is per preset.** The scoped arguments are derived during configuration
+  and they change the output: pc-x86_64, arm-raspi and rpi-aarch64 produce
+  3 419 144, 3 252 031 and 3 417 460 bytes. CMake records the argv it used in
+  `generated_targets.cmake.invocation` next to its output, and `golden` replays
+  that rather than re-deriving it.
+- **The baseline is not in the repository.** It lives in `build/golden/`, which
+  is ignored. A digest of a live output committed to the tree would be stale
+  after every deliberate transpiler change, and a check that is nearly always
+  red is not a check (see OPEN-POINTS 7 and 46 for the same coupling in two
+  other places).
+- **Capture cross-checks the record.** Its first run is compared against the
+  file the build tree itself holds, so a recorded argv that has drifted from
+  the call, or a build tree that predates a source change, is reported instead
+  of trusted.
+
 ## Important open issue: standalone Clang driver
 
 The release prefix currently promises the locked CMake partial-link contract,
