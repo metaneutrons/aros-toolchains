@@ -96,11 +96,35 @@ prefix-owned archives in one linker group:
 - `libunwind.a`
 - the target-specific `libclang_rt.builtins-*.a`
 
-This is intentionally independent of the host `PATH` and of the historical
-`collect-aros` linker wrapper.  It is the correct path for CMake modules such
-as Mesa's `alwayscxxlink=yes` targets; it does **not** yet claim that invoking
-the released `clang` or `clang++` directly can perform every final AROS link.
-The current collector embeds producer-local tool and library paths, so it must
-be made runtime-relocatable before it can be shipped as part of the general
-standalone-driver contract.  See [HANDOFF.md](HANDOFF.md) for the current
-build-check state and the exact continuation sequence.
+This partial-link path remains intentionally independent of the host `PATH`.
+It is the correct path for CMake modules such as Mesa's `alwayscxxlink=yes`
+targets and is separate from the final-link collector contract below.
+
+## Standalone final links and application SDK boundary
+
+Every release ships the Rust `aros-collect` implementation and relative
+`collect-aros` aliases next to Clang and LLD. The `pc-x86_64` profile also
+ships `collect-aros32`. The collector locates only sibling `ld.lld` and
+`llvm-strip`; it does not consult `PATH`, `COMPILER_PATH`, or a producer-local
+prefix. Target libraries are resolved from the absolute Developer directory
+that the caller supplies with `--sysroot` (`lib32` for `collect-aros32`). A
+library-free compiler capability probe may omit the sysroot, matching upstream
+AROS configure ordering; any collector-discovered target input still requires
+it explicitly.
+
+The collector preserves the upstream AROS two-pass final-link contract:
+symbol-set and library-requirement publication, the conditional
+`__cxa_pure_virtual`/pthread inputs, unresolved-symbol auditing, AROS ELF ABI
+marking, and atomic output replacement. Release compatibility probes invoke
+the packaged `clang` and `clang++` with a poisoned `PATH`, verify the resulting
+structure and ABI, and exercise both x86-64 and i386 for `pc-x86_64`.
+
+The release prefix is still a compiler/runtime distribution, not a complete
+application SDK. Cross-developing an application therefore requires a
+matching, separately produced Developer sysroot. A future `aros-cli`
+application workflow should consume two immutable artifacts: this host/profile
+toolchain and an upstream-compatible target SDK/sysroot. Keeping those
+artifacts separate lets applications select or update an AROS system contract
+without rebuilding the host compiler and lets AROS-NG coexist with vanilla
+AROS SDKs. See [HANDOFF.md](HANDOFF.md) for the current build-check state and
+the exact continuation sequence.
