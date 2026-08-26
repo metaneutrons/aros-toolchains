@@ -118,6 +118,10 @@ export CMAKE_BUILD_PARALLEL_LEVEL="$jobs"
 prefix_maps="-ffile-prefix-map=$source_root=/usr/src/aros-ng -fdebug-prefix-map=$source_root=/usr/src/aros-ng -fmacro-prefix-map=$source_root=/usr/src/aros-ng -ffile-prefix-map=$work_dir=/usr/src/aros-build -fdebug-prefix-map=$work_dir=/usr/src/aros-build -fmacro-prefix-map=$work_dir=/usr/src/aros-build"
 export CFLAGS="${CFLAGS:-} $prefix_maps"
 export CXXFLAGS="${CXXFLAGS:-} $prefix_maps"
+# The target runtime CMake invocations set CMAKE_{C,CXX,ASM}_FLAGS explicitly,
+# so they do not inherit the environment flags above. Export the same maps
+# under a producer-only name consumed by the LLVM MetaMake recipe.
+export AROS_TOOLCHAIN_REPRO_FLAGS="$prefix_maps"
 umask 022
 
 mkdir -p "$build_dir" "$prefix"
@@ -146,6 +150,13 @@ fi
     "$make_program" -C "$build_dir" -j "$jobs" crosstools-release \
     AROS_TOOLCHAIN_DEFAULT_SYSROOT= \
     FETCH="$source_root/scripts/toolchain/offline-fetch.py"
+
+# llvm-config and LLVM's CMake package are producer-side inputs for building
+# the target runtimes. They are not part of the v1 consumer contract and LLVM
+# 11 records its build directory in both, so retain neither after the last
+# runtime has been installed.
+rm -f "$prefix/bin/llvm-config"
+rm -rf "$prefix/lib/cmake/llvm"
 
 asset_name="aros-toolchain-v1-llvm${llvm_version}-${host_id}-${profile}.tar.xz"
 python3 "$source_root/scripts/toolchain/producer.py" package \

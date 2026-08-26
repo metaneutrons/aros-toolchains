@@ -10,6 +10,8 @@ grep -Fq -- '--with-toolchain=llvm' "$source_root/scripts/toolchain/compatibilit
 grep -Fq -- '--with-aros-toolchain=yes' "$source_root/scripts/toolchain/compatibility.sh"
 grep -Fq -- 'host-python-env.py' "$source_root/scripts/toolchain/build-release.sh"
 grep -Fq -- 'CMAKE_BUILD_PARALLEL_LEVEL' "$source_root/scripts/toolchain/build-release.sh"
+grep -Fq -- 'AROS_TOOLCHAIN_REPRO_FLAGS' "$source_root/scripts/toolchain/build-release.sh"
+grep -Fq -- 'rm -f "$prefix/bin/llvm-config"' "$source_root/scripts/toolchain/build-release.sh"
 grep -Fq -- 'host-python-env.py' "$source_root/scripts/toolchain/compatibility.sh"
 grep -Fq -- 'AROS_TOOLCHAIN_SOURCE_CACHE' "$source_root/.github/workflows/toolchain-release.yml"
 python3 -B "$script_dir/test-host-python-env.py"

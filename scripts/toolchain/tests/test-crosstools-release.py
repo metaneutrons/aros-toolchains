@@ -287,6 +287,17 @@ def main() -> None:
         '-DCMAKE_PROJECT_INCLUDE="$(SRCDIR)/config/cmake/AROSImportedHostTargets.cmake"'
         in llvm_source
     )
+    assert "LLVM_REPRO_FLAGS        :=$(AROS_TOOLCHAIN_REPRO_FLAGS)" in llvm_source
+    assert "$(ISA_FLAGS) $(LLVM_REPRO_FLAGS)" in llvm_source
+    compiler_rt32_start = llvm_source.index("LLVM_COMPILER_RT32_CMAKEOPTIONS :=")
+    compiler_rt32_end = llvm_source.index(
+        "%build_with_cmake mmake=crosstools-compiler-rt32 package=compiler-rt32",
+        compiler_rt32_start,
+    )
+    compiler_rt32_options = llvm_source[compiler_rt32_start:compiler_rt32_end]
+    for language in ("C", "CXX", "ASM"):
+        assert f'-DCMAKE_{language}_FLAGS=' in compiler_rt32_options
+    assert compiler_rt32_options.count("$(LLVM_REPRO_FLAGS)") == 3
     imported_targets_policy = (
         SOURCE_ROOT / "config" / "cmake" / "AROSImportedHostTargets.cmake"
     ).read_text(encoding="utf-8")
@@ -340,6 +351,9 @@ def main() -> None:
     release_script = (SOURCE_ROOT / "scripts" / "toolchain" / "build-release.sh").read_text(encoding="utf-8")
     assert "--enable-toolchain-release" in release_script
     assert "crosstools-release" in release_script
+    assert 'export AROS_TOOLCHAIN_REPRO_FLAGS="$prefix_maps"' in release_script
+    assert 'rm -f "$prefix/bin/llvm-config"' in release_script
+    assert 'rm -rf "$prefix/lib/cmake/llvm"' in release_script
 
     print("crosstools-release MetaMake graph contract passed")
 
