@@ -27,6 +27,17 @@ grep -Fq -- 'PATH=/nonexistent "$toolchain/bin/clang"' "$source_root/scripts/too
 grep -Fq -- 'env ac_cv_prog_cc_c23=' "$source_root/scripts/toolchain/compatibility.sh"
 grep -Fq -- 'AROS_TOOLCHAIN_SOURCE_CACHE' "$source_root/.github/workflows/toolchain-release.yml"
 grep -Fq -- 'submodules: recursive' "$source_root/.github/workflows/toolchain-release.yml"
+python3 - "$source_root/.github/workflows/toolchain-release.yml" <<'PY'
+from pathlib import Path
+import sys
+
+workflow = Path(sys.argv[1]).read_text(encoding="utf-8")
+start = workflow.index("          name: verified-toolchain-sources")
+end = workflow.index("\n\n  build:", start)
+source_artifact = workflow[start:end]
+if "          include-hidden-files: true" not in source_artifact:
+    raise SystemExit("verified source artifact must retain Cargo checksum files")
+PY
 python3 -B "$script_dir/test-host-python-env.py"
 python3 -B "$script_dir/test-llvm-patch.py"
 python3 -B "$script_dir/test-crosstools-release.py"

@@ -135,6 +135,7 @@ jobs:
         with:
           name: verified-toolchain-sources
           path: source-cache/
+          include-hidden-files: true
           if-no-files-found: error
           retention-days: 7
 
