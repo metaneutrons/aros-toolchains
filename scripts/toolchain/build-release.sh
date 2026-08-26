@@ -88,12 +88,30 @@ value = {
     "cmake": version(["cmake", "--version"]),
     "make": version(["gmake" if subprocess.call(["sh", "-c", "command -v gmake >/dev/null"]) == 0 else "make", "--version"]),
     "python": platform.python_version(),
+    "rustc": version(["rustc", "--version"]),
+    "cargo": version(["cargo", "--version"]),
 }
 open(sys.argv[1], "w", encoding="utf-8").write(json.dumps(value, sort_keys=True, indent=2) + "\n")
 PY
 
 python3 "$source_root/scripts/toolchain/producer.py" prefetch \
     --lock "$lock" --destination "$source_cache" --offline
+
+rust_version=$(python3 - "$source_root/toolchains/rust-toolchain.toml" <<'PY'
+import sys, tomllib
+print(tomllib.load(open(sys.argv[1], "rb"))["toolchain"]["channel"])
+PY
+)
+if [[ $(rustc --version) != "rustc $rust_version "* ]]; then
+    echo "toolchain release requires rustc $rust_version, got: $(rustc --version)" >&2
+    exit 1
+fi
+cargo_vendor="$source_cache/cargo-vendor"
+vendor_config_template="$source_cache/cargo-vendor-config.toml"
+if [[ ! -d "$cargo_vendor" || -z $(find "$cargo_vendor" -mindepth 2 -name .cargo-checksum.json -print -quit) || ! -f "$vendor_config_template" ]]; then
+    echo "toolchain release requires the verified Cargo vendor tree at $cargo_vendor" >&2
+    exit 1
+fi
 
 export LC_ALL=C
 export LANG=C
@@ -150,6 +168,39 @@ fi
     "$make_program" -C "$build_dir" -j "$jobs" crosstools-release \
     AROS_TOOLCHAIN_DEFAULT_SYSROOT= \
     FETCH="$source_root/scripts/toolchain/offline-fetch.py"
+
+# The release collector is the focused Rust implementation shared with
+# aros-cli. Cargo.lock fixes every crate source; the workflow materialises the
+# vendor directory once, and every independent producer consumes it offline.
+export CARGO_HOME="$work_dir/cargo-home"
+export CARGO_INCREMENTAL=0
+vendor_config="$work_dir/cargo-vendor-config.toml"
+python3 - "$vendor_config_template" "$vendor_config" "$cargo_vendor" <<'PY'
+from pathlib import Path
+import json, sys
+
+source = Path(sys.argv[1]).read_text(encoding="utf-8")
+placeholder = '"__CARGO_VENDOR_DIRECTORY__"'
+if source.count(placeholder) != 1:
+    raise SystemExit("Cargo vendor config has no unique directory placeholder")
+Path(sys.argv[2]).write_text(
+    source.replace(placeholder, json.dumps(sys.argv[3])), encoding="utf-8"
+)
+PY
+collector_rustflags="--remap-path-prefix=$source_root=/usr/src/aros-ng --remap-path-prefix=$work_dir=/usr/src/aros-build -Cdebuginfo=0 -Cstrip=symbols -Ccodegen-units=1"
+collector_cargo=(cargo --config 'net.offline=true' --config "$vendor_config")
+collector_args=(
+    --locked --offline --release --package aros-collect
+    --manifest-path "$source_root/tools/aros-tools/Cargo.toml"
+    --target-dir "$work_dir/rust-target"
+)
+RUSTFLAGS="$collector_rustflags" "${collector_cargo[@]}" build \
+    "${collector_args[@]}"
+install -m 0755 "$work_dir/rust-target/release/aros-collect" "$prefix/bin/aros-collect"
+ln -s aros-collect "$prefix/bin/collect-aros"
+if [[ "$profile" == pc-x86_64 ]]; then
+    ln -s aros-collect "$prefix/bin/collect-aros32"
+fi
 
 # llvm-config and LLVM's CMake package are producer-side inputs for building
 # the target runtimes. They are not part of the v1 consumer contract and LLVM

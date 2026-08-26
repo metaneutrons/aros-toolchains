@@ -9,7 +9,7 @@
       "cpu": "x86_64",
       "platform": "pc",
       "float_abi": "",
-      "capabilities": ["c", "cxx", "objc", "compiler-rt", "compiler-rt32", "libcxx", "libcxxabi", "libunwind"]
+      "capabilities": ["c", "cxx", "objc", "compiler-rt", "compiler-rt32", "libcxx", "libcxxabi", "libunwind", "standalone-collector", "multilib-collector"]
     },
     {
       "name": "arm-raspi",
@@ -18,7 +18,7 @@
       "cpu": "arm",
       "platform": "raspi",
       "float_abi": "hard",
-      "capabilities": ["c", "cxx", "objc", "compiler-rt", "libcxx", "libcxxabi", "libunwind"]
+      "capabilities": ["c", "cxx", "objc", "compiler-rt", "libcxx", "libcxxabi", "libunwind", "standalone-collector"]
     },
     {
       "name": "rpi-aarch64",
@@ -27,7 +27,7 @@
       "cpu": "aarch64",
       "platform": "raspi",
       "float_abi": "",
-      "capabilities": ["c", "cxx", "objc", "compiler-rt", "libcxx", "libcxxabi", "libunwind"]
+      "capabilities": ["c", "cxx", "objc", "compiler-rt", "libcxx", "libcxxabi", "libunwind", "standalone-collector"]
     }
   ]
 }

@@ -11,6 +11,9 @@ grep -Fq -- '--with-aros-toolchain=yes' "$source_root/scripts/toolchain/compatib
 grep -Fq -- 'host-python-env.py' "$source_root/scripts/toolchain/build-release.sh"
 grep -Fq -- 'CMAKE_BUILD_PARALLEL_LEVEL' "$source_root/scripts/toolchain/build-release.sh"
 grep -Fq -- 'AROS_TOOLCHAIN_REPRO_FLAGS' "$source_root/scripts/toolchain/build-release.sh"
+grep -Fq -- 'cargo-vendor-config.toml' "$source_root/scripts/toolchain/build-release.sh"
+grep -Fq -- '"$prefix/bin/aros-collect"' "$source_root/scripts/toolchain/build-release.sh"
+grep -Fq -- 'ln -s aros-collect "$prefix/bin/collect-aros"' "$source_root/scripts/toolchain/build-release.sh"
 grep -Fq -- 'rm -f "$prefix/bin/llvm-config"' "$source_root/scripts/toolchain/build-release.sh"
 grep -Fq -- 'host-python-env.py' "$source_root/scripts/toolchain/compatibility.sh"
 grep -Fq -- '--target-dir "$work_dir/rust-target"' "$source_root/scripts/toolchain/compatibility.sh"
@@ -18,6 +21,7 @@ grep -Fq -- '-DAROS_RUST_TOOLS_DIR="$work_dir/rust-target/release"' "$source_roo
 grep -Fq -- '-DAROS_ENABLE_MMU=ON' "$source_root/scripts/toolchain/compatibility.sh"
 grep -Fq -- 'for upstream_target in includes linklibs' "$source_root/scripts/toolchain/compatibility.sh"
 grep -Fq -- 'host-python-upstream-make-$upstream_target' "$source_root/scripts/toolchain/compatibility.sh"
+grep -Fq -- 'PATH=/nonexistent "$toolchain/bin/clang"' "$source_root/scripts/toolchain/compatibility.sh"
 grep -Fq -- 'env ac_cv_prog_cc_c23=' "$source_root/scripts/toolchain/compatibility.sh"
 grep -Fq -- 'AROS_TOOLCHAIN_SOURCE_CACHE' "$source_root/.github/workflows/toolchain-release.yml"
 grep -Fq -- 'submodules: recursive' "$source_root/.github/workflows/toolchain-release.yml"
@@ -107,9 +111,11 @@ make_fixture() {
         "$root/share/Größe"
     local tool
     for tool in clang clang++ ld.lld llvm-ar llvm-ranlib llvm-nm \
-        llvm-strip llvm-objcopy llvm-objdump; do
+        llvm-strip llvm-objcopy llvm-objdump aros-collect; do
         cp "$script_dir/mock-tool.sh" "$root/bin/$tool"
     done
+    ln -s aros-collect "$root/bin/collect-aros"
+    ln -s aros-collect "$root/bin/collect-aros32"
     printf '%s\n' '// deterministic producer fixture' > "$root/include/c++/v1/vector"
     local library
     for library in libc++.a libc++abi.a libunwind.a; do
@@ -217,7 +223,7 @@ assert manifest["target_triple"] == "x86_64-unknown-aros"
 
 # Known-answer digest for the normalized filesystem fixture. Together with
 # toolchains/tree-digest-v1.fixture.json this pins the documented algorithm.
-assert manifest["tree_sha256"] == "946ecbea134cf9e109ac37cf28786765174228a64ed1dab23877515a38aa738b"
+assert manifest["tree_sha256"] == "ebc8e4c29bf8eb78c54be3f719dfdcebf86008ebfb809f43bcc46cec830d8179"
 
 spdx = json.loads((directory / f"{asset}.spdx.json").read_text())
 assert spdx["documentDescribes"] == ["SPDXRef-Package-AROSToolchain"]
@@ -242,6 +248,8 @@ assert artifact["asset"] == asset
 assert artifact["enabled"] is True
 assert artifact["strip_components"] == 1
 assert "toolchain-manifest.json" in artifact["required_paths"]
+for required in ("bin/aros-collect", "bin/collect-aros", "bin/collect-aros32"):
+    assert required in artifact["required_paths"]
 checksums = {}
 for line in (directory / "SHA256SUMS").read_text().splitlines():
     checksum, name = line.split("  ", 1)

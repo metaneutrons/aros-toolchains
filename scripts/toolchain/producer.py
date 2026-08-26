@@ -48,6 +48,8 @@ REQUIRED_TOOLS = (
     "llvm-strip",
     "llvm-objcopy",
     "llvm-objdump",
+    "aros-collect",
+    "collect-aros",
 )
 COMPLETE_V1_MATRIX = {
     (host, profile)
@@ -366,6 +368,8 @@ def validate_recipe(recipe: dict, context: str = "toolchain recipe") -> None:
 
 def required_paths(llvm_version: str, target_profile: str) -> list[str]:
     paths = [f"bin/{tool}" for tool in REQUIRED_TOOLS]
+    if target_profile == "pc-x86_64":
+        paths.append("bin/collect-aros32")
     paths.extend(
         [
             "include/c++/v1/vector",

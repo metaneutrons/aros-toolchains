@@ -53,10 +53,11 @@ print("|".join([
     profile["cpu"],
     profile["platform"],
     profile.get("float_abi", ""),
+    profile["target_triple"],
 ]))
 PY
 )
-IFS='|' read -r configure_target target_cpu target_platform float_abi <<< "$profile_values"
+IFS='|' read -r configure_target target_cpu target_platform float_abi target_triple <<< "$profile_values"
 
 if [[ -e "$work_dir" ]]; then
     echo "compatibility probe refuses a reused work directory: $work_dir" >&2
@@ -127,5 +128,48 @@ for upstream_target in includes linklibs; do
         --work-dir "$work_dir/host-python-upstream-make-$upstream_target" -- \
         "$make_program" -C "$work_dir/upstream-build" -j 2 "$upstream_target"
 done
+
+# Exercise the public Clang driver contract, not only CMake's direct partial
+# linker path. PATH is deliberately unusable: Clang must find collect-aros
+# beside itself, and the collector must find its sibling ld.lld/llvm-strip and
+# all target inputs through the explicit Developer sysroot.
+toolchain="$work_dir/extracted/toolchain"
+developer="$work_dir/upstream-build/bin/$configure_target/AROS/Developer"
+mkdir -p "$work_dir/standalone"
+standalone_triples=("$target_triple")
+if [[ "$profile" == pc-x86_64 ]]; then
+    standalone_triples+=("i386-unknown-aros")
+fi
+for triple in "${standalone_triples[@]}"; do
+    suffix=${triple%%-*}
+    target_flags=()
+    if [[ "$float_abi" == hard && "$triple" == arm-* ]]; then
+        target_flags+=("-mfloat-abi=hard")
+    fi
+    PATH=/nonexistent "$toolchain/bin/clang" \
+        --target="$triple" --sysroot="$developer" "${target_flags[@]}" \
+        -ffreestanding -fno-ident -g0 -nostdlib -nostartfiles \
+        "$script_dir/fixtures/smoke.c" -o "$work_dir/standalone/c-$suffix.o"
+    PATH=/nonexistent "$toolchain/bin/clang++" \
+        --target="$triple" --sysroot="$developer" "${target_flags[@]}" \
+        -ffreestanding -fno-ident -g0 -nostdlib -nostartfiles -nostdinc++ \
+        "$script_dir/fixtures/smoke.cpp" -o "$work_dir/standalone/cxx-$suffix.o"
+    "$toolchain/bin/llvm-nm" "$work_dir/standalone/c-$suffix.o" \
+        | grep -q '__TOOLCHAIN_LIST__$'
+    "$toolchain/bin/llvm-nm" "$work_dir/standalone/cxx-$suffix.o" \
+        | grep -q '__INIT_ARRAY_LIST__$'
+done
+python3 - "$work_dir/standalone" <<'PY'
+from pathlib import Path
+import sys
+outputs = sorted(Path(sys.argv[1]).glob("*.o"))
+if not outputs:
+    raise SystemExit("standalone collector probe produced no outputs")
+for output in outputs:
+    data = output.read_bytes()
+    if data[:4] != b"\x7fELF" or data[7:9] != bytes((15, 1)):
+        raise SystemExit(f"standalone collector output lacks AROS ELF identity: {output}")
+print(f"standalone collector probe passed for {len(outputs)} C/C++ outputs")
+PY
 
 echo "AROS-NG CMake and upstream compatibility probes passed at $upstream_commit for $profile"
