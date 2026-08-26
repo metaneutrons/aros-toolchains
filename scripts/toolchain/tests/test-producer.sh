@@ -20,6 +20,7 @@ grep -Fq -- 'for upstream_target in includes linklibs' "$source_root/scripts/too
 grep -Fq -- 'host-python-upstream-make-$upstream_target' "$source_root/scripts/toolchain/compatibility.sh"
 grep -Fq -- 'env ac_cv_prog_cc_c23=' "$source_root/scripts/toolchain/compatibility.sh"
 grep -Fq -- 'AROS_TOOLCHAIN_SOURCE_CACHE' "$source_root/.github/workflows/toolchain-release.yml"
+grep -Fq -- 'submodules: recursive' "$source_root/.github/workflows/toolchain-release.yml"
 python3 -B "$script_dir/test-host-python-env.py"
 python3 -B "$script_dir/test-llvm-patch.py"
 python3 -B "$script_dir/test-crosstools-release.py"
