@@ -198,6 +198,15 @@ jobs:
             --release-id "${{ needs.plan.outputs.release_id }}" \
             --output-dir "$GITHUB_WORKSPACE/release-output"
 
+      - name: Preserve observed producer environment
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: build-observation-${{ matrix.host }}-${{ matrix.profile }}-${{ matrix.copy }}
+          path: ${{ runner.temp }}/aros-${{ matrix.copy }}-${{ matrix.profile }}/build-observation.json
+          if-no-files-found: warn
+          retention-days: 7
+
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: candidate-${{ matrix.host }}-${{ matrix.profile }}-${{ matrix.copy }}

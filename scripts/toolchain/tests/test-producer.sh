@@ -41,6 +41,23 @@ if workflow.count("netpbm") != 4:
     raise SystemExit("all producer and consumer runner families must install netpbm")
 if workflow.count("libpng-dev") != 2 or workflow.count("gnu-sed") != 2:
     raise SystemExit("Linux libpng headers and macOS GNU sed must cover producer and consumer jobs")
+if "name: build-observation-${{ matrix.host }}-${{ matrix.profile }}-${{ matrix.copy }}" not in workflow:
+    raise SystemExit("each producer must retain its observed environment outside the release archive")
+PY
+python3 - "$source_root/scripts/toolchain/build-release.sh" <<'PY'
+from pathlib import Path
+import sys
+
+script = Path(sys.argv[1]).read_text(encoding="utf-8")
+contract_start = script.index('contract = {')
+observation_start = script.index('observation = {', contract_start)
+contract = script[contract_start:observation_start]
+observation = script[observation_start:script.index("open(sys.argv[1]", observation_start)]
+if "runner_image" in contract or "host_cc" in contract:
+    raise SystemExit("observed runner facts must not enter the byte-compared release manifest")
+for field in ("runner_image_version", "host_cc", "cmake", "make", "python", "rustc", "cargo"):
+    if f'"{field}"' not in observation:
+        raise SystemExit(f"build observation lost {field}")
 PY
 python3 -B "$script_dir/test-host-python-env.py"
 python3 -B "$script_dir/test-llvm-patch.py"

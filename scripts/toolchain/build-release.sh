@@ -72,16 +72,20 @@ python3 "$source_root/scripts/toolchain/producer.py" verify-checkout \
     --lock "$lock" \
     --profiles "$profiles"
 
-python3 - "$work_dir/build-environment.json" "$host_id" <<'PY'
+python3 - "$work_dir/build-environment.json" "$work_dir/build-observation.json" "$host_id" <<'PY'
 import json, os, platform, subprocess, sys
 def version(command):
     try:
         return subprocess.check_output(command, text=True, stderr=subprocess.STDOUT).splitlines()[0]
     except Exception:
         return "unavailable"
-value = {
+contract = {
     "schema": "aros-ng-toolchain-build-environment-v1",
-    "host": sys.argv[2],
+    "host": sys.argv[3],
+}
+observation = {
+    "schema": "aros-ng-toolchain-build-observation-v1",
+    "host": sys.argv[3],
     "runner_image": os.environ.get("ImageOS", "local"),
     "runner_image_version": os.environ.get("ImageVersion", "local"),
     "host_cc": version([os.environ.get("CC", "cc"), "--version"]),
@@ -91,7 +95,8 @@ value = {
     "rustc": version(["rustc", "--version"]),
     "cargo": version(["cargo", "--version"]),
 }
-open(sys.argv[1], "w", encoding="utf-8").write(json.dumps(value, sort_keys=True, indent=2) + "\n")
+open(sys.argv[1], "w", encoding="utf-8").write(json.dumps(contract, sort_keys=True, indent=2) + "\n")
+open(sys.argv[2], "w", encoding="utf-8").write(json.dumps(observation, sort_keys=True, indent=2) + "\n")
 PY
 
 python3 "$source_root/scripts/toolchain/producer.py" prefetch \
