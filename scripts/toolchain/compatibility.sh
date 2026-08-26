@@ -64,6 +64,17 @@ if [[ -e "$work_dir" ]]; then
 fi
 mkdir -p "$work_dir/extracted" "$work_dir/upstream-src" "$work_dir/upstream-build"
 tar -xJf "$archive" -C "$work_dir/extracted"
+
+# A consumer probe must exercise the generators from this checkout, not an
+# arbitrary binary left in the shared Cargo target directory by an older
+# commit. Build the three configure-time tools into the isolated probe root and
+# pass that root explicitly to CMake.
+cargo build --release \
+    --manifest-path "$source_root/tools/aros-tools/Cargo.toml" \
+    --target-dir "$work_dir/rust-target" \
+    -p aros-transpiler \
+    -p aros-genmodule \
+    -p aros-collect
 llvm_version=$(python3 - "$work_dir/extracted/toolchain/toolchain-manifest.json" <<'PY'
 import json, sys
 manifest = json.load(open(sys.argv[1], encoding="utf-8"))
@@ -84,16 +95,22 @@ cmake -S "$source_root" -B "$work_dir/ng-build" -G Ninja \
     -DAROS_TARGET_CPU="$target_cpu" \
     -DAROS_TARGET_PLATFORM="$target_platform" \
     -DGCC_CONFIG_FLOAT_ABI="$float_abi" \
-    -DAROS_ENABLE_MMU=OFF \
+    -DAROS_RUST_TOOLS_DIR="$work_dir/rust-target/release" \
+    -DAROS_ENABLE_MMU=ON \
     -DCMAKE_BUILD_TYPE=Release
 
 git -C "$work_dir/upstream-src" init -q
 git -C "$work_dir/upstream-src" remote add origin https://github.com/aros-development-team/AROS.git
 git -C "$work_dir/upstream-src" fetch -q --depth=1 origin "$upstream_commit"
 git -C "$work_dir/upstream-src" checkout -q --detach FETCH_HEAD
+# Autoconf 2.73 otherwise appends -std=gnu23 to CC before this upstream commit
+# snapshots CC_BASE. The legacy configure logic then derives impossible host
+# tool names such as llvm-argcc. Preserve the older no-extra-dialect behavior
+# without patching the pinned upstream checkout.
 (
     cd "$work_dir/upstream-build"
     "${host_python_runner[@]}" --work-dir "$work_dir/host-python-upstream-configure" -- \
+        env ac_cv_prog_cc_c23= \
         "$work_dir/upstream-src/configure" \
         --target="$configure_target" \
         --with-toolchain=llvm \
@@ -105,7 +122,10 @@ make_program="make"
 if command -v gmake >/dev/null 2>&1; then
     make_program="gmake"
 fi
-"${host_python_runner[@]}" --work-dir "$work_dir/host-python-upstream-make" -- \
-    "$make_program" -C "$work_dir/upstream-build" -j 2 includes linklibs
+for upstream_target in includes linklibs; do
+    "${host_python_runner[@]}" \
+        --work-dir "$work_dir/host-python-upstream-make-$upstream_target" -- \
+        "$make_program" -C "$work_dir/upstream-build" -j 2 "$upstream_target"
+done
 
 echo "AROS-NG CMake and upstream compatibility probes passed at $upstream_commit for $profile"
