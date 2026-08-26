@@ -39,6 +39,8 @@ if "          include-hidden-files: true" not in source_artifact:
     raise SystemExit("verified source artifact must retain Cargo checksum files")
 if workflow.count("netpbm") != 4:
     raise SystemExit("all producer and consumer runner families must install netpbm")
+if workflow.count("libpng-dev") != 2 or workflow.count("gnu-sed") != 2:
+    raise SystemExit("Linux libpng headers and macOS GNU sed must cover producer and consumer jobs")
 PY
 python3 -B "$script_dir/test-host-python-env.py"
 python3 -B "$script_dir/test-llvm-patch.py"
