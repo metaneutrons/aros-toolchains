@@ -345,6 +345,18 @@ def main() -> None:
     target_config = (SOURCE_ROOT / "config" / "target.cfg.in").read_text(encoding="iso-8859-1")
     assert "AROS_TOOLCHAIN_RELEASE" in target_config
     assert "CROSSTOOLS_PORTS_INCLUDES" in target_config
+    make_config = (SOURCE_ROOT / "config" / "make.cfg.in").read_text(encoding="utf-8")
+    assert (
+        "ifeq ($(realpath $(firstword $(MAKEFILE_LIST))),$(realpath $(TOP)/Makefile))"
+        in make_config
+    )
+    assert "include $(SRCDIR)/config/make-root-tools.mk" in make_config
+    root_tools = (SOURCE_ROOT / "config" / "make-root-tools.mk").read_text(encoding="utf-8")
+    assert (
+        "$(GENMODULE): $(wildcard $(SRCDIR)/tools/genmodule/*.[ch]) | makedirs"
+        in root_tools
+    )
+    assert "tools: $(GENMODULE)" in root_tools
     makefile_source = (SOURCE_ROOT / "Makefile.in").read_text(encoding="iso-8859-1")
     assert "crosstools-release : crosstools-toolchain features" in makefile_source
     assert "toolchain-linklibs-release" in makefile_source
