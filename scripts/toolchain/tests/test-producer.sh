@@ -37,6 +37,8 @@ end = workflow.index("\n\n  build:", start)
 source_artifact = workflow[start:end]
 if "          include-hidden-files: true" not in source_artifact:
     raise SystemExit("verified source artifact must retain Cargo checksum files")
+if workflow.count("netpbm") != 4:
+    raise SystemExit("all producer and consumer runner families must install netpbm")
 PY
 python3 -B "$script_dir/test-host-python-env.py"
 python3 -B "$script_dir/test-llvm-patch.py"

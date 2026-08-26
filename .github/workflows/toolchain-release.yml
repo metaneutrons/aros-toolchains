@@ -172,13 +172,13 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             autoconf automake bison build-essential cmake flex gawk libtool \
-            ninja-build patch python3 xz-utils
+            netpbm ninja-build patch python3 xz-utils
 
       - name: Install build prerequisites (macOS)
         if: runner.os == 'macOS'
         run: |
           set -euo pipefail
-          brew install autoconf automake bison cmake gawk libtool make ninja xz
+          brew install autoconf automake bison cmake gawk libtool make netpbm ninja xz
           echo "$(brew --prefix bison)/bin" >> "$GITHUB_PATH"
 
       - name: Independent upstream configure + crosstools build
@@ -264,11 +264,11 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             autoconf automake bison build-essential cmake flex gawk libtool \
-            make ninja-build patch python3 xz-utils
+            make netpbm ninja-build patch python3 xz-utils
       - name: Install consumer prerequisites (macOS)
         if: runner.os == 'macOS'
         run: |
-          brew install autoconf automake bison cmake gawk libtool make ninja xz
+          brew install autoconf automake bison cmake gawk libtool make netpbm ninja xz
           echo "$(brew --prefix bison)/bin" >> "$GITHUB_PATH"
       - name: Two-root relocation and pinned upstream compatibility
         env:
