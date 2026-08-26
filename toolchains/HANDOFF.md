@@ -1,258 +1,151 @@
-# Toolchain build-check handoff
+# Toolchain release handoff
 
-Status date: 2026-08-22
+Status date: 2026-08-26
 
-## Deliberate pause point
+## Exact current release candidate
 
-The working tree is intentionally dirty and **no fresh, complete producer
-artifact is claimed from this state**.  The macOS and Cachy producer attempts
-that existed before the final locked-C++ linker change were stopped rather
-than being treated as evidence.  Resume with new source snapshots only; do
-not reuse their build or install directories.
-
-The requested macOS and Linux checks therefore remain the next execution
-step, not a completed release result.
-
-## What is implemented and checked
-
-- `--enable-toolchain-release` / `crosstools-release` selects the minimal
-  release graph.  Ordinary upstream-compatible `make crosstools` remains a
-  separate, unchanged route.
-- The producer locks LLVM and its private host-Python dependencies, builds
-  offline from a verified cache, normalizes the archive, scans it for build
-  prefixes, and runs a two-root relocation probe.
-- A locked CMake consumer takes compilers and `ld.lld` only from
-  `AROS_CROSS_TOOLCHAIN_ROOT`.  C++ partial links use direct prefix `ld.lld`,
-  a consumer-produced `Developer/lib/cxx-startup.o`, and the explicit
-  `libc++`, `libc++abi`, `libunwind`, and compiler-rt archive group.  This
-  avoids host `PATH` lookup and the build-local collector configuration.
-- The following checks passed after that change:
-
-  ```text
-  cmake -P cmake/tests/ReleaseToolchainTest.cmake
-  cmake -P cmake/tests/AlwaysCxxLinkTest.cmake
-  python3 -B scripts/toolchain/tests/test-crosstools-release.py
-  scripts/toolchain/tests/test-producer.sh
-  git diff --check
-  ```
-
-- A Cachy smoke test used an actual prefix `clang++` for compilation and the
-  actual prefix `ld.lld` with `PATH=/nonexistent` for the C++ relocatable
-  link.  It produced an ELF64 relocatable object containing `__dso_handle`
-  and the expected C++ symbols.  The test used target-side stand-in runtime
-  archives because a final producer prefix did not yet exist; it is not a
-  substitute for the fresh package/consumer gate below.
-
-## Gate before committing
-
-The five commands listed above are what passed for one particular change. They
-have been read as the gate, and as a gate they were short by three checks:
+The first reproducibility lane is `pc-x86_64` on the two locally available
+hosts. Its immutable inputs are:
 
 ```text
-cargo fmt --all --check
-cargo clippy --workspace --all-targets
-cargo test --workspace
-for t in cmake/tests/*Test.cmake; do cmake -P "$t" || echo "FAIL $t"; done
+source commit: 9f84f550c018834013df0f002c79b497b1919989
+source tree:   9bad08043b81b67a345a28e823f436f62516a0d3
+recipe sha256: 2e8be353146fe97ff25f96fda62ab121fa2c2fa466956fa29321c804150a2350
+source epoch:  1787759560
+```
+
+The two macOS ARM64 runs completed in these fresh roots:
+
+```text
+/tmp/aros-toolchain-9f84-macos-a.rH2eVP
+/tmp/aros-toolchain-9f84-macos-b.dxDoxU
+```
+
+The two Linux x86_64 runs on `cachy` use:
+
+```text
+/home/fabian/aros-toolchain-9f84-linux.DxAgQa/a
+/home/fabian/aros-toolchain-9f84-linux.DxAgQa/b
+```
+
+Both local host pairs are closed. The macOS archives and formal compare output
+have SHA-256
+`d7d7e735245faf06631da58af58c0549d02e2fdd0b8f7fa04391cfc6f5e63aac`;
+the Linux archives and formal compare output have SHA-256
+`dd9935e8a73579082f37d2332c9e80fe35cefdc58797cb57bca8d527ba9b6a57`.
+Their verified directories are:
+
+```text
+/tmp/aros-toolchain-9f84-macos-verified.x7ekhv/verified
+/home/fabian/aros-toolchain-9f84-linux-verified.N0eIk4/verified
+```
+
+Each compared archive passed package verification, two-root relocation, a
+fresh AROS-NG configure and exact upstream `includes` plus `linklibs` at
+`6e196552834ec338072dda8675cf0c3f1d2df0d6`. The final Linux compatibility
+work root and log are under:
+
+```text
+/home/fabian/aros-toolchain-9f84-linux-compat.NKW3FK
+```
+
+This proves the first target profile on the two locally available hosts. It is
+not the complete release matrix described below.
+
+## Implemented release contract
+
+- Normal upstream-compatible `make crosstools` remains separate. The opt-in
+  `--enable-toolchain-release` / `crosstools-release` graph builds only the
+  SDK/runtime closure required by a relocatable release.
+- LLVM, Clang, LLD, compiler-rt, libc++, libc++abi, libunwind and the private
+  Mako/MarkupSafe host runtime are content-locked and prefetched into a
+  verified offline cache.
+- The producer records a clean commit/tree recipe, normalizes timestamps,
+  owners, modes and archive order, embeds SPDX/build provenance, scans all
+  payload bytes for source/build/install prefixes, and verifies relocation in
+  two extraction roots.
+- Target runtime builds receive the same file/debug/macro prefix maps as host
+  LLVM. Producer-only `llvm-config` and LLVM CMake package files are removed
+  after the runtime build and before packaging.
+- The release CMake toolchain selects only prefix-owned compilers, LLVM tools
+  and C++ runtime archives. Its custom AROS root/CPU/platform variables are
+  explicitly propagated into CMake `try_compile` projects.
+- A top-level host-tool barrier builds `genmodule` exactly once before parallel
+  target-header generation. This closes the Bus-error race exposed by the
+  narrowed release graph.
+- The broad verifier source digests and the transpiler's package/archive pins
+  are gone. Structural facts are validated structurally; the remaining 14
+  transpiler fingerprints cover only opaque recipes that expand into
+  hard-coded jobs and fail with an update-required diagnostic on drift.
+
+## Gates already proved
+
+The following contracts pass on the release-candidate branch:
+
+```text
+cmake -P cmake/tests/ReleaseToolchainTest.cmake
+python3 -B scripts/toolchain/tests/test-crosstools-release.py
+scripts/toolchain/tests/test-producer.sh
 git diff --check
 ```
 
-Run the first four from `tools/aros-tools`, the last two from the repository
-root.
+A fresh out-of-tree `gmake -j16 tools` built `genmodule` once. A predecessor
+candidate (`f376c5582e`) first proved the prefix-clean packaging fix. It
+remains diagnostic only; the final macOS proof is the `9f84f550c0` pair
+recorded above. The final Linux proof is the independent `9f84f550c0` pair
+recorded above as well.
 
-Why each of the three was added:
+Both final compared archives exercised the complete downstream path:
 
-- `cargo test --workspace` covers `aros-verify`, which no list mentioned. Its
-  suite was red for as long as one hand-pinned digest was stale, and while it
-  was red the eight inventory counts behind that digest were never evaluated at
-  all (OPEN-POINTS 7).
-- `cargo fmt --all --check` was missing, and nine files had drifted from it
-  (OPEN-POINTS 8).
-- the fixture sweep was missing, and seven of the 21 fixtures were red, each
-  from a commit that had passed the shorter gate (OPEN-POINTS 45). It costs
-  about five minutes, 254 seconds of that `GrubBuildTest` alone; the other
-  twenty take 45 seconds together, so run GrubBuildTest on its own schedule if
-  that is what decides between running the sweep and skipping it.
+1. `producer.py verify` and its two-root relocation probe passed.
+2. AROS-NG configured with C, C++, ASM and Objective-C from the extracted
+   prefix and a freshly built, isolated set of Rust generators.
+3. Exact upstream commit `6e196552834ec338072dda8675cf0c3f1d2df0d6`
+   built `includes` and then `linklibs` against the extracted prefix.
 
-`cargo clippy --workspace --all-targets` only started compiling again once
-three deny-level lints were fixed, and cargo stops linting dependent crates
-after the first failure, so a red clippy hides the rest of the workspace as
-well.
+The compatibility script deliberately builds its Rust generators into the
+probe work directory, runs the two upstream targets sequentially, gives their
+locked Python environments distinct work roots, and neutralizes Autoconf
+2.73's added `-std=gnu23` suffix for this older upstream configure script.
+It does not patch the upstream checkout.
 
-## Refactoring the transpiler: the baseline
+## Evidence and next completion sequence
 
-A refactor of `aros-transpiler` claims that moving code changed no generated
-CMake. `aros golden` is what turns that claim into a check:
-
-```text
-cargo build --release -p aros-transpiler -p aros-cli
-aros golden capture          # before the change
-# ... refactor, rebuild the release binary ...
-aros golden verify           # after each step
-```
-
-`capture` runs the transpiler twice per preset and refuses to store a baseline
-if the two runs disagree, because a baseline from a producer that varies would
-report noise as regression forever. It found exactly that on its first run: one
-report file came out with the same bytes and the same line count in a different
-order, from a candidate list built while iterating a `HashMap`.
-
-`verify` names the file, the byte and line delta, and the first differing line,
-and exits non-zero. `verify --update` accepts the new output as the baseline
-when the change was the point.
-
-Three properties are worth knowing before relying on it:
-
-- **It is per preset.** The scoped arguments are derived during configuration
-  and they change the output: pc-x86_64, arm-raspi and rpi-aarch64 produce
-  3 419 144, 3 252 031 and 3 417 460 bytes. CMake records the argv it used in
-  `generated_targets.cmake.invocation` next to its output, and `golden` replays
-  that rather than re-deriving it.
-- **The baseline is not in the repository.** It lives in `build/golden/`, which
-  is ignored. A digest of a live output committed to the tree would be stale
-  after every deliberate transpiler change, and a check that is nearly always
-  red is not a check (see OPEN-POINTS 7 and 46 for the same coupling in two
-  other places).
-- **Capture cross-checks the record.** Its first run is compared against the
-  file the build tree itself holds, so a recorded argv that has drifted from
-  the call, or a build tree that predates a source change, is reported instead
-  of trusted.
-
-## Important open issue: standalone Clang driver
-
-The release prefix currently promises the locked CMake partial-link contract,
-not arbitrary standalone final linking through `clang`/`clang++`.
-
-The AROS LLVM 11 driver selects `collect-aros` for every primary target and
-selects `collect-aros32` when an x86_64 compiler is used for the i386
-secondary target.  The present collector is not releasable: it embeds absolute
-producer paths for `ld.lld` and other LLVM tools as well as `OBJLIBDIR`, and
-some backend helpers still resolve tools through `PATH`.  Copying it into the
-archive would be both non-relocatable and unsafe.
-
-The upstream-compatible release-mode fix should be:
-
-1. Install a native-host `collect-aros` beside the release compiler for every
-   profile, plus `collect-aros32` only for `pc-x86_64`.
-2. Resolve the collector's own executable directory at runtime (`/proc/self/exe`
-   on Linux, `_NSGetExecutablePath` plus `realpath` on macOS), then require
-   absolute sibling paths for `ld.lld`, `llvm-nm`, `llvm-objdump`, and
-   `llvm-strip`.  Missing siblings must fail hard; neither `PATH` nor
-   `COMPILER_PATH` may be a fallback.
-3. Remove the compiled-in `OBJLIBDIR`.  Pass `--sysroot` from the Clang AROS
-   driver also when it selects the collector; have the collector derive
-   `<sysroot>/lib`, or `<sysroot>/lib32` for the i386 secondary target.
-4. Extend package validation and poison-`PATH` functional tests to cover
-   actual C and C++ final links.  For `pc-x86_64`, test both x86_64 and i386;
-   for ARM and AArch64, test `collect-aros` only.
-
-The direct `ld.lld` CMake route should remain after that work: it is a small,
-explicit partial-link contract, while the collector serves the broader
-standalone-driver contract.
-
-## Resume sequence
-
-### 1. Preserve and inspect the workspace
-
-Do not reset or clean this shared working tree.  Start with:
+The completed local logs remain available without changing either build:
 
 ```bash
-cd /Volumes/Dev/Source/AROS-NG
-git status --short
-git diff --check
+tail -40 /tmp/aros-toolchain-9f84-macos-a.rH2eVP/build.log
+tail -40 /tmp/aros-toolchain-9f84-macos-b.dxDoxU/build.log
+ssh cachy 'tail -40 /home/fabian/aros-toolchain-9f84-linux.DxAgQa/a/build.log'
+ssh cachy 'tail -40 /home/fabian/aros-toolchain-9f84-linux.DxAgQa/b/build.log'
 ```
 
-The status contains intended cross-cutting CMake, crosstool, producer, Rust
-transpiler, workflow, and documentation changes.  `configure~` and Python
-`__pycache__` are local by-products, not source changes to add deliberately.
-
-### 2. Finish the standalone-collector work
-
-Implement and test the four-item design above before claiming a generally
-usable released `clang`/`clang++`.  Keep it behind the release mode so normal
-AROS `crosstools` behaviour remains compatible with upstream.
-
-### 3. Make a clean, throwaway source snapshot
-
-`build-release.sh` intentionally rejects a dirty source tree.  Once the code
-is ready, clone the current repository to a new temporary directory, overlay
-the working-tree content (excluding `.git` and build products), create a
-local-only snapshot commit there, and generate the recipe from that snapshot.
-The snapshot's commit and tree must be the ones used by `recipe` and
-`build-release`; never point one command at the shared dirty checkout and the
-other at the snapshot.
-
-The snapshot may be discarded after the run.  A release result is valid only
-if `producer.py verify-checkout` reports its exact local snapshot commit/tree
-and the package verification below succeeds.
-
-Create the recipe immediately after the snapshot commit, for example:
+For every remaining host/profile lane, compare its two fresh archives into a
+new output directory:
 
 ```bash
-python3 <clean-snapshot>/scripts/toolchain/producer.py recipe \
-  --source-root <clean-snapshot> \
-  --lock <clean-snapshot>/toolchains/llvm-11.0.0.sources.json \
-  --profiles <clean-snapshot>/toolchains/profiles-v1.json \
-  --output <clean-snapshot>/recipe.json
+python3 scripts/toolchain/producer.py compare \
+  --left <copy-a-archive> \
+  --right <copy-b-archive> \
+  --output-dir <new-verified-directory>
 ```
 
-### 4. Run the first fresh producer pair
+Then run `scripts/toolchain/compatibility.sh` on that compared archive for the
+matching host. The script verifies the package first, configures a fresh
+AROS-NG consumer and builds the pinned upstream `includes` and `linklibs`
+targets. A reused compatibility work directory is rejected. CI checkouts must
+include recursive submodules; commit `db674e3040` makes that explicit in the
+release workflow after the clean candidate snapshot exposed the dependency.
 
-Use a newly empty work/install directory for each host and the current source
-snapshot.  Start with `pc-x86_64` only:
+## Scope that remains open
 
-```bash
-scripts/toolchain/build-release.sh \
-  --source-root <clean-snapshot> \
-  --work-dir <new-empty-workdir> \
-  --source-cache <verified-source-cache> \
-  --recipe <clean-snapshot>/recipe.json \
-  --lock <clean-snapshot>/toolchains/llvm-11.0.0.sources.json \
-  --profiles <clean-snapshot>/toolchains/profiles-v1.json \
-  --profile pc-x86_64 \
-  --host macos-aarch64 \
-  --release-id buildcheck-<new-id> \
-  --output-dir <new-empty-outputdir> \
-  --jobs 2
-```
-
-Run the same command on Cachy with `--host linux-x86_64`.  The source cache
-may be shared only after its verified source index has been checked; work and
-output directories must never be reused.  The producer performs the offline
-prefetch and packaging scan itself.
-
-### 5. Verify each package and exercise a real consumer
-
-Run `producer.py verify` against each produced archive with the matching
-host/profile and forbidden source/build/install prefixes, for example:
-
-```bash
-python3 <clean-snapshot>/scripts/toolchain/producer.py verify \
-  --archive <output-dir>/aros-toolchain-v1-llvm11.0.0-<host>-pc-x86_64.tar.xz \
-  --fixtures <clean-snapshot>/scripts/toolchain/fixtures \
-  --host <host> \
-  --target-profile pc-x86_64 \
-  --forbid-prefix <clean-snapshot> \
-  --forbid-prefix <new-empty-workdir> \
-  --forbid-prefix <new-empty-workdir>/install/toolchain
-```
-
-Then extract the package at a new path and configure an AROS-NG CMake consumer
-using:
-
-```text
--DCMAKE_TOOLCHAIN_FILE=<source>/cmake/toolchains/AROS.cmake
--DAROS_CROSS_TOOLCHAIN_ROOT=<extracted-prefix>/toolchain
--DAROS_TARGET_CPU=x86_64
--DAROS_TARGET_PLATFORM=pc
--DAROS_RUST_TOOLS_DIR=<source>/tools/aros-tools/target/release
-```
-
-Build `linklibs-startup` and `mesa3dgl-library`.  Confirm in the verbose link
-line that the extracted prefix's `ld.lld`, `Developer/lib/cxx-startup.o`, and
-the four explicit runtime archives are used, with no `collect-aros` and no
-host-path tool lookup.
-
-Only after the two PC host lanes are green should the same procedure be run
-for `arm-raspi` and `rpi-aarch64` on both hosts.  The complete release matrix
-then requires each host/profile pair to be built twice and byte-compared by
-the workflow before publication.
+- A green local result closes only macOS ARM64 and Linux x86_64 for the
+  `pc-x86_64` profile. The release workflow still requires two byte-identical
+  copies for every supported host/profile pair: four hosts times
+  `pc-x86_64`, `arm-raspi` and `rpi-aarch64`.
+- The prefix promises the locked CMake partial-link contract. Arbitrary final
+  linking through standalone `clang`/`clang++` remains out of scope until
+  `collect-aros` is relocatable and resolves sibling LLVM tools plus sysroot
+  libraries without `PATH`, `COMPILER_PATH` or compiled-in producer paths.
+- Publication must remain fail-closed: no release/index publication until the
+  workflow's complete-matrix gate has accepted all 12 host/profile lanes.
