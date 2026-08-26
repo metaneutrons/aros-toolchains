@@ -322,6 +322,24 @@ def main() -> None:
         re.MULTILINE,
     )
 
+    # Clang 11 keyed generated attribute sub-rules by Record pointer. ASLR then
+    # changed the installed include and the two dylibs that compile it between
+    # otherwise identical macOS release builds. Keep the patched map ordered by
+    # the stable TableGen record name instead.
+    clang_patch = (
+        SOURCE_ROOT
+        / "tools"
+        / "crosstools"
+        / "llvm"
+        / "clang-11.0.0.src-aros.diff"
+    ).read_text(encoding="utf-8")
+    assert "struct CompareRecordsByName" in clang_patch
+    assert "Left->getName() < Right->getName()" in clang_patch
+    assert (
+        "std::map<const Record *, std::vector<AttributeSubjectMatchRule>,"
+        in clang_patch
+    )
+
     # Compiler-rt supplies ARM/AArch64 builtins, so the producer must not
     # reach linklibs-arm/SoftFloat. x86_64 keeps its historical 32-bit runtime.
     assert rules["toolchain-linklibs-llvm-release-arm"] == []
