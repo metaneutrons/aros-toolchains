@@ -12,6 +12,8 @@ grep -Fq -- 'host-python-env.py' "$source_root/scripts/toolchain/build-release.s
 grep -Fq -- 'CMAKE_BUILD_PARALLEL_LEVEL' "$source_root/scripts/toolchain/build-release.sh"
 grep -Fq -- 'AROS_TOOLCHAIN_REPRO_FLAGS' "$source_root/scripts/toolchain/build-release.sh"
 grep -Fq -- 'cargo-vendor-config.toml' "$source_root/scripts/toolchain/build-release.sh"
+grep -Fq -- '--remap-path-prefix=$source_cache=/usr/src/aros-sources' "$source_root/scripts/toolchain/build-release.sh"
+grep -Fq -- '--forbid-prefix "$source_cache"' "$source_root/scripts/toolchain/build-release.sh"
 grep -Fq -- '"$prefix/bin/aros-collect"' "$source_root/scripts/toolchain/build-release.sh"
 grep -Fq -- 'ln -s aros-collect "$prefix/bin/collect-aros"' "$source_root/scripts/toolchain/build-release.sh"
 grep -Fq -- 'rm -f "$prefix/bin/llvm-config"' "$source_root/scripts/toolchain/build-release.sh"

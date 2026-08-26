@@ -187,7 +187,11 @@ Path(sys.argv[2]).write_text(
     source.replace(placeholder, json.dumps(sys.argv[3])), encoding="utf-8"
 )
 PY
-collector_rustflags="--remap-path-prefix=$source_root=/usr/src/aros-ng --remap-path-prefix=$work_dir=/usr/src/aros-build -Cdebuginfo=0 -Cstrip=symbols -Ccodegen-units=1"
+# Registry and git dependencies are compiled from the verified vendor tree,
+# and Rust retains their source locations for panic diagnostics even when
+# debuginfo is stripped. Remap that producer input as deliberately as the
+# checkout and build roots; otherwise two caches yield different collectors.
+collector_rustflags="--remap-path-prefix=$source_cache=/usr/src/aros-sources --remap-path-prefix=$source_root=/usr/src/aros-ng --remap-path-prefix=$work_dir=/usr/src/aros-build -Cdebuginfo=0 -Cstrip=symbols -Ccodegen-units=1"
 collector_cargo=(cargo --config 'net.offline=true' --config "$vendor_config")
 collector_args=(
     --locked --offline --release --package aros-collect
@@ -221,6 +225,7 @@ python3 "$source_root/scripts/toolchain/producer.py" package \
     --asset-name "$asset_name" \
     --output-dir "$output_dir" \
     --build-environment "$work_dir/build-environment.json" \
+    --forbid-prefix "$source_cache" \
     --forbid-prefix "$source_root" \
     --forbid-prefix "$work_dir" \
     --forbid-prefix "$prefix"
