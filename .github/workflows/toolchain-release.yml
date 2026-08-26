@@ -1,0 +1,350 @@
+name: Deterministic AROS Toolchain Producer
+
+on:
+  workflow_dispatch:
+    inputs:
+      scope:
+        description: Host tier to exercise (manual runs never publish)
+        required: true
+        default: linux-x86_64
+        type: choice
+        options:
+          - linux-x86_64
+          - linux
+          - all
+  push:
+    tags:
+      - toolchain-v1-*
+
+permissions:
+  contents: read
+
+concurrency:
+  group: toolchain-producer-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  SOURCE_LOCK: toolchains/llvm-11.0.0.sources.json
+  PROFILES: toolchains/profiles-v1.json
+  LLVM_VERSION: 11.0.0
+  PYTHONHASHSEED: "0"
+
+jobs:
+  plan:
+    runs-on: ubuntu-24.04
+    outputs:
+      build_matrix: ${{ steps.matrix.outputs.build_matrix }}
+      verify_matrix: ${{ steps.matrix.outputs.verify_matrix }}
+      release_id: ${{ steps.matrix.outputs.release_id }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+
+      - name: Validate locks and compute recipe identity
+        run: |
+          set -euo pipefail
+          python3 scripts/toolchain/producer.py recipe \
+            --source-root . \
+            --lock "$SOURCE_LOCK" \
+            --profiles "$PROFILES" \
+            --output recipe.json
+          python3 -m json.tool toolchains/source-lock-v1.schema.json >/dev/null
+          python3 -m json.tool toolchains/toolchain-manifest-v1.schema.json >/dev/null
+          python3 -m json.tool "$SOURCE_LOCK" >/dev/null
+          python3 -m json.tool "$PROFILES" >/dev/null
+          scripts/toolchain/tests/test-producer.sh
+
+      - id: matrix
+        name: Select staged host matrix
+        env:
+          REQUESTED_SCOPE: ${{ inputs.scope }}
+        run: |
+          set -euo pipefail
+          python3 - "$GITHUB_OUTPUT" <<'PY'
+          import itertools, json, os, sys
+          hosts = [
+              {"host": "linux-x86_64", "runner": "ubuntu-24.04"},
+              {"host": "linux-aarch64", "runner": "ubuntu-24.04-arm"},
+              {"host": "macos-x86_64", "runner": "macos-15-intel"},
+              {"host": "macos-aarch64", "runner": "macos-15"},
+          ]
+          if os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch":
+              scope = os.environ.get("REQUESTED_SCOPE") or "linux-x86_64"
+              if scope == "linux-x86_64":
+                  hosts = [item for item in hosts if item["host"] == scope]
+              elif scope == "linux":
+                  hosts = [item for item in hosts if item["host"].startswith("linux-")]
+              elif scope != "all":
+                  raise SystemExit(f"unsupported scope: {scope}")
+          profiles = ["pc-x86_64", "arm-raspi", "rpi-aarch64"]
+          verify = [{**host, "profile": profile} for host, profile in itertools.product(hosts, profiles)]
+          build = [{**item, "copy": copy} for item, copy in itertools.product(verify, ["a", "b"])]
+          tag = os.environ.get("GITHUB_REF_NAME", "")
+          release_id = tag if os.environ.get("GITHUB_REF_TYPE") == "tag" else "toolchain-dev-" + os.environ["GITHUB_SHA"][:12]
+          with open(sys.argv[1], "a", encoding="utf-8") as output:
+              output.write("build_matrix=" + json.dumps({"include": build}, separators=(",", ":")) + "\n")
+              output.write("verify_matrix=" + json.dumps({"include": verify}, separators=(",", ":")) + "\n")
+              output.write("release_id=" + release_id + "\n")
+          PY
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: toolchain-recipe
+          path: recipe.json
+          if-no-files-found: error
+          retention-days: 7
+
+  sources:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
+        with:
+          toolchain: 1.96.1
+      - name: Fetch and verify immutable toolchain and host Python sources
+        run: |
+          set -euo pipefail
+          python3 scripts/toolchain/producer.py prefetch \
+            --lock "$SOURCE_LOCK" \
+            --destination source-cache
+          python3 scripts/toolchain/producer.py prefetch \
+            --lock "$SOURCE_LOCK" \
+            --destination source-cache \
+            --offline
+      - name: Vendor locked Rust collector sources
+        run: |
+          set -euo pipefail
+          cargo vendor --locked --versioned-dirs \
+            --manifest-path tools/aros-tools/Cargo.toml \
+            source-cache/cargo-vendor > source-cache/cargo-vendor-config.toml
+          python3 - <<'PY'
+          from pathlib import Path
+          config = Path("source-cache/cargo-vendor-config.toml")
+          lines = config.read_text(encoding="utf-8").splitlines()
+          replaced = 0
+          for index, line in enumerate(lines):
+              if line.startswith("directory = "):
+                  lines[index] = 'directory = "__CARGO_VENDOR_DIRECTORY__"'
+                  replaced += 1
+          if replaced != 1:
+              raise SystemExit(f"expected one Cargo vendor directory, found {replaced}")
+          config.write_text("\n".join(lines) + "\n", encoding="utf-8")
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: verified-toolchain-sources
+          path: source-cache/
+          if-no-files-found: error
+          retention-days: 7
+
+  build:
+    needs: [plan, sources]
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.build_matrix) }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: toolchain-recipe
+          path: producer-input
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: verified-toolchain-sources
+          path: source-cache
+
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
+        with:
+          toolchain: 1.96.1
+
+      - name: Install pinned-lane build prerequisites (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            autoconf automake bison build-essential cmake flex gawk libtool \
+            ninja-build patch python3 xz-utils
+
+      - name: Install build prerequisites (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          set -euo pipefail
+          brew install autoconf automake bison cmake gawk libtool make ninja xz
+          echo "$(brew --prefix bison)/bin" >> "$GITHUB_PATH"
+
+      - name: Independent upstream configure + crosstools build
+        env:
+          AROS_TOOLCHAIN_JOBS: "3"
+        run: |
+          set -euo pipefail
+          scripts/toolchain/build-release.sh \
+            --source-root "$GITHUB_WORKSPACE" \
+            --work-dir "$RUNNER_TEMP/aros-${{ matrix.copy }}-${{ matrix.profile }}" \
+            --source-cache "$GITHUB_WORKSPACE/source-cache" \
+            --recipe "$GITHUB_WORKSPACE/producer-input/recipe.json" \
+            --lock "$GITHUB_WORKSPACE/$SOURCE_LOCK" \
+            --profiles "$GITHUB_WORKSPACE/$PROFILES" \
+            --profile "${{ matrix.profile }}" \
+            --host "${{ matrix.host }}" \
+            --release-id "${{ needs.plan.outputs.release_id }}" \
+            --output-dir "$GITHUB_WORKSPACE/release-output"
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: candidate-${{ matrix.host }}-${{ matrix.profile }}-${{ matrix.copy }}
+          path: release-output/
+          if-no-files-found: error
+          retention-days: 7
+
+  compare:
+    needs: [plan, build]
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.verify_matrix) }}
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: candidate-${{ matrix.host }}-${{ matrix.profile }}-a
+          path: candidate-a
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: candidate-${{ matrix.host }}-${{ matrix.profile }}-b
+          path: candidate-b
+      - name: Require byte-identical normalized archives
+        run: |
+          set -euo pipefail
+          asset="aros-toolchain-v1-llvm${LLVM_VERSION}-${{ matrix.host }}-${{ matrix.profile }}.tar.xz"
+          python3 scripts/toolchain/producer.py compare \
+            --left "candidate-a/$asset" \
+            --right "candidate-b/$asset" \
+            --output-dir verified
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: verified-${{ matrix.host }}-${{ matrix.profile }}
+          path: verified/
+          if-no-files-found: error
+          retention-days: 7
+
+  compatibility:
+    needs: [plan, compare]
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.verify_matrix) }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          submodules: recursive
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: verified-${{ matrix.host }}-${{ matrix.profile }}
+          path: verified
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: verified-toolchain-sources
+          path: source-cache
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
+        with:
+          toolchain: 1.96.1
+      - name: Install consumer prerequisites (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            autoconf automake bison build-essential cmake flex gawk libtool \
+            make ninja-build patch python3 xz-utils
+      - name: Install consumer prerequisites (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew install autoconf automake bison cmake gawk libtool make ninja xz
+          echo "$(brew --prefix bison)/bin" >> "$GITHUB_PATH"
+      - name: Two-root relocation and pinned upstream compatibility
+        env:
+          AROS_TOOLCHAIN_SOURCE_CACHE: ${{ github.workspace }}/source-cache
+        run: |
+          set -euo pipefail
+          asset="aros-toolchain-v1-llvm${LLVM_VERSION}-${{ matrix.host }}-${{ matrix.profile }}.tar.xz"
+          upstream_commit=$(python3 -c 'import json; print(json.load(open("toolchains/profiles-v1.json"))["upstream_commit"])')
+          scripts/toolchain/compatibility.sh \
+            "$GITHUB_WORKSPACE/verified/$asset" \
+            "${{ matrix.host }}" \
+            "${{ matrix.profile }}" \
+            "$GITHUB_WORKSPACE/$PROFILES" \
+            "$upstream_commit" \
+            "$RUNNER_TEMP/consumer-${{ matrix.profile }}"
+
+  draft-release:
+    needs: [plan, compatibility]
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/toolchain-v1-')
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          pattern: verified-*
+          path: release
+          merge-multiple: true
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: toolchain-recipe
+          path: release-input
+      - name: Add immutable recipe inputs
+        run: |
+          set -euo pipefail
+          cp release-input/recipe.json release/toolchain-recipe-v1.json
+          cp "$SOURCE_LOCK" release/
+          cp "$PROFILES" release/
+          cp toolchains/toolchain-manifest-v1.schema.json release/
+          cp toolchains/tree-digest-v1.fixture.json release/
+      - name: Generate release index and checksums
+        run: |
+          set -euo pipefail
+          python3 scripts/toolchain/producer.py index \
+            --directory release \
+            --base-url "https://github.com/$GITHUB_REPOSITORY/releases/download/$GITHUB_REF_NAME" \
+            --require-complete-v1
+      - name: Attest checksummed release files
+        id: provenance
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373
+        with:
+          subject-checksums: release/SHA256SUMS
+      - name: Include provenance bundle and refresh checksums
+        env:
+          PROVENANCE_BUNDLE: ${{ steps.provenance.outputs.bundle-path }}
+        run: |
+          set -euo pipefail
+          cp "$PROVENANCE_BUNDLE" release/toolchain-provenance.sigstore.json
+          python3 scripts/toolchain/producer.py index \
+            --directory release \
+            --base-url "https://github.com/$GITHUB_REPOSITORY/releases/download/$GITHUB_REF_NAME" \
+            --require-complete-v1
+      - name: Create immutable draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            echo "release already exists; refusing to replace assets" >&2
+            exit 1
+          fi
+          gh release create "$GITHUB_REF_NAME" \
+            --verify-tag \
+            --draft \
+            --title "AROS-NG deterministic toolchains $GITHUB_REF_NAME" \
+            --notes "Built twice, byte-compared, relocation-tested, and verified against the pinned upstream AROS commit. This release remains a draft for human promotion." \
+            release/*
