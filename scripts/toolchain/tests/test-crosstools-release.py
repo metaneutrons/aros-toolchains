@@ -130,6 +130,9 @@ def main() -> None:
             parse_meta_rules(generated_atomic, variables),
             parse_meta_rules(SOURCE_ROOT / "compiler" / "include" / "mmakefile.src", variables),
             parse_meta_rules(SOURCE_ROOT / "compiler" / "startup" / "mmakefile.src", variables),
+            parse_meta_rules(SOURCE_ROOT / "compiler" / "arossupport" / "mmakefile.src", variables),
+            parse_meta_rules(SOURCE_ROOT / "compiler" / "alib" / "mmakefile.src", variables),
+            parse_meta_rules(SOURCE_ROOT / "compiler" / "autoinit" / "mmakefile.src", variables),
         )
 
     # The producer aggregate never uses the regular generic CPU aggregate.
@@ -161,16 +164,98 @@ def main() -> None:
     startup_dependencies = set(rules["linklibs-startup"])
     require_contains(startup_dependencies, "kernel-dos-includes", "startup linklib")
 
-    # The generated release CMake targets use only setup/includes, whereas the
-    # upstream target remains broad.  This catches accidental macro-default
-    # regressions in config/make-cmake.tmpl.
+    # Both Arossupport archives compile the same sources. Keep their exact core
+    # header closure behind one barrier: the normal build still reaches broad
+    # `includes` through sdk-includes-0, while release mode must not reach Ports.
+    for target in ("linklibs-arossupport", "linklibs-arossupport32"):
+        require_contains(
+            rules[target], "linklibs-arossupport-includes", f"{target} header barrier"
+        )
+    arossupport_headers = set(rules["linklibs-arossupport-includes"])
+    assert arossupport_headers == {
+        "sdk-includes-1",
+        "compiler-stdc-includes",
+        "kernel-kernel-includes",
+        "kernel-dos-includes",
+        "kernel-graphics-includes",
+    }, arossupport_headers
+    if "ports-includes" in trace(rules, "linklibs-arossupport32"):
+        raise AssertionError("release Arossupport trace reaches ports-includes")
+
+    # libamiga is intentionally broad, but its source inventory names only
+    # AROS-owned SDK APIs. Model that closure explicitly for release mode so
+    # the ordinary build retains `includes` without fetching Ports here.
+    for target in ("linklibs-amiga", "linklibs-amiga32"):
+        require_contains(rules[target], "linklibs-amiga-includes", f"{target} header barrier")
+    amiga_headers = set(rules["linklibs-amiga-includes"])
+    assert "sdk-includes-1" in amiga_headers
+    assert "includes" not in amiga_headers
+    assert "ports-includes" not in amiga_headers
+    for required in {
+        "compiler-stdc-includes",
+        "kernel-aros-includes",
+        "kernel-dos-includes",
+        "kernel-exec-includes",
+        "kernel-graphics-includes",
+        "kernel-intuition-includes",
+        "kernel-utility-includes",
+        "workbench-libs-amigaguide-includes",
+        "workbench-libs-asl-includes",
+        "workbench-libs-bullet-includes",
+        "workbench-libs-cgfx-includes",
+        "workbench-libs-commodities-includes",
+        "workbench-libs-datatypes-includes",
+        "workbench-libs-gadtools-includes",
+        "workbench-libs-icon-includes",
+        "workbench-libs-locale-includes",
+        "workbench-libs-rexxsyslib-includes",
+        "workbench-libs-workbench-includes",
+    }:
+        require_contains(amiga_headers, required, "libamiga release headers")
+
+    # autoinit is also part of compiler-rt's runtime link closure. Both ABI
+    # variants need the same owned SDK headers without reopening global
+    # `includes` (and therefore Ports) during a release build.
+    for target in ("linklibs-autoinit", "linklibs-autoinit32"):
+        require_contains(rules[target], "linklibs-autoinit-includes", f"{target} header barrier")
+        require_contains(rules[target], "linklibs-autoinit-autofile", f"{target} generated archive list")
+    autoinit_headers = set(rules["linklibs-autoinit-includes"])
+    assert autoinit_headers == {
+        "sdk-includes-1",
+        "compiler-stdc-includes",
+        "kernel-aros-includes",
+        "kernel-dos-includes",
+        "kernel-exec-includes",
+        "kernel-expansion-includes",
+        "kernel-intuition-includes",
+        "workbench-libs-workbench-includes",
+    }, autoinit_headers
+    if "ports-includes" in trace(rules, "linklibs-autoinit"):
+        raise AssertionError("release autoinit trace reaches ports-includes")
+
+    # Release CMake targets use the closed SDK header set. The macro's ordinary
+    # default is global `includes`, so every release invocation must override
+    # it explicitly while the upstream target remains broad.
     release_compiler_rt = set(rules["crosstools-compiler-rt-release"])
     if "core-linklibs" in release_compiler_rt:
         raise AssertionError("release compiler-rt target reaches core-linklibs")
-    require_contains(release_compiler_rt, "includes", "release compiler-rt target")
+    require_contains(release_compiler_rt, "sdk-includes-1", "release compiler-rt target")
+    if "includes" in release_compiler_rt:
+        raise AssertionError("release compiler-rt target reaches global includes")
     require_contains(release_compiler_rt, "tools-crosstools-runtime-linklibs", "release compiler-rt target")
     normal_compiler_rt = set(rules["crosstools-compiler-rt"])
     require_contains(normal_compiler_rt, "core-linklibs", "normal compiler-rt target")
+    require_contains(normal_compiler_rt, "includes", "normal compiler-rt target")
+
+    for target in {
+        "crosstools-compiler-rt32-release",
+        "crosstools-libunwind-release",
+        "crosstools-llvm-runtimes-release",
+    }:
+        dependencies = set(rules[target])
+        require_contains(dependencies, "sdk-includes-1", target)
+        if "includes" in dependencies:
+            raise AssertionError(f"{target} reaches global includes")
 
     # The CMake configure node itself must wait for the installed C++ runtime;
     # otherwise parallel make can configure/link libunwind too early.
@@ -193,6 +278,19 @@ def main() -> None:
     libcxxabi_options_end = llvm_source.index("LLVM_LIBCXX_CMAKEOPTIONS :=", libcxxabi_options_start)
     libcxxabi_options = llvm_source[libcxxabi_options_start:libcxxabi_options_end]
     assert "-DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY" in libcxxabi_options
+
+    # Current CMake rejects host LLVM's imported SHARED targets after loading a
+    # no-shared target platform (CMP0164). The scoped project include permits
+    # those imports only in LLVM runtime configurations; target outputs stay
+    # explicitly static.
+    assert (
+        '-DCMAKE_PROJECT_INCLUDE="$(SRCDIR)/config/cmake/AROSImportedHostTargets.cmake"'
+        in llvm_source
+    )
+    imported_targets_policy = (
+        SOURCE_ROOT / "config" / "cmake" / "AROSImportedHostTargets.cmake"
+    ).read_text(encoding="utf-8")
+    assert "set_property(GLOBAL PROPERTY TARGET_SUPPORTS_SHARED_LIBS TRUE)" in imported_targets_policy
 
     # Keep the locked LLVM patch consumable by the host's patch utility. The
     # X86 include hunk needs ordinary leading context on macOS; a malformed
