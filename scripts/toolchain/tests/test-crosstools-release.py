@@ -114,6 +114,7 @@ def main() -> None:
         "CPU": "x86_64",
         "FAMILY": "standalone",
         "AROS_TARGET_VARIANT": "",
+        "AROS_TOOLCHAIN_RELEASE": "1",
     }
 
     with tempfile.TemporaryDirectory(prefix="aros-crosstools-release-test.") as temporary:
@@ -128,6 +129,7 @@ def main() -> None:
             parse_meta_rules(generated_llvm, variables),
             parse_meta_rules(generated_atomic, variables),
             parse_meta_rules(SOURCE_ROOT / "compiler" / "include" / "mmakefile.src", variables),
+            parse_meta_rules(SOURCE_ROOT / "compiler" / "startup" / "mmakefile.src", variables),
         )
 
     # The producer aggregate never uses the regular generic CPU aggregate.
@@ -151,6 +153,13 @@ def main() -> None:
     }, include_dependencies
     if "ports-includes" in trace(rules, "linklibs-atomic"):
         raise AssertionError("release linklib trace reaches ports-includes")
+
+    # startup.c and detach.c include proto/dos.h directly. Ordinary builds used
+    # to obtain that generated header accidentally through the broad `includes`
+    # aggregate, while the deliberately narrow release SDK exposed the missing
+    # owner dependency only after LLVM had finished building.
+    startup_dependencies = set(rules["linklibs-startup"])
+    require_contains(startup_dependencies, "kernel-dos-includes", "startup linklib")
 
     # The generated release CMake targets use only setup/includes, whereas the
     # upstream target remains broad.  This catches accidental macro-default
