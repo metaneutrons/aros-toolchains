@@ -51,6 +51,18 @@ REQUIRED_TOOLS = (
     "aros-collect",
     "collect-aros",
 )
+REQUIRED_CXX_HEADERS = (
+    "algorithm",
+    "cerrno",
+    "cinttypes",
+    "cstddef",
+    "cstdint",
+    "deque",
+    "memory",
+    "string",
+    "system_error",
+    "vector",
+)
 COMPLETE_V1_MATRIX = {
     (host, profile)
     for host in SUPPORTED_HOSTS
@@ -370,9 +382,9 @@ def required_paths(llvm_version: str, target_profile: str) -> list[str]:
     paths = [f"bin/{tool}" for tool in REQUIRED_TOOLS]
     if target_profile == "pc-x86_64":
         paths.append("bin/collect-aros32")
+    paths.extend(f"include/c++/v1/{header}" for header in REQUIRED_CXX_HEADERS)
     paths.extend(
         [
-            "include/c++/v1/vector",
             "lib/libc++.a",
             "lib/libc++abi.a",
             "lib/libunwind.a",
@@ -821,8 +833,10 @@ def run_probe(
         [str(clangxx), *common, "-nostdinc++", str(fixtures / "smoke.cpp"), "-o", str(cxx_object)],
         check=True,
     )
-    if not (root / "include" / "c++" / "v1" / "vector").is_file():
-        fail("libc++ header include/c++/v1/vector is absent")
+    for header in REQUIRED_CXX_HEADERS:
+        path = root / "include" / "c++" / "v1" / header
+        if not path.is_file():
+            fail(f"libc++ header include/c++/v1/{header} is absent")
     for library in ("libc++.a", "libc++abi.a", "libunwind.a"):
         if not (root / "lib" / library).is_file():
             fail(f"target runtime is absent: lib/{library}")

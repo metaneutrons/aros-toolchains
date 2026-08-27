@@ -173,7 +173,12 @@ make_fixture() {
     done
     ln -s aros-collect "$root/bin/collect-aros"
     ln -s aros-collect "$root/bin/collect-aros32"
-    printf '%s\n' '// deterministic producer fixture' > "$root/include/c++/v1/vector"
+    local header
+    for header in algorithm cerrno cinttypes cstddef cstdint deque memory \
+        string system_error vector; do
+        printf '%s\n' '// deterministic producer fixture' \
+            > "$root/include/c++/v1/$header"
+    done
     local library
     for library in libc++.a libc++abi.a libunwind.a; do
         printf 'fixture %s\n' "$library" > "$root/lib/$library"
@@ -280,7 +285,7 @@ assert manifest["target_triple"] == "x86_64-unknown-aros"
 
 # Known-answer digest for the normalized filesystem fixture. Together with
 # toolchains/tree-digest-v1.fixture.json this pins the documented algorithm.
-assert manifest["tree_sha256"] == "ebc8e4c29bf8eb78c54be3f719dfdcebf86008ebfb809f43bcc46cec830d8179"
+assert manifest["tree_sha256"] == "da14b04095b9ec76398632f4f2947a995ee126b37b9716f75f6da6e641e36fba"
 
 spdx = json.loads((directory / f"{asset}.spdx.json").read_text())
 assert spdx["documentDescribes"] == ["SPDXRef-Package-AROSToolchain"]
@@ -307,6 +312,11 @@ assert artifact["strip_components"] == 1
 assert "toolchain-manifest.json" in artifact["required_paths"]
 for required in ("bin/aros-collect", "bin/collect-aros", "bin/collect-aros32"):
     assert required in artifact["required_paths"]
+for header in (
+    "algorithm", "cerrno", "cinttypes", "cstddef", "cstdint", "deque",
+    "memory", "string", "system_error", "vector",
+):
+    assert f"include/c++/v1/{header}" in artifact["required_paths"]
 checksums = {}
 for line in (directory / "SHA256SUMS").read_text().splitlines():
     checksum, name = line.split("  ", 1)
