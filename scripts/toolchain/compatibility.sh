@@ -143,17 +143,17 @@ if [[ "$profile" == pc-x86_64 ]]; then
 fi
 for triple in "${standalone_triples[@]}"; do
     suffix=${triple%%-*}
-    target_flags=()
+    target_float_flag=
     if [[ "$float_abi" == hard && "$triple" == arm-* ]]; then
-        target_flags+=("-mfloat-abi=hard")
+        target_float_flag=-mfloat-abi=hard
     fi
     PATH=/nonexistent "$toolchain/bin/clang" \
-        --target="$triple" --sysroot="$developer" "${target_flags[@]}" \
+        --target="$triple" --sysroot="$developer" ${target_float_flag:+"$target_float_flag"} \
         -ffreestanding -fno-ident -fno-unwind-tables -fno-asynchronous-unwind-tables \
         -g0 -nostdlib -nostartfiles \
         "$script_dir/fixtures/smoke.c" -o "$work_dir/standalone/c-$suffix.o"
     PATH=/nonexistent "$toolchain/bin/clang++" \
-        --target="$triple" --sysroot="$developer" "${target_flags[@]}" \
+        --target="$triple" --sysroot="$developer" ${target_float_flag:+"$target_float_flag"} \
         -ffreestanding -fno-exceptions -fno-ident -fno-unwind-tables \
         -fno-asynchronous-unwind-tables -g0 -nostdlib -nostartfiles -nostdinc++ \
         "$script_dir/fixtures/smoke.cpp" -o "$work_dir/standalone/cxx-$suffix.o"
