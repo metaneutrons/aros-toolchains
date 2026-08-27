@@ -26,6 +26,8 @@ grep -Fq -- 'profile["upstream_output_target"]' "$source_root/scripts/toolchain/
 grep -Fq -- 'bin/$upstream_output_target/AROS/Developer' "$source_root/scripts/toolchain/compatibility.sh"
 grep -Fq -- 'host-python-upstream-make-$upstream_target' "$source_root/scripts/toolchain/compatibility.sh"
 grep -Fq -- 'PATH=/nonexistent "$toolchain/bin/clang"' "$source_root/scripts/toolchain/compatibility.sh"
+grep -Fq -- '-fno-unwind-tables -fno-asynchronous-unwind-tables' "$source_root/scripts/toolchain/compatibility.sh"
+grep -Fq -- '-ffreestanding -fno-exceptions' "$source_root/scripts/toolchain/compatibility.sh"
 grep -Fq -- 'env ac_cv_prog_cc_c23=' "$source_root/scripts/toolchain/compatibility.sh"
 grep -Fq -- 'AROS_TOOLCHAIN_SOURCE_CACHE' "$source_root/.github/workflows/toolchain-release.yml"
 grep -Fq -- 'submodules: recursive' "$source_root/.github/workflows/toolchain-release.yml"

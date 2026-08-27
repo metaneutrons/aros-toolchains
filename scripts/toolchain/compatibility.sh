@@ -149,11 +149,13 @@ for triple in "${standalone_triples[@]}"; do
     fi
     PATH=/nonexistent "$toolchain/bin/clang" \
         --target="$triple" --sysroot="$developer" "${target_flags[@]}" \
-        -ffreestanding -fno-ident -g0 -nostdlib -nostartfiles \
+        -ffreestanding -fno-ident -fno-unwind-tables -fno-asynchronous-unwind-tables \
+        -g0 -nostdlib -nostartfiles \
         "$script_dir/fixtures/smoke.c" -o "$work_dir/standalone/c-$suffix.o"
     PATH=/nonexistent "$toolchain/bin/clang++" \
         --target="$triple" --sysroot="$developer" "${target_flags[@]}" \
-        -ffreestanding -fno-ident -g0 -nostdlib -nostartfiles -nostdinc++ \
+        -ffreestanding -fno-exceptions -fno-ident -fno-unwind-tables \
+        -fno-asynchronous-unwind-tables -g0 -nostdlib -nostartfiles -nostdinc++ \
         "$script_dir/fixtures/smoke.cpp" -o "$work_dir/standalone/cxx-$suffix.o"
     "$toolchain/bin/llvm-nm" "$work_dir/standalone/c-$suffix.o" \
         | grep -q '__TOOLCHAIN_LIST__$'
