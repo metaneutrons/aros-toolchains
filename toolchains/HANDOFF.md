@@ -1,59 +1,48 @@
 # Toolchain release handoff
 
-Status date: 2026-08-26
+Status date: 2026-08-27
 
-## Collector-inclusive candidate at current HEAD
+## Complete collector-inclusive reproducibility matrix
 
-Commits `15091fbe91`, `07f7d4080b`, `41f511764a`, and `ead40df509` add the
-relocatable Rust collector and make it a required release capability.
-`collect-aros` and, for `pc-x86_64`, `collect-aros32` are relative aliases of
-packaged `aros-collect`; sibling LLVM tools and the caller's absolute
-`--sysroot` are the only tool/library roots used at runtime. Upstream's initial
-library-free compiler probe may omit the sysroot; any collector-discovered
-target input then fails with an explicit sysroot diagnostic. The classic C
-collector remains untouched for the normal upstream-compatible build path.
+GitHub Actions producer run
+[`33020916404`](https://github.com/metaneutrons/AROS-NG/actions/runs/33020916404)
+built every host/profile lane twice from one immutable identity:
 
-The focused Rust suite has 28 collector and 106 CLI tests. Its failure,
-response-file, lib/lib32, atomic-replacement and poisoned-environment cases
-pass, as do the producer contract, release CMake and crosstools-release tests.
-Two offline macOS release builds of the final remapped Rust collector are
-byte-identical at SHA-256
-`db82ccc283188295ac3c5333d615d4b8a49e7e54eca14ad1e2868ec1ccdd95e3`.
-The Linux producer exposed absolute Cargo-vendor source locations in the
-otherwise stripped binary. `ead40df509` remaps that verified cache to a fixed
-path and adds the whole source cache to the package's forbidden-prefix scan.
-Diagnostic packages with that contract pass package relocation and the full
-compatibility path on macOS ARM64 and Linux x86_64: AROS-NG configure, vanilla
-upstream `includes` and `linklibs`, and four poisoned-`PATH` C/C++ final links
-across x86-64 and i386.
+```text
+source commit: a7add2698cca26115225a0ff65249513570ab443
+source tree:   9b9188ca2360fc2522fbb9d4487a61e9cc2ba469
+recipe sha256: 38a7e453b46659dbd8335dccad99d73d3898660db99f031330a071100dc03c77
+source epoch:  1787784543
+```
 
-Fresh formal `pc-x86_64` producer builds from exact commit
-`ead40df509ad8a93c50dbe86377e54811b709a9b`, Git tree
-`beb1b7dd439544c925f69d829bee7cb3f6f89ff4`, and recipe
-`b89bf41c9a00467ddd695eaf9843df5773b1831a1cb1ddc9c789721e53a2c3d4`
-pass on both available hosts:
+All 24 independent producers completed, and all 12 formal A/B comparisons
+accepted byte-identical archives. The resulting archive SHA-256 values are:
 
-- macOS ARM64 archive SHA-256
-  `f283b9aa4176ce5f81992883c0e741e7b112cb008b55bda7da2ad2468511c4a7`,
-  payload tree
-  `fd78489fd281202670dd8af960fb5c9483ac272c055c92125f3c67b23c2cbeb7`;
-  producer root `/tmp/aros-collector-macos-ead.RUbG4j`, compatibility root
-  `/tmp/aros-collector-macos-ead-compat.W4TJWd`.
-- Linux x86-64 archive SHA-256
-  `752697c03f43add2a6f3d68b85889606d2241121840dae1a615c8d60047a4284`,
-  payload tree
-  `fdf72fcb45064d662f2157b35bb3e14b09dba93cf2320d7f99e4b4e51070847c`;
-  producer root `/home/fabian/aros-collector-41f-snapshot.CaMROc`,
-  compatibility root
-  `/home/fabian/aros-collector-linux-ead-compat.1aRH5O/run`.
+| Host | `pc-x86_64` | `arm-raspi` | `rpi-aarch64` |
+| --- | --- | --- | --- |
+| `linux-x86_64` | `0f126072ef254aae2084647b21673006ed244c646564abe50a31f8405fe4f281` | `eafff4f329a6bc1161e5072c1aef5908a4f30b9d8b684078efed5555640ad211` | `b4583f282d1219628c09a6fa032c4647bcc414591933a0ebb022eafe4dfac251` |
+| `linux-aarch64` | `e15493f7b63edb36f80e75cd28d6ab9253bf848d2992ae557b0caedc9b9e40c7` | `67d1d13b38c1b34f0e8e362ab040dc932e50cb8340ef782a6e69a26cfda02fbc` | `b89f4c8b84575091c54ecaa20e7a3fa847d92d905855f5a61ca5ae3de9647a6d` |
+| `macos-x86_64` | `f59a412edc2845b71b88f4a5064d762d4ac007e588be8c9ff53fb326338b032c` | `774f94e2345f72c93d2d1b46a9add3dbe7577234d77782345794b78cbccbc730` | `e80e54bba62bf360e135ea7fb57413aa46f2391210a4954638df6148e53eacd1` |
+| `macos-aarch64` | `f9446e2440f34dd330b3f7e44a571504d21ed576ae49e9cbeca239ebdc782f1a` | `6b6bed4e5347a0d12991d396a6bea719cf80fc70b29dbd264362bb1a689f63e8` | `691776ad8e83e1926a0eb8eb295d6e0d445e984ab063b330bdde0114a76d105f` |
 
-Each formal archive passes manifest/file verification, the two-root relocation
-probe, AROS-NG configuration, vanilla upstream `includes` and `linklibs` at
-commit `6e196552834ec338072dda8675cf0c3f1d2df0d6`, and four standalone
-x86-64/i386 C/C++ final links with a poisoned `PATH`. These are one clean
-A-build per host. They do not prove current full-archive determinism until a
-second independent build matches on each host, and they do not cover the ARM
-or AArch64 profiles. The publication gate therefore remains closed.
+Two nondeterminism defects were found and closed before this run. LLVM 11's
+Clang attribute emitter ordered `Record` pointers by address; the AROS patch
+now orders them by stable record name. Runner observations such as the GitHub
+image version are evidence, not payload identity, and are retained in separate
+`build-observation-*` artifacts instead of the byte-compared manifest. This
+does not hide environmental differences: it separates the stable build
+contract from the observed runner instance.
+
+The original run's archive production and comparisons are authoritative. Its
+first consumer phase exposed compatibility-harness defects after comparison,
+not differing archives. Workflow
+[`toolchain-compatibility-replay.yml`](../.github/workflows/toolchain-compatibility-replay.yml)
+reuses those exact `verified-*` artifacts so consumer fixes can be proved
+without rebuilding or replacing them. Replay run
+[`33033043062`](https://github.com/metaneutrons/AROS-NG/actions/runs/33033043062),
+at consumer fix commit `30fe824af7`, passed all 12 lanes: two-root relocation,
+AROS-NG configuration, vanilla upstream `includes` and `linklibs`, and
+standalone C/C++ collector links.
 
 ## Previous pre-collector reproducibility baseline
 
@@ -163,7 +152,7 @@ locked Python environments distinct work roots, and neutralizes Autoconf
 2.73's added `-std=gnu23` suffix for this older upstream configure script.
 It does not patch the upstream checkout.
 
-## Evidence and next completion sequence
+## Historical local evidence
 
 The completed local logs remain available without changing either build:
 
@@ -174,8 +163,7 @@ ssh cachy 'tail -40 /home/fabian/aros-toolchain-9f84-linux.DxAgQa/a/build.log'
 ssh cachy 'tail -40 /home/fabian/aros-toolchain-9f84-linux.DxAgQa/b/build.log'
 ```
 
-For every remaining host/profile lane, compare its two fresh archives into a
-new output directory:
+The equivalent local comparison command is:
 
 ```bash
 python3 scripts/toolchain/producer.py compare \
@@ -184,22 +172,20 @@ python3 scripts/toolchain/producer.py compare \
   --output-dir <new-verified-directory>
 ```
 
-Then run `scripts/toolchain/compatibility.sh` on that compared archive for the
-matching host. The script verifies the package first, configures a fresh
-AROS-NG consumer and builds the pinned upstream `includes` and `linklibs`
-targets. A reused compatibility work directory is rejected. CI checkouts must
-include recursive submodules; commit `db674e3040` makes that explicit in the
-release workflow after the clean candidate snapshot exposed the dependency.
+`scripts/toolchain/compatibility.sh` then verifies the package, checks two-root
+relocation, configures a fresh AROS-NG consumer and builds the pinned upstream
+`includes` and `linklibs` targets. A reused compatibility work directory is
+rejected. CI checkouts include recursive submodules.
 
-## Scope that remains open
+## Remaining release work
 
-- A green local result closes only macOS ARM64 and Linux x86_64 for the
-  `pc-x86_64` profile. The release workflow still requires two byte-identical
-  copies for every supported host/profile pair: four hosts times
-  `pc-x86_64`, `arm-raspi` and `rpi-aarch64`.
+- The complete four-host by three-profile v1 matrix is reproducible. Promotion
+  still requires a new tag run, review of the draft release, provenance,
+  SBOMs and generated index, followed by publication without replacing assets.
 - The packaged collector now supports the tested standalone C/C++ final-link
   shapes without `PATH`, `COMPILER_PATH` or compiled-in producer paths. A
   complete application-development experience still needs a separately
   versioned Developer SDK/sysroot artifact and CLI lifecycle commands.
-- Publication must remain fail-closed: no release/index publication until the
-  workflow's complete-matrix gate has accepted all 12 host/profile lanes.
+- The manual proof run is not itself a release, and the stale exploratory tag
+  `toolchain-v1-20260826-rc1` predates the completed matrix. Do not promote or
+  retarget it; create a new release tag from the reviewed final commit.

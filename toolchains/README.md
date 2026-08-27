@@ -82,6 +82,23 @@ paths.
 The v1 producer covers Linux x86_64/aarch64 and macOS x86_64/aarch64 hosts for
 `pc-x86_64`, `arm-raspi` (`raspi-armhf` upstream), and `rpi-aarch64`.
 
+## Current reproducibility proof
+
+Manual GitHub Actions run
+[`33020916404`](https://github.com/metaneutrons/AROS-NG/actions/runs/33020916404)
+completed all 24 independent producers and all 12 A/B comparisons for the
+four-host by three-profile matrix. Every pair is byte-identical. The exact
+commit, tree, recipe, archive SHA-256 table and the successful 12-lane consumer
+replay are recorded in [HANDOFF.md](HANDOFF.md). This proves the release recipe
+but does not publish artifacts: a new tag must still pass the same fail-closed
+gates and produce a reviewed draft release.
+
+Observed runner details are deliberately retained beside, rather than inside,
+the stable byte-compared build contract. Each producer uploads a
+`build-observation-*` artifact with the actual runner image and tool versions.
+This keeps environmental evidence without making unrelated runner image
+rollouts alter an otherwise identical archive.
+
 ## Locked CMake C++ consumer contract
 
 A release prefix is a compiler/runtime distribution, not a copy of an AROS
