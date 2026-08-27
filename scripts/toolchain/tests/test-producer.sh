@@ -22,6 +22,8 @@ grep -Fq -- '--target-dir "$work_dir/rust-target"' "$source_root/scripts/toolcha
 grep -Fq -- '-DAROS_RUST_TOOLS_DIR="$work_dir/rust-target/release"' "$source_root/scripts/toolchain/compatibility.sh"
 grep -Fq -- '-DAROS_ENABLE_MMU=ON' "$source_root/scripts/toolchain/compatibility.sh"
 grep -Fq -- 'for upstream_target in includes linklibs' "$source_root/scripts/toolchain/compatibility.sh"
+grep -Fq -- 'profile["upstream_output_target"]' "$source_root/scripts/toolchain/compatibility.sh"
+grep -Fq -- 'bin/$upstream_output_target/AROS/Developer' "$source_root/scripts/toolchain/compatibility.sh"
 grep -Fq -- 'host-python-upstream-make-$upstream_target' "$source_root/scripts/toolchain/compatibility.sh"
 grep -Fq -- 'PATH=/nonexistent "$toolchain/bin/clang"' "$source_root/scripts/toolchain/compatibility.sh"
 grep -Fq -- 'env ac_cv_prog_cc_c23=' "$source_root/scripts/toolchain/compatibility.sh"
@@ -41,8 +43,26 @@ if workflow.count("netpbm") != 4:
     raise SystemExit("all producer and consumer runner families must install netpbm")
 if workflow.count("libpng-dev") != 2 or workflow.count("gnu-sed") != 2:
     raise SystemExit("Linux libpng headers and macOS GNU sed must cover producer and consumer jobs")
+consumer_start = workflow.index("      - name: Install consumer prerequisites (macOS)")
+consumer_end = workflow.index("      - name: Two-root relocation", consumer_start)
+macos_consumer = workflow[consumer_start:consumer_end]
+for formula in ("coreutils", "gettext", "lld", "llvm", "pkgconf", "python@3.14", "texinfo"):
+    if formula not in macos_consumer:
+        raise SystemExit(f"macOS consumer lost audited GRUB prerequisite {formula}")
 if "name: build-observation-${{ matrix.host }}-${{ matrix.profile }}-${{ matrix.copy }}" not in workflow:
     raise SystemExit("each producer must retain its observed environment outside the release archive")
+PY
+python3 - "$source_root/.github/workflows/toolchain-compatibility-replay.yml" <<'PY'
+from pathlib import Path
+import sys
+
+workflow = Path(sys.argv[1]).read_text(encoding="utf-8")
+if workflow.count("run-id: ${{ inputs.source_run_id }}") != 2:
+    raise SystemExit("compatibility replay must source both verified archives and locked sources from one run")
+if workflow.count("github-token: ${{ github.token }}") != 2:
+    raise SystemExit("cross-run artifact downloads require the scoped GitHub token")
+if workflow.count("profile:") != 12:
+    raise SystemExit("compatibility replay must cover the complete twelve-lane matrix")
 PY
 python3 - "$source_root/scripts/toolchain/build-release.sh" <<'PY'
 from pathlib import Path

@@ -50,6 +50,7 @@ if len(matches) != 1:
 profile = matches[0]
 print("|".join([
     profile["configure_target"],
+    profile["upstream_output_target"],
     profile["cpu"],
     profile["platform"],
     profile.get("float_abi", ""),
@@ -57,7 +58,7 @@ print("|".join([
 ]))
 PY
 )
-IFS='|' read -r configure_target target_cpu target_platform float_abi target_triple <<< "$profile_values"
+IFS='|' read -r configure_target upstream_output_target target_cpu target_platform float_abi target_triple <<< "$profile_values"
 
 if [[ -e "$work_dir" ]]; then
     echo "compatibility probe refuses a reused work directory: $work_dir" >&2
@@ -134,7 +135,7 @@ done
 # beside itself, and the collector must find its sibling ld.lld/llvm-strip and
 # all target inputs through the explicit Developer sysroot.
 toolchain="$work_dir/extracted/toolchain"
-developer="$work_dir/upstream-build/bin/$configure_target/AROS/Developer"
+developer="$work_dir/upstream-build/bin/$upstream_output_target/AROS/Developer"
 mkdir -p "$work_dir/standalone"
 standalone_triples=("$target_triple")
 if [[ "$profile" == pc-x86_64 ]]; then

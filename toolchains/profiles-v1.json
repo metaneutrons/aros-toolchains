@@ -5,6 +5,7 @@
     {
       "name": "pc-x86_64",
       "configure_target": "pc-x86_64",
+      "upstream_output_target": "pc-x86_64",
       "target_triple": "x86_64-unknown-aros",
       "cpu": "x86_64",
       "platform": "pc",
@@ -14,6 +15,7 @@
     {
       "name": "arm-raspi",
       "configure_target": "raspi-armhf",
+      "upstream_output_target": "raspi-arm",
       "target_triple": "arm-unknown-aros",
       "cpu": "arm",
       "platform": "raspi",
@@ -23,6 +25,7 @@
     {
       "name": "rpi-aarch64",
       "configure_target": "raspi-aarch64",
+      "upstream_output_target": "raspi-aarch64",
       "target_triple": "aarch64-unknown-aros",
       "cpu": "aarch64",
       "platform": "raspi",
