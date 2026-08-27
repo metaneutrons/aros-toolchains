@@ -1,6 +1,23 @@
 # Toolchain release handoff
 
-Status date: 2026-08-27
+Status date: 2026-08-28
+
+## Consumer C++ header contract
+
+The release payload contract now checks a representative libc++ surface, not
+only `vector`: `algorithm`, `cerrno`, `cinttypes`, `cstddef`, `cstdint`,
+`deque`, `memory`, `string`, `system_error` and `vector` must all exist. The
+producer's embedded index, the AROS-NG CMake toolchain and `aros` legacy-prefix
+discovery reject an incomplete prefix consistently. Existing run
+`33020916404` artifacts satisfy the stricter contract unchanged.
+
+Those exact macOS ARM64 archives build the real
+`datatypes-heic-linklibs-de265` C++ target on `pc-x86_64`, `arm-raspi` and
+`rpi-aarch64`. The accompanying AROS SDK fixes make `max_align_t` and
+`offsetof` compatible with the Clang/GCC resource headers in either include
+order and add the POSIX robust-mutex errno constants required by libc++
+`system_error`. `cmake/tests/CxxRuntimeHeaderTest.cmake` preserves that SDK
+side of the contract.
 
 ## Complete collector-inclusive reproducibility matrix
 
@@ -127,6 +144,7 @@ The following contracts pass on the current branch:
 
 ```text
 cmake -P cmake/tests/ReleaseToolchainTest.cmake
+cmake -P cmake/tests/CxxRuntimeHeaderTest.cmake
 python3 -B scripts/toolchain/tests/test-crosstools-release.py
 scripts/toolchain/tests/test-producer.sh
 git diff --check
