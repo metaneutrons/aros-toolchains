@@ -82,6 +82,25 @@ paths.
 The v1 producer covers Linux x86_64/aarch64 and macOS x86_64/aarch64 hosts for
 `pc-x86_64`, `arm-raspi` (`raspi-armhf` upstream), and `rpi-aarch64`.
 
+## Product qualification before publication
+
+Until the reviewed release index has been promoted into
+`aros-toolchains.lock.toml`, product CI must not silently fall back to a host
+compiler or pretend that an unpublished toolchain is downloadable. Manually
+dispatch `ci-build-matrix.yml` with the ID of one completed producer run whose
+`verified-*` artifacts are still available. The workflow downloads the exact
+Linux x86_64 and macOS ARM64 archive for each of the three profiles, extracts
+it into an isolated prefix, and runs the public `aros build --toolchain-dir`
+path from a clean product tree. A missing run ID is rejected for manual
+dispatches; push and pull-request gates omit product builds while the release
+lock remains disabled.
+
+The run ID is an explicit evidence reference, not a package pin. Producer
+artifacts expire and are never a stable distribution channel. Once the v1
+release is published and all final URLs and digests have been promoted into
+the lock, the regular product matrix should consume that release through the
+normal `aros build` resolution path without a producer-run input.
+
 ## Current reproducibility proof
 
 Manual GitHub Actions run

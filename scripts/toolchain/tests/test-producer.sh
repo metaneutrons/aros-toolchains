@@ -76,6 +76,35 @@ if workflow.count("profile:") != 12:
 if workflow.count("bash scripts/ci/install-build-prerequisites.sh") != 1:
     raise SystemExit("compatibility replay must use the shared host prerequisite contract")
 PY
+python3 - "$source_root/.github/workflows/ci-build-matrix.yml" <<'PY'
+from pathlib import Path
+import sys
+
+workflow = Path(sys.argv[1]).read_text(encoding="utf-8")
+if "toolchain_source_run_id:" not in workflow:
+    raise SystemExit("product qualification must identify one completed producer run")
+input_start = workflow.index("      toolchain_source_run_id:")
+input_end = workflow.index("  push:", input_start)
+if "        required: true" not in workflow[input_start:input_end]:
+    raise SystemExit("manual product qualification must require an explicit producer run")
+if workflow.count("run-id: ${{ inputs.toolchain_source_run_id }}") != 1:
+    raise SystemExit("product qualification must source its toolchain from the declared producer run")
+if workflow.count("github-token: ${{ github.token }}") != 1:
+    raise SystemExit("cross-run product qualification requires the scoped GitHub token")
+if "if: inputs.toolchain_source_run_id != ''" not in workflow:
+    raise SystemExit("unpublished toolchains must not run as an implicit push product build")
+for host, runner in (("linux-x86_64", "ubuntu-24.04"), ("macos-aarch64", "macos-15")):
+    for profile in ("pc-x86_64", "arm-raspi", "rpi-aarch64"):
+        lane = f"- {{ host: {host}, runner: {runner}, preset: {profile} }}"
+        if workflow.count(lane) != 1:
+            raise SystemExit(f"product qualification lost {host}/{profile}")
+if "target/release/aros build" not in workflow:
+    raise SystemExit("product qualification must use the public aros build path")
+if "--toolchain-dir \"$RUNNER_TEMP/aros-toolchain\"" not in workflow:
+    raise SystemExit("product qualification must pass the extracted verified toolchain explicitly")
+if "cmake --preset" in workflow or "cmake --build build/" in workflow:
+    raise SystemExit("product qualification must not bypass aros-cli with host-compiler CMake calls")
+PY
 python3 - "$source_root/scripts/toolchain/build-release.sh" <<'PY'
 from pathlib import Path
 import sys
