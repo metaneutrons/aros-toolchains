@@ -69,14 +69,15 @@ tar -xJf "$archive" -C "$work_dir/extracted"
 
 # A consumer probe must exercise the generators from this checkout, not an
 # arbitrary binary left in the shared Cargo target directory by an older
-# commit. Build the three configure-time tools into the isolated probe root and
+# commit. Build the closed configure/build tools into the isolated probe root and
 # pass that root explicitly to CMake.
 cargo build --release \
     --manifest-path "$source_root/tools/aros-tools/Cargo.toml" \
     --target-dir "$work_dir/rust-target" \
     -p aros-transpiler \
     -p aros-genmodule \
-    -p aros-collect
+    -p aros-collect \
+    -p aros-fetch
 llvm_version=$(python3 - "$work_dir/extracted/toolchain/toolchain-manifest.json" <<'PY'
 import json, sys
 manifest = json.load(open(sys.argv[1], encoding="utf-8"))
