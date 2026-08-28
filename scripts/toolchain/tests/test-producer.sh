@@ -53,7 +53,7 @@ consumer_end = workflow.index("      - name: Two-root relocation", consumer_star
 consumer = workflow[consumer_start:consumer_end]
 if "bash scripts/ci/install-build-prerequisites.sh" not in consumer:
     raise SystemExit("toolchain consumers must use the shared host prerequisite contract")
-for package in ("clang", "libpng-dev", "lld", "netpbm"):
+for package in ("clang", "libpng-dev", "lld", "llvm", "netpbm"):
     if package not in prerequisites:
         raise SystemExit(f"Linux consumer lost audited build prerequisite {package}")
 for formula in ("coreutils", "gettext", "lld", "llvm", "pkgconf", "python@3.14", "texinfo"):
