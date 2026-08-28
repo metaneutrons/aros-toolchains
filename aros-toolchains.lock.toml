@@ -151,3 +151,51 @@ llvm_version = "11.0.0"
 enabled = false
 disabled_reason = "No deterministic GitHub release has been published yet"
 required_paths = ["bin/clang", "bin/clang++", "bin/ld.lld", "bin/llvm-ar", "bin/aros-collect", "bin/collect-aros", "include/c++/v1", "lib/libc++.a", "lib/libc++abi.a", "lib/libunwind.a"]
+
+[[artifacts]]
+host = "macos-aarch64"
+target_profile = "opensbi-riscv64"
+target_triple = "riscv64-unknown-aros"
+asset = "aros-toolchain-v1-llvm11.0.0-macos-aarch64-opensbi-riscv64.tar.xz"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+tree_sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+llvm_version = "11.0.0"
+enabled = false
+disabled_reason = "No deterministic GitHub release has been published yet"
+required_paths = ["bin/clang", "bin/clang++", "bin/ld.lld", "bin/llvm-ar", "bin/aros-collect", "bin/collect-aros", "include/c++/v1", "lib/libc++.a", "lib/libc++abi.a", "lib/libunwind.a"]
+
+[[artifacts]]
+host = "macos-x86_64"
+target_profile = "opensbi-riscv64"
+target_triple = "riscv64-unknown-aros"
+asset = "aros-toolchain-v1-llvm11.0.0-macos-x86_64-opensbi-riscv64.tar.xz"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+tree_sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+llvm_version = "11.0.0"
+enabled = false
+disabled_reason = "No deterministic GitHub release has been published yet"
+required_paths = ["bin/clang", "bin/clang++", "bin/ld.lld", "bin/llvm-ar", "bin/aros-collect", "bin/collect-aros", "include/c++/v1", "lib/libc++.a", "lib/libc++abi.a", "lib/libunwind.a"]
+
+[[artifacts]]
+host = "linux-x86_64"
+target_profile = "opensbi-riscv64"
+target_triple = "riscv64-unknown-aros"
+asset = "aros-toolchain-v1-llvm11.0.0-linux-x86_64-opensbi-riscv64.tar.xz"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+tree_sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+llvm_version = "11.0.0"
+enabled = false
+disabled_reason = "No deterministic GitHub release has been published yet"
+required_paths = ["bin/clang", "bin/clang++", "bin/ld.lld", "bin/llvm-ar", "bin/aros-collect", "bin/collect-aros", "include/c++/v1", "lib/libc++.a", "lib/libc++abi.a", "lib/libunwind.a"]
+
+[[artifacts]]
+host = "linux-aarch64"
+target_profile = "opensbi-riscv64"
+target_triple = "riscv64-unknown-aros"
+asset = "aros-toolchain-v1-llvm11.0.0-linux-aarch64-opensbi-riscv64.tar.xz"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+tree_sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+llvm_version = "11.0.0"
+enabled = false
+disabled_reason = "No deterministic GitHub release has been published yet"
+required_paths = ["bin/clang", "bin/clang++", "bin/ld.lld", "bin/llvm-ar", "bin/aros-collect", "bin/collect-aros", "include/c++/v1", "lib/libc++.a", "lib/libc++abi.a", "lib/libunwind.a"]
