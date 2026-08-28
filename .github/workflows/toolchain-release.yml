@@ -261,19 +261,8 @@ jobs:
           name: verified-toolchain-sources
           path: source-cache
       - uses: ./.github/actions/setup-aros-rust
-      - name: Install consumer prerequisites (Linux)
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            autoconf automake bison build-essential cmake flex gawk libpng-dev libtool \
-            make netpbm ninja-build patch python3 xz-utils
-      - name: Install consumer prerequisites (macOS)
-        if: runner.os == 'macOS'
-        run: |
-          brew install autoconf automake bison cmake coreutils gawk gettext gnu-sed libtool \
-            lld llvm make netpbm ninja pkgconf python@3.14 texinfo xz
-          echo "$(brew --prefix bison)/bin" >> "$GITHUB_PATH"
+      - name: Install audited consumer prerequisites
+        run: bash scripts/ci/install-build-prerequisites.sh
       - name: Two-root relocation and pinned upstream compatibility
         env:
           AROS_TOOLCHAIN_SOURCE_CACHE: ${{ github.workspace }}/source-cache

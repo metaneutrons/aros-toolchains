@@ -32,25 +32,32 @@ grep -Fq -- '${target_float_flag:+"$target_float_flag"}' "$source_root/scripts/t
 grep -Fq -- 'env ac_cv_prog_cc_c23=' "$source_root/scripts/toolchain/compatibility.sh"
 grep -Fq -- 'AROS_TOOLCHAIN_SOURCE_CACHE' "$source_root/.github/workflows/toolchain-release.yml"
 grep -Fq -- 'submodules: recursive' "$source_root/.github/workflows/toolchain-release.yml"
-python3 - "$source_root/.github/workflows/toolchain-release.yml" <<'PY'
+python3 - "$source_root/.github/workflows/toolchain-release.yml" \
+    "$source_root/scripts/ci/install-build-prerequisites.sh" <<'PY'
 from pathlib import Path
 import sys
 
 workflow = Path(sys.argv[1]).read_text(encoding="utf-8")
+prerequisites = Path(sys.argv[2]).read_text(encoding="utf-8")
 start = workflow.index("          name: verified-toolchain-sources")
 end = workflow.index("\n\n  build:", start)
 source_artifact = workflow[start:end]
 if "          include-hidden-files: true" not in source_artifact:
     raise SystemExit("verified source artifact must retain Cargo checksum files")
-if workflow.count("netpbm") != 4:
-    raise SystemExit("all producer and consumer runner families must install netpbm")
-if workflow.count("libpng-dev") != 2 or workflow.count("gnu-sed") != 2:
-    raise SystemExit("Linux libpng headers and macOS GNU sed must cover producer and consumer jobs")
-consumer_start = workflow.index("      - name: Install consumer prerequisites (macOS)")
+if workflow.count("netpbm") != 2:
+    raise SystemExit("both producer runner families must install netpbm")
+if workflow.count("libpng-dev") != 1 or workflow.count("gnu-sed") != 1:
+    raise SystemExit("producer prerequisites lost Linux libpng or macOS GNU sed")
+consumer_start = workflow.index("      - name: Install audited consumer prerequisites")
 consumer_end = workflow.index("      - name: Two-root relocation", consumer_start)
-macos_consumer = workflow[consumer_start:consumer_end]
+consumer = workflow[consumer_start:consumer_end]
+if "bash scripts/ci/install-build-prerequisites.sh" not in consumer:
+    raise SystemExit("toolchain consumers must use the shared host prerequisite contract")
+for package in ("clang", "libpng-dev", "lld", "netpbm"):
+    if package not in prerequisites:
+        raise SystemExit(f"Linux consumer lost audited build prerequisite {package}")
 for formula in ("coreutils", "gettext", "lld", "llvm", "pkgconf", "python@3.14", "texinfo"):
-    if formula not in macos_consumer:
+    if formula not in prerequisites:
         raise SystemExit(f"macOS consumer lost audited GRUB prerequisite {formula}")
 if "name: build-observation-${{ matrix.host }}-${{ matrix.profile }}-${{ matrix.copy }}" not in workflow:
     raise SystemExit("each producer must retain its observed environment outside the release archive")
@@ -66,6 +73,8 @@ if workflow.count("github-token: ${{ github.token }}") != 2:
     raise SystemExit("cross-run artifact downloads require the scoped GitHub token")
 if workflow.count("profile:") != 12:
     raise SystemExit("compatibility replay must cover the complete twelve-lane matrix")
+if workflow.count("bash scripts/ci/install-build-prerequisites.sh") != 1:
+    raise SystemExit("compatibility replay must use the shared host prerequisite contract")
 PY
 python3 - "$source_root/scripts/toolchain/build-release.sh" <<'PY'
 from pathlib import Path
