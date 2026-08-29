@@ -1,0 +1,263 @@
+name: AROS Toolchain Release Recovery
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_run_id:
+        description: Qualified producer run whose draft packaging failed
+        required: true
+        type: string
+      source_tag:
+        description: Immutable release ID embedded in the source archives
+        required: true
+        type: string
+      source_commit:
+        description: Exact source commit recorded by the producer recipe
+        required: true
+        type: string
+      release_tag:
+        description: New immutable recovery release ID and tag
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: toolchain-release-recovery-${{ inputs.release_tag }}
+  cancel-in-progress: false
+
+env:
+  SOURCE_LOCK: toolchains/llvm-11.0.0.sources.json
+  PROFILES: toolchains/profiles-v1.json
+  PYTHONHASHSEED: "0"
+
+jobs:
+  recover:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    permissions:
+      actions: read
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Validate immutable recovery source and release identity
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+          SOURCE_TAG: ${{ inputs.source_tag }}
+          SOURCE_COMMIT: ${{ inputs.source_commit }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN_ID" > source-run.json
+          gh api --paginate --slurp \
+            "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN_ID/jobs?per_page=100" \
+            > source-job-pages.json
+          python3 - <<'PY'
+          import json, os, re
+
+          source_tag = os.environ["SOURCE_TAG"]
+          release_tag = os.environ["RELEASE_TAG"]
+          source_commit = os.environ["SOURCE_COMMIT"]
+          tag_pattern = re.compile(r"toolchain-v1-[A-Za-z0-9._-]+\Z")
+          if not tag_pattern.fullmatch(source_tag) or not tag_pattern.fullmatch(release_tag):
+              raise SystemExit("source and recovery tags must use the toolchain-v1 namespace")
+          if source_tag == release_tag:
+              raise SystemExit("recovery tag must differ from the failed source tag")
+          if not re.fullmatch(r"[0-9a-f]{40}", source_commit):
+              raise SystemExit("source commit must be a full lowercase Git SHA")
+
+          run = json.load(open("source-run.json", encoding="utf-8"))
+          expected_run = int(os.environ["SOURCE_RUN_ID"])
+          if run.get("id") != expected_run:
+              raise SystemExit("GitHub returned a different source run")
+          if run.get("event") != "push" or run.get("head_branch") != source_tag:
+              raise SystemExit("source run was not the immutable source-tag push")
+          if run.get("head_sha") != source_commit or run.get("status") != "completed":
+              raise SystemExit("source run commit or completion state differs")
+
+          pages = json.load(open("source-job-pages.json", encoding="utf-8"))
+          jobs = [job for page in pages for job in page.get("jobs", [])]
+          exact = {"plan": 1, "sources": 1, "draft-release": 1}
+          prefixes = {"build (": 24, "compare (": 12, "compatibility (": 12}
+          for name, count in exact.items():
+              matches = [job for job in jobs if job.get("name") == name]
+              if len(matches) != count:
+                  raise SystemExit(f"source run has {len(matches)} {name!r} jobs, expected {count}")
+          for prefix, count in prefixes.items():
+              matches = [job for job in jobs if str(job.get("name", "")).startswith(prefix)]
+              if len(matches) != count or any(job.get("conclusion") != "success" for job in matches):
+                  raise SystemExit(f"source run did not pass all {count} {prefix!r} jobs")
+          for name in ("plan", "sources"):
+              job = next(job for job in jobs if job.get("name") == name)
+              if job.get("conclusion") != "success":
+                  raise SystemExit(f"source run gate {name} did not succeed")
+          draft = next(job for job in jobs if job.get("name") == "draft-release")
+          if draft.get("conclusion") != "failure":
+              raise SystemExit("recovery is only valid for a failed draft-release job")
+          failures = sorted(
+              job.get("name") for job in jobs
+              if job.get("conclusion") not in ("success", "skipped")
+          )
+          if failures != ["draft-release"]:
+              raise SystemExit(f"source run has non-packaging failures: {failures}")
+          PY
+          git fetch --force origin "refs/tags/$SOURCE_TAG:refs/tags/$SOURCE_TAG"
+          if [[ $(git rev-list -n 1 "$SOURCE_TAG") != "$SOURCE_COMMIT" ]]; then
+            echo "source tag does not resolve to the requested source commit" >&2
+            exit 1
+          fi
+          if git ls-remote --exit-code --tags origin "refs/tags/$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "recovery tag already exists; refusing to retarget it" >&2
+            exit 1
+          fi
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "recovery release already exists; refusing to replace assets" >&2
+            exit 1
+          fi
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          pattern: verified-*-pc-x86_64
+          path: release-source
+          merge-multiple: true
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.source_run_id }}
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          pattern: verified-*-arm-raspi
+          path: release-source
+          merge-multiple: true
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.source_run_id }}
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          pattern: verified-*-rpi-aarch64
+          path: release-source
+          merge-multiple: true
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.source_run_id }}
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: toolchain-recipe
+          path: release-input
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.source_run_id }}
+
+      - name: Repackage qualified payloads twice for the new release ID
+        env:
+          SOURCE_TAG: ${{ inputs.source_tag }}
+          SOURCE_COMMIT: ${{ inputs.source_commit }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          python3 - "$SOURCE_COMMIT" <<'PY'
+          import json, sys
+          recipe = json.load(open("release-input/recipe.json", encoding="utf-8"))
+          if recipe.get("source_commit") != sys.argv[1]:
+              raise SystemExit("downloaded recipe belongs to a different source commit")
+          PY
+          mkdir repack-a repack-b release
+          shopt -s nullglob
+          archives=(release-source/*.tar.xz)
+          if [[ ${#archives[@]} -ne 12 ]]; then
+            echo "recovery requires exactly 12 verified archives, found ${#archives[@]}" >&2
+            exit 1
+          fi
+          for archive in "${archives[@]}"; do
+            for output in repack-a repack-b; do
+              python3 scripts/toolchain/producer.py repackage \
+                --archive "$archive" \
+                --recipe release-input/recipe.json \
+                --lock "$SOURCE_LOCK" \
+                --profiles "$PROFILES" \
+                --source-release-id "$SOURCE_TAG" \
+                --release-id "$RELEASE_TAG" \
+                --output-dir "$output"
+            done
+            asset=$(basename "$archive")
+            python3 scripts/toolchain/producer.py compare \
+              --left "repack-a/$asset" \
+              --right "repack-b/$asset" \
+              --output-dir release
+          done
+
+      - name: Generate complete recovery release inventory
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          cp release-input/recipe.json release/toolchain-recipe-v1.json
+          cp "$SOURCE_LOCK" release/
+          cp "$PROFILES" release/
+          cp toolchains/toolchain-manifest-v1.schema.json release/
+          cp toolchains/tree-digest-v1.fixture.json release/
+          python3 scripts/toolchain/producer.py index \
+            --directory release \
+            --base-url "https://github.com/$GITHUB_REPOSITORY/releases/download/$RELEASE_TAG" \
+            --require-complete-v1
+
+      - name: Attest recovered checksummed release files
+        id: provenance
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373
+        with:
+          subject-checksums: release/SHA256SUMS
+
+      - name: Include provenance and enforce the final inventory
+        env:
+          PROVENANCE_BUNDLE: ${{ steps.provenance.outputs.bundle-path }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          cp "$PROVENANCE_BUNDLE" release/toolchain-provenance.sigstore.json
+          python3 scripts/toolchain/producer.py index \
+            --directory release \
+            --base-url "https://github.com/$GITHUB_REPOSITORY/releases/download/$RELEASE_TAG" \
+            --require-complete-v1 \
+            --require-provenance
+
+      - name: Create immutable recovery tag and draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_TAG: ${{ inputs.source_tag }}
+          SOURCE_COMMIT: ${{ inputs.source_commit }}
+          SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          mapfile -d '' assets < <(find release -mindepth 1 -maxdepth 1 -type f -print0 | sort -z)
+          if [[ ${#assets[@]} -ne 56 ]]; then
+            echo "release inventory must contain exactly 56 regular files, found ${#assets[@]}" >&2
+            exit 1
+          fi
+          if git ls-remote --exit-code --tags origin "refs/tags/$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "recovery tag appeared during assembly; refusing to retarget it" >&2
+            exit 1
+          fi
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "recovery release appeared during assembly; refusing to replace assets" >&2
+            exit 1
+          fi
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git tag -a "$RELEASE_TAG" "$SOURCE_COMMIT" \
+            -m "AROS-NG deterministic toolchain recovery from $SOURCE_TAG"
+          git push origin "refs/tags/$RELEASE_TAG"
+          notes=$(mktemp)
+          printf '%s\n' \
+            "Recovered without recompilation from qualified producer run $SOURCE_RUN_ID ($SOURCE_TAG)." \
+            "The source run passed 24 builds, 12 byte comparisons, and 12 compatibility lanes." \
+            "Each unchanged payload was repackaged twice for $RELEASE_TAG and byte-compared again." \
+            "This release remains a draft for human promotion." > "$notes"
+          gh release create "$RELEASE_TAG" \
+            --verify-tag \
+            --draft \
+            --title "AROS-NG deterministic toolchains $RELEASE_TAG" \
+            --notes-file "$notes" \
+            "${assets[@]}"

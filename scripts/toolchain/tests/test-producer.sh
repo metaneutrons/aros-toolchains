@@ -34,17 +34,47 @@ grep -Fq -- 'env ac_cv_prog_cc_c23=' "$source_root/scripts/toolchain/compatibili
 grep -Fq -- 'AROS_TOOLCHAIN_SOURCE_CACHE' "$source_root/.github/workflows/toolchain-release.yml"
 grep -Fq -- 'submodules: recursive' "$source_root/.github/workflows/toolchain-release.yml"
 python3 - "$source_root/.github/workflows/toolchain-release.yml" \
+    "$source_root/.github/workflows/toolchain-release-recovery.yml" \
     "$source_root/scripts/ci/install-build-prerequisites.sh" <<'PY'
 from pathlib import Path
 import sys
 
 workflow = Path(sys.argv[1]).read_text(encoding="utf-8")
-prerequisites = Path(sys.argv[2]).read_text(encoding="utf-8")
+recovery = Path(sys.argv[2]).read_text(encoding="utf-8")
+prerequisites = Path(sys.argv[3]).read_text(encoding="utf-8")
 start = workflow.index("          name: verified-toolchain-sources")
 end = workflow.index("\n\n  build:", start)
 source_artifact = workflow[start:end]
 if "          include-hidden-files: true" not in source_artifact:
     raise SystemExit("verified source artifact must retain Cargo checksum files")
+patterns = (
+    "verified-*-pc-x86_64",
+    "verified-*-arm-raspi",
+    "verified-*-rpi-aarch64",
+)
+for pattern in patterns:
+    if workflow.count(f"pattern: {pattern}") != 1:
+        raise SystemExit(f"draft release must select exactly one {pattern} artifact family")
+    if recovery.count(f"pattern: {pattern}") != 1:
+        raise SystemExit(f"recovery must select exactly one {pattern} artifact family")
+if "pattern: verified-*\n" in workflow or "pattern: verified-*\n" in recovery:
+    raise SystemExit("release assembly must not merge the verified source cache")
+if workflow.count("--require-provenance") != 1 or recovery.count("--require-provenance") != 1:
+    raise SystemExit("every final release inventory must require provenance")
+if workflow.count('"${assets[@]}"') != 1 or recovery.count('"${assets[@]}"') != 1:
+    raise SystemExit("release upload must use the validated regular-file inventory")
+for required in (
+    "source run has non-packaging failures",
+    "producer.py repackage",
+    "source-release-id",
+    "recovery requires exactly 12 verified archives",
+):
+    if required not in recovery:
+        raise SystemExit(f"recovery workflow lost fail-closed contract: {required}")
+if recovery.count("run-id: ${{ inputs.source_run_id }}") != 4:
+    raise SystemExit("recovery must obtain all four input artifact families from one run")
+if recovery.count("github-token: ${{ github.token }}") != 4:
+    raise SystemExit("recovery cross-run downloads require the scoped GitHub token")
 if workflow.count("netpbm") != 2:
     raise SystemExit("both producer runner families must install netpbm")
 if workflow.count("libpng-dev") != 1 or workflow.count("gnu-sed") != 1:
@@ -266,6 +296,45 @@ python3 "$producer" verify \
     --fixtures "$source_root/scripts/toolchain/fixtures" \
     --host linux-x86_64 \
     --target-profile pc-x86_64
+for copy in a b; do
+    mkdir -p "$temporary/repack-$copy"
+    python3 "$producer" repackage \
+        --archive "$temporary/verified/$asset" \
+        --recipe "$temporary/recipe.json" \
+        --lock "$source_root/toolchains/llvm-11.0.0.sources.json" \
+        --profiles "$source_root/toolchains/profiles-v1.json" \
+        --source-release-id toolchain-test-v1 \
+        --release-id toolchain-recovery-test-v1 \
+        --output-dir "$temporary/repack-$copy" >/dev/null
+done
+python3 "$producer" compare \
+    --left "$temporary/repack-a/$asset" \
+    --right "$temporary/repack-b/$asset" \
+    --output-dir "$temporary/repacked" >/dev/null
+python3 - "$temporary/verified/$asset.manifest.json" \
+    "$temporary/repacked/$asset.manifest.json" <<'PY'
+import json, sys
+source = json.load(open(sys.argv[1], encoding="utf-8"))
+recovered = json.load(open(sys.argv[2], encoding="utf-8"))
+assert source["release_id"] == "toolchain-test-v1"
+assert recovered["release_id"] == "toolchain-recovery-test-v1"
+for field in (
+    "source_commit", "recipe_sha256", "source_lock_sha256",
+    "profiles_sha256", "tree_sha256", "build_environment",
+):
+    assert recovered[field] == source[field]
+PY
+if python3 "$producer" repackage \
+    --archive "$temporary/verified/$asset" \
+    --recipe "$temporary/recipe.json" \
+    --lock "$source_root/toolchains/llvm-11.0.0.sources.json" \
+    --profiles "$source_root/toolchains/profiles-v1.json" \
+    --source-release-id wrong-source-release \
+    --release-id toolchain-recovery-test-v1 \
+    --output-dir "$temporary/repack-invalid" >/dev/null 2>&1; then
+    echo "producer repackaged an archive from the wrong source release" >&2
+    exit 1
+fi
 python3 "$producer" index \
     --directory "$temporary/verified" \
     --base-url https://example.invalid/toolchain-test-v1
@@ -401,17 +470,54 @@ cp "$source_root/toolchains/llvm-11.0.0.sources.json" "$temporary/complete/"
 cp "$source_root/toolchains/profiles-v1.json" "$temporary/complete/"
 cp "$source_root/toolchains/toolchain-manifest-v1.schema.json" "$temporary/complete/"
 cp "$source_root/toolchains/tree-digest-v1.fixture.json" "$temporary/complete/"
+mkdir "$temporary/complete/cargo-vendor"
+if python3 "$producer" index \
+    --directory "$temporary/complete" \
+    --base-url https://example.invalid/toolchain-test-v1 \
+    --require-complete-v1 >/dev/null 2>&1; then
+    echo "producer accepted a directory in the complete release inventory" >&2
+    exit 1
+fi
+rmdir "$temporary/complete/cargo-vendor"
+printf '%s\n' 'unexpected source payload' > "$temporary/complete/clang-source.tar.xz"
+if python3 "$producer" index \
+    --directory "$temporary/complete" \
+    --base-url https://example.invalid/toolchain-test-v1 \
+    --require-complete-v1 >/dev/null 2>&1; then
+    echo "producer accepted an unexpected file in the complete release inventory" >&2
+    exit 1
+fi
+rm "$temporary/complete/clang-source.tar.xz"
 python3 "$producer" index \
     --directory "$temporary/complete" \
     --base-url https://example.invalid/toolchain-test-v1 \
     --require-complete-v1
+if python3 "$producer" index \
+    --directory "$temporary/complete" \
+    --base-url https://example.invalid/toolchain-test-v1 \
+    --require-complete-v1 \
+    --require-provenance >/dev/null 2>&1; then
+    echo "producer accepted a final release without provenance" >&2
+    exit 1
+fi
+printf '%s\n' '{}' > "$temporary/complete/toolchain-provenance.sigstore.json"
+python3 "$producer" index \
+    --directory "$temporary/complete" \
+    --base-url https://example.invalid/toolchain-test-v1 \
+    --require-complete-v1 \
+    --require-provenance
 python3 - "$temporary/complete/toolchain-index-v1.json" <<'PY'
 import json
+from pathlib import Path
 import sys
-index = json.load(open(sys.argv[1], encoding="utf-8"))
+path = Path(sys.argv[1])
+index = json.load(path.open(encoding="utf-8"))
 assert index["schema"] == 1
 assert len(index["artifacts"]) == 12
 assert all(artifact["enabled"] is True for artifact in index["artifacts"])
+checksums = (path.parent / "SHA256SUMS").read_text(encoding="utf-8").splitlines()
+assert len(checksums) == 55
+assert any(line.endswith("  toolchain-provenance.sigstore.json") for line in checksums)
 PY
 
 cp "$temporary/verified/$asset.manifest.json" "$temporary/good-manifest.json"

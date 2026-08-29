@@ -67,6 +67,26 @@ into a separate hand-maintained download lock.
    `disabled_reason`, and set `enabled = true`. Commit that lock change only
    after every final URL verifies; never enable a placeholder entry.
 
+### Recover a packaging-only draft failure
+
+An immutable producer run does not need to rebuild four hosts merely because
+its final draft assembly failed.  `.github/workflows/toolchain-release-recovery.yml`
+accepts such a run only when `plan`, `sources`, all 24 independent builds, all
+12 byte comparisons, and all 12 compatibility lanes succeeded and
+`draft-release` is the sole failed job.  The source tag and partial draft stay
+untouched.
+
+Recovery downloads only the twelve verified host/profile artifact families,
+checks their archive sidecars, external and embedded manifests, recipe digest,
+source commit, and canonical payload tree, then packages every payload twice
+under a new release ID.  Both recovered copies must be byte-identical.  The
+new annotated tag points to the original recipe commit, so each recovered
+manifest's `source_commit` remains exact; only the release identity and its
+derived archive/SBOM/checksum files change.  A new index, complete 56-file
+inventory, and GitHub/Sigstore provenance bundle are generated before the new
+draft is created.  This path is not valid for a compiler-build, comparison,
+relocation, upstream-compatibility, or AROS-NG-compatibility failure.
+
 `tree_sha256` is the SHA-256 of the canonical payload inventory, not of the
 compressed archive. The producer walks every payload entry in path order,
 including directories, but excludes `toolchain-manifest.json`. Each entry is

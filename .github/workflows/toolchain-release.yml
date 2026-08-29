@@ -290,7 +290,17 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
-          pattern: verified-*
+          pattern: verified-*-pc-x86_64
+          path: release
+          merge-multiple: true
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          pattern: verified-*-arm-raspi
+          path: release
+          merge-multiple: true
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          pattern: verified-*-rpi-aarch64
           path: release
           merge-multiple: true
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
@@ -326,7 +336,8 @@ jobs:
           python3 scripts/toolchain/producer.py index \
             --directory release \
             --base-url "https://github.com/$GITHUB_REPOSITORY/releases/download/$GITHUB_REF_NAME" \
-            --require-complete-v1
+            --require-complete-v1 \
+            --require-provenance
       - name: Create immutable draft release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -336,9 +347,14 @@ jobs:
             echo "release already exists; refusing to replace assets" >&2
             exit 1
           fi
+          mapfile -d '' assets < <(find release -mindepth 1 -maxdepth 1 -type f -print0 | sort -z)
+          if [[ ${#assets[@]} -ne 56 ]]; then
+            echo "release inventory must contain exactly 56 regular files, found ${#assets[@]}" >&2
+            exit 1
+          fi
           gh release create "$GITHUB_REF_NAME" \
             --verify-tag \
             --draft \
             --title "AROS-NG deterministic toolchains $GITHUB_REF_NAME" \
             --notes "Built twice, byte-compared, relocation-tested, and verified against the pinned upstream AROS commit. This release remains a draft for human promotion." \
-            release/*
+            "${assets[@]}"

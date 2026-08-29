@@ -790,6 +790,70 @@ def command_package(args: argparse.Namespace) -> None:
         print(archive_hash)
 
 
+def command_repackage(args: argparse.Namespace) -> None:
+    if args.source_release_id == args.release_id:
+        fail("recovery release ID must differ from the source release ID")
+    recipe = read_json(args.recipe)
+    validate_recipe(recipe)
+    archive_hash = sha256_file(args.archive)
+    sidecar = args.archive.with_name(f"{args.archive.name}.sha256")
+    if not sidecar.is_file() or sidecar.read_text(encoding="utf-8") != (
+        f"{archive_hash}  {args.archive.name}\n"
+    ):
+        fail("recovery source archive has an invalid or missing checksum sidecar")
+    external_manifest_path = args.archive.with_name(f"{args.archive.name}.manifest.json")
+    external_manifest = read_json(external_manifest_path)
+    validate_manifest(external_manifest, str(external_manifest_path))
+    source_spdx = args.archive.with_name(f"{args.archive.name}.spdx.json")
+    read_json(source_spdx)
+    with tempfile.TemporaryDirectory(prefix="aros-toolchain-repackage-") as temporary:
+        root = safe_extract(args.archive, Path(temporary) / "extracted")
+        manifest_path = root / "toolchain-manifest.json"
+        manifest = read_json(manifest_path)
+        validate_manifest(manifest, str(manifest_path))
+        if manifest != external_manifest:
+            fail("embedded and external recovery source manifests differ")
+        if manifest["release_id"] != args.source_release_id:
+            fail(
+                "source archive release ID differs from the recovery request: "
+                f"{manifest['release_id']} != {args.source_release_id}"
+            )
+        if manifest["source_commit"] != recipe["source_commit"]:
+            fail("source archive commit differs from the release recipe")
+        if manifest["recipe_sha256"] != recipe["recipe_sha256"]:
+            fail("source archive recipe digest differs from the release recipe")
+        if manifest["source_lock_sha256"] != recipe["source_lock_sha256"]:
+            fail("source archive source-lock digest differs from the release recipe")
+        if manifest["profiles_sha256"] != recipe["profiles_sha256"]:
+            fail("source archive profile digest differs from the release recipe")
+        verify_tree(root, manifest)
+        environment_path = Path(temporary) / "build-environment.json"
+        environment_path.write_text(
+            json.dumps(manifest["build_environment"], sort_keys=True, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        asset_name = canonical_asset_name(
+            manifest["llvm_version"], manifest["host"], manifest["target_profile"]
+        )
+        if args.archive.name != asset_name:
+            fail(f"non-canonical recovery source asset: {args.archive.name}")
+        command_package(
+            argparse.Namespace(
+                root=root,
+                recipe=args.recipe,
+                lock=args.lock,
+                profiles=args.profiles,
+                release_id=args.release_id,
+                host=manifest["host"],
+                target_profile=manifest["target_profile"],
+                asset_name=asset_name,
+                output_dir=args.output_dir,
+                build_environment=environment_path,
+                forbid_prefix=[],
+            )
+        )
+
+
 def safe_extract(archive_path: Path, destination: Path) -> Path:
     destination.mkdir(parents=True, exist_ok=True)
     with tarfile.open(archive_path, "r:xz") as archive:
@@ -917,6 +981,8 @@ def command_index(args: argparse.Namespace) -> None:
     base_url = args.base_url.rstrip("/")
     if not base_url.startswith("https://"):
         fail("release base URL must use HTTPS")
+    if args.require_provenance and not args.require_complete_v1:
+        fail("release provenance can only be required with the complete v1 inventory")
     manifests = sorted(directory.glob("*.tar.xz.manifest.json"))
     if not manifests:
         fail("no verified release manifests found")
@@ -997,6 +1063,48 @@ def command_index(args: argparse.Namespace) -> None:
         profiles_path = directory / "profiles-v1.json"
         if not profiles_path.is_file() or profiles_digests != {sha256_file(profiles_path)}:
             fail("published profiles do not match artifact manifests")
+        required_support = {
+            "toolchain-recipe-v1.json",
+            source_locks[0].name,
+            "profiles-v1.json",
+            "toolchain-manifest-v1.schema.json",
+            "tree-digest-v1.fixture.json",
+        }
+        missing_support = sorted(
+            name for name in required_support if not (directory / name).is_file()
+        )
+        if missing_support:
+            fail(f"complete v1 release support files are absent: {missing_support}")
+        for name in ("toolchain-manifest-v1.schema.json", "tree-digest-v1.fixture.json"):
+            read_json(directory / name)
+        allowed = set(required_support)
+        for manifest_path in manifests:
+            asset_name = manifest_path.name.removesuffix(".manifest.json")
+            allowed.update(
+                {
+                    asset_name,
+                    f"{asset_name}.sha256",
+                    f"{asset_name}.manifest.json",
+                    f"{asset_name}.spdx.json",
+                }
+            )
+        allowed.update({"toolchain-index-v1.json", "SHA256SUMS"})
+        provenance = directory / "toolchain-provenance.sigstore.json"
+        if provenance.exists():
+            if not provenance.is_file():
+                fail("release provenance is not a regular file")
+            read_json(provenance)
+            allowed.add(provenance.name)
+        elif args.require_provenance:
+            fail("complete v1 release provenance bundle is absent")
+        unexpected = sorted(path.name for path in directory.iterdir() if path.name not in allowed)
+        if unexpected:
+            fail(f"unexpected complete v1 release entries: {unexpected}")
+        non_files = sorted(
+            path.name for path in directory.iterdir() if path.name in allowed and not path.is_file()
+        )
+        if non_files:
+            fail(f"complete v1 release entries are not regular files: {non_files}")
     index = {
         "schema": 1,
         "release_id": release_id,
@@ -1045,6 +1153,15 @@ def parser() -> argparse.ArgumentParser:
     package.add_argument("--build-environment", type=Path)
     package.add_argument("--forbid-prefix", type=Path, action="append", default=[])
     package.set_defaults(function=command_package)
+    repackage = commands.add_parser("repackage")
+    repackage.add_argument("--archive", type=Path, required=True)
+    repackage.add_argument("--recipe", type=Path, required=True)
+    repackage.add_argument("--lock", type=Path, required=True)
+    repackage.add_argument("--profiles", type=Path, required=True)
+    repackage.add_argument("--source-release-id", required=True)
+    repackage.add_argument("--release-id", required=True)
+    repackage.add_argument("--output-dir", type=Path, required=True)
+    repackage.set_defaults(function=command_repackage)
     verify = commands.add_parser("verify")
     verify.add_argument("--archive", type=Path, required=True)
     verify.add_argument("--fixtures", type=Path, required=True)
@@ -1061,6 +1178,7 @@ def parser() -> argparse.ArgumentParser:
     index.add_argument("--directory", type=Path, required=True)
     index.add_argument("--base-url", required=True)
     index.add_argument("--require-complete-v1", action="store_true")
+    index.add_argument("--require-provenance", action="store_true")
     index.set_defaults(function=command_index)
     return root
 
