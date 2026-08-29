@@ -19,6 +19,7 @@ grep -Fq -- 'ln -s aros-collect "$prefix/bin/collect-aros"' "$source_root/script
 grep -Fq -- 'rm -f "$prefix/bin/llvm-config"' "$source_root/scripts/toolchain/build-release.sh"
 grep -Fq -- 'host-python-env.py' "$source_root/scripts/toolchain/compatibility.sh"
 grep -Fq -- '--target-dir "$work_dir/rust-target"' "$source_root/scripts/toolchain/compatibility.sh"
+grep -Fq -- '-p aros-ahi-runner' "$source_root/scripts/toolchain/compatibility.sh"
 grep -Fq -- '-DAROS_RUST_TOOLS_DIR="$work_dir/rust-target/release"' "$source_root/scripts/toolchain/compatibility.sh"
 grep -Fq -- '-DAROS_ENABLE_MMU=ON' "$source_root/scripts/toolchain/compatibility.sh"
 grep -Fq -- 'for upstream_target in includes linklibs' "$source_root/scripts/toolchain/compatibility.sh"

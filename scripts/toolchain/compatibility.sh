@@ -77,6 +77,7 @@ cargo build --release \
     -p aros-transpiler \
     -p aros-genmodule \
     -p aros-collect \
+    -p aros-ahi-runner \
     -p aros-fetch
 llvm_version=$(python3 - "$work_dir/extracted/toolchain/toolchain-manifest.json" <<'PY'
 import json, sys
