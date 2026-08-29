@@ -126,9 +126,11 @@ unpublished candidate.
 
 The run ID is an explicit evidence reference, not a package pin. Producer
 artifacts expire and are never a stable distribution channel.  RC3 is now
-published and promoted, so the next CI cleanup is to make the regular product
-matrix consume the checked-in lock through normal `aros build` resolution and
-retain the producer-run input only for deliberate candidate qualification.
+published and promoted.  Regular push, pull-request and input-free manual
+product jobs therefore consume the checked-in lock through normal `aros build`
+resolution.  Supplying `toolchain_source_run_id` deliberately switches only
+the candidate download/extraction steps and the final `--toolchain-dir`
+argument; the downloaded archive must pass `producer.py verify` first.
 
 ## Historical pre-release reproducibility proof
 

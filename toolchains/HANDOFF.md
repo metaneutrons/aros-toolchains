@@ -39,6 +39,29 @@ three applicable profiles through the final release URLs.  RC1 and the partial
 RC2 draft remain immutable historical evidence and must not be published,
 deleted or retargeted.
 
+## Published-lock product CI
+
+`.github/workflows/ci-build-matrix.yml` now runs its six Linux x86-64 and
+macOS ARM64 product lanes without requiring a producer-run input.  Its default
+command is the public `aros build --preset <profile> --clean` path, so
+`aros-cli` owns the RC3 URL, archive hash, size, extraction safety, embedded
+manifest, payload-tree digest and required-path checks from the committed
+lock.  It does not inject `--toolchain-dir` in release mode.
+
+Manual candidate qualification remains explicit and separate.  Supplying
+`toolchain_source_run_id` downloads only the named `verified-<host>-<profile>`
+artifact, runs `producer.py verify` with exact host/profile selectors and the
+two-root safe-extraction probe, and only then extracts and passes that candidate
+through `--toolchain-dir`.  An empty input cannot enter this branch.  Static
+contracts require exactly the twelve enabled published lock entries, non-null
+archive/tree digests, measured sizes and a release-identical base URL.
+
+`actionlint`, the producer contract suite and an exact workflow-equivalent
+verification of the published macOS ARM64 `rpi-aarch64` archive pass locally.
+The migration has not triggered another paid GitHub matrix after the account's
+included Actions allowance was exhausted; its next main/PR execution is the
+remaining remote observation, not a missing implementation step.
+
 ## Verified pre-publication product consumer matrix
 
 Run
@@ -254,10 +277,9 @@ rejected. CI checkouts include recursive submodules.
 
 ## Remaining release work
 
-- The complete four-host by three-profile v1 matrix and its RC3 publication are
-  closed.  Product CI can now be migrated from the temporary producer-run
-  evidence input to ordinary locked-release resolution and exercised once
-  without `--toolchain-dir`.
+- The complete four-host by three-profile v1 matrix, RC3 publication and
+  locked-release product-CI migration are closed in code.  Record the first
+  normal remote six-lane run when Actions capacity is available.
 - The four `opensbi-riscv64` slots remain disabled until their independent
   four-host deterministic build, comparison and compatibility matrix exists.
 - The packaged collector now supports the tested standalone C/C++ final-link
