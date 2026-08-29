@@ -1,6 +1,26 @@
 # Toolchain release handoff
 
-Status date: 2026-08-28
+Status date: 2026-08-29
+
+## Verified product consumer matrix
+
+Run
+[`33220983286`](https://github.com/metaneutrons/AROS-NG/actions/runs/33220983286)
+passed all three release-toolchain profiles on Linux x86-64 and macOS ARM64
+through the public `aros build --toolchain-dir` path. The six lanes consumed
+the matching byte-identical `verified-*` artifacts from producer run
+`33020916404`; all four native fetch-host contracts and the complete quality
+gate passed in the same run. This is product-consumer evidence, not a release:
+the artifacts remain expiring workflow transport and the release lock remains
+disabled.
+
+The manual product workflow now requires the completed producer run ID and
+skips product jobs on push/pull request until real release locks exist. Direct
+`cmake --preset` product jobs were removed because the presets select host
+Clang unless the CLI supplies the release toolchain contract. Predecessor run
+`33218360446` confirmed five product lanes and found a FreeType generated
+header race on Linux AArch64; `2234c516fb` added the missing direct-consumer
+ordering and the corrected run is green 11/11.
 
 ## Consumer C++ header contract
 
