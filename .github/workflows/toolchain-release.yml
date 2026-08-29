@@ -3,6 +3,14 @@ name: Deterministic AROS Toolchain Producer
 on:
   workflow_dispatch:
     inputs:
+      mode:
+        description: Produce a host tier or recover a packaging-only failed run
+        required: true
+        default: produce
+        type: choice
+        options:
+          - produce
+          - recover
       scope:
         description: Host tier to exercise (manual runs never publish)
         required: true
@@ -12,6 +20,22 @@ on:
           - linux-x86_64
           - linux
           - all
+      source_run_id:
+        description: Recovery only - qualified producer run ID
+        required: false
+        type: string
+      source_tag:
+        description: Recovery only - release ID embedded in source archives
+        required: false
+        type: string
+      source_commit:
+        description: Recovery only - exact recipe source commit
+        required: false
+        type: string
+      release_tag:
+        description: Recovery only - new immutable release ID and tag
+        required: false
+        type: string
   push:
     tags:
       - toolchain-v1-*
@@ -31,6 +55,7 @@ env:
 
 jobs:
   plan:
+    if: github.event_name != 'workflow_dispatch' || inputs.mode != 'recover'
     runs-on: ubuntu-24.04
     outputs:
       build_matrix: ${{ steps.matrix.outputs.build_matrix }}
@@ -96,6 +121,7 @@ jobs:
           retention-days: 7
 
   sources:
+    if: github.event_name != 'workflow_dispatch' || inputs.mode != 'recover'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -358,3 +384,17 @@ jobs:
             --title "AROS-NG deterministic toolchains $GITHUB_REF_NAME" \
             --notes "Built twice, byte-compared, relocation-tested, and verified against the pinned upstream AROS commit. This release remains a draft for human promotion." \
             "${assets[@]}"
+
+  recovery:
+    if: github.event_name == 'workflow_dispatch' && inputs.mode == 'recover'
+    permissions:
+      actions: read
+      contents: write
+      id-token: write
+      attestations: write
+    uses: ./.github/workflows/toolchain-release-recovery.yml
+    with:
+      source_run_id: ${{ inputs.source_run_id }}
+      source_tag: ${{ inputs.source_tag }}
+      source_commit: ${{ inputs.source_commit }}
+      release_tag: ${{ inputs.release_tag }}

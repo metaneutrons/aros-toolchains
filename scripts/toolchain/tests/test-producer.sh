@@ -75,6 +75,10 @@ if recovery.count("run-id: ${{ inputs.source_run_id }}") != 4:
     raise SystemExit("recovery must obtain all four input artifact families from one run")
 if recovery.count("github-token: ${{ github.token }}") != 4:
     raise SystemExit("recovery cross-run downloads require the scoped GitHub token")
+if "uses: ./.github/workflows/toolchain-release-recovery.yml" not in workflow:
+    raise SystemExit("registered producer workflow must expose the recovery workflow")
+if "inputs.mode == 'recover'" not in workflow:
+    raise SystemExit("producer workflow recovery entry point is not mode-gated")
 if workflow.count("netpbm") != 2:
     raise SystemExit("both producer runner families must install netpbm")
 if workflow.count("libpng-dev") != 1 or workflow.count("gnu-sed") != 1:
