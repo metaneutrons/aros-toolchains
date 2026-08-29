@@ -117,34 +117,65 @@ if workflow.count("profile:") != 12:
 if workflow.count("bash scripts/ci/install-build-prerequisites.sh") != 1:
     raise SystemExit("compatibility replay must use the shared host prerequisite contract")
 PY
-python3 - "$source_root/.github/workflows/ci-build-matrix.yml" <<'PY'
+python3 - "$source_root/.github/workflows/ci-build-matrix.yml" \
+    "$source_root/aros-toolchains.lock.toml" <<'PY'
 from pathlib import Path
 import sys
+import tomllib
 
 workflow = Path(sys.argv[1]).read_text(encoding="utf-8")
+lock = tomllib.load(open(sys.argv[2], "rb"))
 if "toolchain_source_run_id:" not in workflow:
-    raise SystemExit("product qualification must identify one completed producer run")
+    raise SystemExit("product qualification must retain the explicit candidate-run input")
 input_start = workflow.index("      toolchain_source_run_id:")
 input_end = workflow.index("  push:", input_start)
-if "        required: true" not in workflow[input_start:input_end]:
-    raise SystemExit("manual product qualification must require an explicit producer run")
+input_contract = workflow[input_start:input_end]
+if "        required: false" not in input_contract or "        default: ''" not in input_contract:
+    raise SystemExit("published-lock qualification must be the default manual path")
 if workflow.count("run-id: ${{ inputs.toolchain_source_run_id }}") != 1:
-    raise SystemExit("product qualification must source its toolchain from the declared producer run")
+    raise SystemExit("candidate qualification must source its toolchain from the declared producer run")
 if workflow.count("github-token: ${{ github.token }}") != 1:
-    raise SystemExit("cross-run product qualification requires the scoped GitHub token")
-if "if: inputs.toolchain_source_run_id != ''" not in workflow:
-    raise SystemExit("unpublished toolchains must not run as an implicit push product build")
+    raise SystemExit("cross-run candidate qualification requires the scoped GitHub token")
+if workflow.count("if: inputs.toolchain_source_run_id != ''") != 2:
+    raise SystemExit("only candidate download and extraction may depend on the optional run ID")
+build_start = workflow.index("  build-matrix:")
+build_steps = workflow.index("    steps:", build_start)
+if "if: inputs.toolchain_source_run_id" in workflow[build_start:build_steps]:
+    raise SystemExit("published-lock product builds must run without a candidate run ID")
 for host, runner in (("linux-x86_64", "ubuntu-24.04"), ("macos-aarch64", "macos-15")):
     for profile in ("pc-x86_64", "arm-raspi", "rpi-aarch64"):
         lane = f"- {{ host: {host}, runner: {runner}, preset: {profile} }}"
         if workflow.count(lane) != 1:
             raise SystemExit(f"product qualification lost {host}/{profile}")
-if "target/release/aros build" not in workflow:
-    raise SystemExit("product qualification must use the public aros build path")
-if "--toolchain-dir \"$RUNNER_TEMP/aros-toolchain\"" not in workflow:
-    raise SystemExit("product qualification must pass the extracted verified toolchain explicitly")
+if workflow.count("target/release/aros build") != 2:
+    raise SystemExit("lock and candidate qualification must both use the public aros build path")
+if workflow.count("--toolchain-dir \"$RUNNER_TEMP/aros-toolchain\"") != 1:
+    raise SystemExit("only candidate qualification may pass an explicit toolchain directory")
+if 'if [[ -n "$TOOLCHAIN_SOURCE_RUN_ID" ]]' not in workflow:
+    raise SystemExit("product qualification must select candidate mode explicitly")
+if workflow.count("scripts/toolchain/producer.py verify") != 1:
+    raise SystemExit("unpublished candidate archives must pass the safe producer verifier")
 if "cmake --preset" in workflow or "cmake --build build/" in workflow:
     raise SystemExit("product qualification must not bypass aros-cli with host-compiler CMake calls")
+published_hosts = {"linux-x86_64", "linux-aarch64", "macos-x86_64", "macos-aarch64"}
+published_profiles = {"pc-x86_64", "arm-raspi", "rpi-aarch64"}
+published = {
+    (artifact["host"], artifact["target_profile"]): artifact
+    for artifact in lock["artifacts"]
+    if artifact["enabled"]
+}
+if set(published) != {(host, profile) for host in published_hosts for profile in published_profiles}:
+    raise SystemExit("published lock must enable exactly the four-host by three-profile matrix")
+expected_base_url = (
+    "https://github.com/metaneutrons/AROS-NG/releases/download/" + lock["release_id"]
+)
+if lock.get("base_url") != expected_base_url:
+    raise SystemExit("published lock must use the canonical immutable GitHub release URL")
+for selector, artifact in published.items():
+    if artifact["sha256"] == "0" * 64 or artifact["tree_sha256"] == "0" * 64:
+        raise SystemExit(f"published lock contains a null digest for {selector}")
+    if artifact.get("size", 0) <= 0 or artifact.get("disabled_reason"):
+        raise SystemExit(f"published lock contains provisional metadata for {selector}")
 PY
 python3 - "$source_root/scripts/toolchain/build-release.sh" <<'PY'
 from pathlib import Path
