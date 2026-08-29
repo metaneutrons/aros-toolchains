@@ -76,6 +76,13 @@ accepts such a run only when `plan`, `sources`, all 24 independent builds, all
 `draft-release` is the sole failed job.  The source tag and partial draft stay
 untouched.
 
+Before dispatch, a maintainer creates and pushes the new annotated recovery
+tag with a credential permitted to reference commits that modify GitHub
+workflows.  The recovery job requires that tag to resolve to the original
+recipe commit, records its tag-object ID, and refuses to create the draft if
+either the object or its peeled commit changes while the release is assembled.
+The job token therefore never creates or retargets a release tag.
+
 Recovery downloads only the twelve verified host/profile artifact families,
 checks their archive sidecars, external and embedded manifests, recipe digest,
 source commit, and canonical payload tree, then packages every payload twice

@@ -68,9 +68,15 @@ for required in (
     "producer.py repackage",
     "source-release-id",
     "recovery requires exactly 12 verified archives",
+    "recovery tag must be pre-created by a trusted maintainer credential",
+    'git rev-parse "$RELEASE_TAG^{tag}" > recovery-tag-object.sha',
+    "recovery tag object changed during assembly",
+    "recovery tag target changed during assembly",
 ):
     if required not in recovery:
         raise SystemExit(f"recovery workflow lost fail-closed contract: {required}")
+if 'git push origin "refs/tags/$RELEASE_TAG"' in recovery:
+    raise SystemExit("GitHub job tokens must not create recovery tags")
 if recovery.count("run-id: ${{ inputs.source_run_id }}") != 4:
     raise SystemExit("recovery must obtain all four input artifact families from one run")
 if recovery.count("github-token: ${{ github.token }}") != 4:
