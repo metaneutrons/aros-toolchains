@@ -2,7 +2,44 @@
 
 Status date: 2026-08-29
 
-## Verified product consumer matrix
+## Published deterministic v1 release
+
+Prerelease
+[`toolchain-v1-20260829-rc3`](https://github.com/metaneutrons/AROS-NG/releases/tag/toolchain-v1-20260829-rc3)
+is the current immutable distribution channel.  Its annotated tag object is
+`30fa4a20cb93f8bca889f4396e06bdeec92e9900` and its peeled source commit is
+`9e839795bb0629aa6b0d2623f354f184d9a59929`.  Producer run
+[`33247071791`](https://github.com/metaneutrons/AROS-NG/actions/runs/33247071791)
+passed 24/24 builds, 12/12 byte comparisons and 12/12 compatibility lanes.
+Packaging-only recovery run
+[`33258573779`](https://github.com/metaneutrons/AROS-NG/actions/runs/33258573779)
+then repackaged every unchanged payload twice under the RC3 identity and
+created the complete draft without recompiling.
+
+The reviewed release contains exactly 56 regular files: twelve archives,
+twelve external manifests, twelve archive SHA sidecars, twelve SPDX 2.3 SBOMs
+and eight release-support files.  `SHA256SUMS` covers the other 55 files.  The
+GitHub/Sigstore bundle cryptographically verifies all 54 pre-provenance
+subjects against `.github/workflows/toolchain-release-recovery.yml` at
+`f620c3781ffac1e471951132e9bc257d03103958`.  Every embedded manifest equals
+its external copy, records the exact source commit above, and retains the
+corresponding RC2 payload-tree digest.  The final archive hashes are:
+
+| Host | `pc-x86_64` | `arm-raspi` | `rpi-aarch64` |
+| --- | --- | --- | --- |
+| `linux-x86_64` | `06c4efea7a17df81620098263f814d8d5ecc85e90cbec403715e0e7259c59479` | `117b521f37be3c88c8d4639caebbcf7a15499dd86f98cb1bdce862f6bc7f06c9` | `62d6118c2c6fdf9adc05d7bb2f4c9f58ee0320aec562b7040ab71ef869f61d97` |
+| `linux-aarch64` | `91097b894e00bdeaf8640d5acb93800e8d57c73cdbf3c7bebc46c790963d3ee9` | `8f370f8afe3b85530c178a67618d103385c7d4121098cc67f50b7129a1c306de` | `14b93159b3060e1eb403efa045749275fcb00bcce7d7c915119840e030fcc5a9` |
+| `macos-x86_64` | `8cdf8f6aee3f8553212aa91e2dbf6d8d6828e8545f20b1e120ec0e4f7e0c6d3a` | `a56443d5f35f062ae40304c4a18bfc3410d8ff3ad76abbc1f56f13e235425531` | `5e043c533e886452d044da74991817293cdb69463a1ff858aa414231ae6f5337` |
+| `macos-aarch64` | `ecd271e335a10a951cfc55203ac80040b1548ce6b2c56e4d7e388f1cf37a411a` | `4392ec2f9fb5cd62c838821ed811acfc9222f546786f44842b1edc23c34ec52a` | `a61538b0d8f0a5a0f1ac9e0484725b1625c8e46719af1d7a6a7e068bb27ee3bb` |
+
+`aros-toolchains.lock.toml` is promoted from the measured release index: its
+twelve RC3 entries are enabled and its four RISC-V declarations remain
+disabled.  A clean macOS ARM64 CLI store fetched, installed and verified all
+three applicable profiles through the final release URLs.  RC1 and the partial
+RC2 draft remain immutable historical evidence and must not be published,
+deleted or retargeted.
+
+## Verified pre-publication product consumer matrix
 
 Run
 [`33220983286`](https://github.com/metaneutrons/AROS-NG/actions/runs/33220983286)
@@ -11,8 +48,8 @@ through the public `aros build --toolchain-dir` path. The six lanes consumed
 the matching byte-identical `verified-*` artifacts from producer run
 `33020916404`; all four native fetch-host contracts and the complete quality
 gate passed in the same run. This is product-consumer evidence, not a release:
-the artifacts remain expiring workflow transport and the release lock remains
-disabled.
+the artifacts were expiring workflow transport at the time.  RC3 and the
+promoted lock above now supersede that distribution limitation.
 
 The manual product workflow now requires the completed producer run ID and
 skips product jobs on push/pull request until real release locks exist. Direct
@@ -217,13 +254,15 @@ rejected. CI checkouts include recursive submodules.
 
 ## Remaining release work
 
-- The complete four-host by three-profile v1 matrix is reproducible. Promotion
-  still requires a new tag run, review of the draft release, provenance,
-  SBOMs and generated index, followed by publication without replacing assets.
+- The complete four-host by three-profile v1 matrix and its RC3 publication are
+  closed.  Product CI can now be migrated from the temporary producer-run
+  evidence input to ordinary locked-release resolution and exercised once
+  without `--toolchain-dir`.
+- The four `opensbi-riscv64` slots remain disabled until their independent
+  four-host deterministic build, comparison and compatibility matrix exists.
 - The packaged collector now supports the tested standalone C/C++ final-link
   shapes without `PATH`, `COMPILER_PATH` or compiled-in producer paths. A
   complete application-development experience still needs a separately
   versioned Developer SDK/sysroot artifact and CLI lifecycle commands.
-- The manual proof run is not itself a release, and the stale exploratory tag
-  `toolchain-v1-20260826-rc1` predates the completed matrix. Do not promote or
-  retarget it; create a new release tag from the reviewed final commit.
+- Physical Pi 3B+, Pi 5 and Milk-V UART boot evidence remains separate from
+  this compiler release and is still outstanding.

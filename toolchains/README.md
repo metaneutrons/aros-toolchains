@@ -46,7 +46,7 @@ archive and tree digests, extraction depth, capabilities expressed as required
 paths, and host/profile/triple identity are publish-gated rather than copied
 into a separate hand-maintained download lock.
 
-## Promote the first draft
+## Review and promote a draft
 
 1. Download the complete draft and verify every entry in `SHA256SUMS`, the
    GitHub/Sigstore provenance bundle, all twelve SBOMs, and the successful
@@ -66,6 +66,12 @@ into a separate hand-maintained download lock.
    tree SHA, size, LLVM version, extraction depth, and required paths, remove
    `disabled_reason`, and set `enabled = true`. Commit that lock change only
    after every final URL verifies; never enable a placeholder entry.
+
+These gates were completed for
+[`toolchain-v1-20260829-rc3`](https://github.com/metaneutrons/AROS-NG/releases/tag/toolchain-v1-20260829-rc3).
+Its twelve four-host/three-profile entries are enabled in the repository lock;
+the separate RISC-V declarations remain disabled because RC3 contains no
+RISC-V artifacts.
 
 ### Recover a packaging-only draft failure
 
@@ -109,26 +115,22 @@ paths.
 The v1 producer covers Linux x86_64/aarch64 and macOS x86_64/aarch64 hosts for
 `pc-x86_64`, `arm-raspi` (`raspi-armhf` upstream), and `rpi-aarch64`.
 
-## Product qualification before publication
+## Product qualification and CI migration
 
-Until the reviewed release index has been promoted into
-`aros-toolchains.lock.toml`, product CI must not silently fall back to a host
-compiler or pretend that an unpublished toolchain is downloadable. Manually
-dispatch `ci-build-matrix.yml` with the ID of one completed producer run whose
-`verified-*` artifacts are still available. The workflow downloads the exact
-Linux x86_64 and macOS ARM64 archive for each of the three profiles, extracts
-it into an isolated prefix, and runs the public `aros build --toolchain-dir`
-path from a clean product tree. A missing run ID is rejected for manual
-dispatches; push and pull-request gates omit product builds while the release
-lock remains disabled.
+Before RC3, product CI could not silently fall back to a host compiler or
+pretend that an unpublished toolchain was downloadable.  Manual
+`ci-build-matrix.yml` runs therefore accepted an explicit completed producer
+run and exercised `aros build --toolchain-dir` using its expiring
+`verified-*` artifacts.  That evidence path remains useful for qualifying an
+unpublished candidate.
 
 The run ID is an explicit evidence reference, not a package pin. Producer
-artifacts expire and are never a stable distribution channel. Once the v1
-release is published and all final URLs and digests have been promoted into
-the lock, the regular product matrix should consume that release through the
-normal `aros build` resolution path without a producer-run input.
+artifacts expire and are never a stable distribution channel.  RC3 is now
+published and promoted, so the next CI cleanup is to make the regular product
+matrix consume the checked-in lock through normal `aros build` resolution and
+retain the producer-run input only for deliberate candidate qualification.
 
-## Current reproducibility proof
+## Historical pre-release reproducibility proof
 
 Manual GitHub Actions run
 [`33020916404`](https://github.com/metaneutrons/AROS-NG/actions/runs/33020916404)
