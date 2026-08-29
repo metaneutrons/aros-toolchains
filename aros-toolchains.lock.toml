@@ -1,156 +1,168 @@
 # Immutable AROS cross-toolchain selection for aros-cli.
 #
-# The release pipeline will replace these disabled declarations with published
-# content-addressed assets. Keeping the complete matrix here lets consumers
-# resolve host + target combinations exactly without ever guessing a URL or
-# downloading a placeholder.
+# The twelve published LLVM 11 host/profile artifacts below are copied from
+# the strictly verified release index. RISC-V remains explicitly disabled
+# until its independent four-host release matrix has been qualified.
 
 schema = 1
-release_id = "unpublished-v1"
+release_id = "toolchain-v1-20260829-rc3"
+base_url = "https://github.com/metaneutrons/AROS-NG/releases/download/toolchain-v1-20260829-rc3"
 
 [[artifacts]]
 host = "macos-aarch64"
 target_profile = "pc-x86_64"
 target_triple = "x86_64-unknown-aros"
 asset = "aros-toolchain-v1-llvm11.0.0-macos-aarch64-pc-x86_64.tar.xz"
-sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
-tree_sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+sha256 = "ecd271e335a10a951cfc55203ac80040b1548ce6b2c56e4d7e388f1cf37a411a"
+tree_sha256 = "f852752e15e7f858d5c9388b5b8111a8135aa9aa62df46ca9844ca207e9e3bfc"
 llvm_version = "11.0.0"
-enabled = false
-disabled_reason = "No deterministic GitHub release has been published yet"
-required_paths = ["bin/clang", "bin/clang++", "bin/ld.lld", "bin/llvm-ar", "bin/aros-collect", "bin/collect-aros", "bin/collect-aros32", "include/c++/v1", "lib/libc++.a", "lib/libc++abi.a", "lib/libunwind.a"]
+size = 26388780
+enabled = true
+strip_components = 1
+required_paths = ["bin/clang", "bin/clang++", "bin/ld.lld", "bin/llvm-ar", "bin/llvm-ranlib", "bin/llvm-nm", "bin/llvm-strip", "bin/llvm-objcopy", "bin/llvm-objdump", "bin/aros-collect", "bin/collect-aros", "bin/collect-aros32", "include/c++/v1/algorithm", "include/c++/v1/cerrno", "include/c++/v1/cinttypes", "include/c++/v1/cstddef", "include/c++/v1/cstdint", "include/c++/v1/deque", "include/c++/v1/memory", "include/c++/v1/string", "include/c++/v1/system_error", "include/c++/v1/vector", "lib/libc++.a", "lib/libc++abi.a", "lib/libunwind.a", "toolchain-manifest.json", "lib/clang/11.0.0/lib/aros/libclang_rt.builtins-x86_64.a", "lib/clang/11.0.0/lib/aros/libclang_rt.builtins-i386.a"]
 
 [[artifacts]]
 host = "macos-aarch64"
 target_profile = "arm-raspi"
 target_triple = "arm-unknown-aros"
 asset = "aros-toolchain-v1-llvm11.0.0-macos-aarch64-arm-raspi.tar.xz"
-sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
-tree_sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+sha256 = "4392ec2f9fb5cd62c838821ed811acfc9222f546786f44842b1edc23c34ec52a"
+tree_sha256 = "a559056a183868099c2f364d8c77b8ee56e199edcb78fe757ebf9ef7328afd5d"
 llvm_version = "11.0.0"
-enabled = false
-disabled_reason = "No deterministic GitHub release has been published yet"
-required_paths = ["bin/clang", "bin/clang++", "bin/ld.lld", "bin/llvm-ar", "bin/aros-collect", "bin/collect-aros", "include/c++/v1", "lib/libc++.a", "lib/libc++abi.a", "lib/libunwind.a"]
+size = 25971528
+enabled = true
+strip_components = 1
+required_paths = ["bin/clang", "bin/clang++", "bin/ld.lld", "bin/llvm-ar", "bin/llvm-ranlib", "bin/llvm-nm", "bin/llvm-strip", "bin/llvm-objcopy", "bin/llvm-objdump", "bin/aros-collect", "bin/collect-aros", "include/c++/v1/algorithm", "include/c++/v1/cerrno", "include/c++/v1/cinttypes", "include/c++/v1/cstddef", "include/c++/v1/cstdint", "include/c++/v1/deque", "include/c++/v1/memory", "include/c++/v1/string", "include/c++/v1/system_error", "include/c++/v1/vector", "lib/libc++.a", "lib/libc++abi.a", "lib/libunwind.a", "toolchain-manifest.json", "lib/clang/11.0.0/lib/aros/libclang_rt.builtins-armhf.a"]
 
 [[artifacts]]
 host = "macos-aarch64"
 target_profile = "rpi-aarch64"
 target_triple = "aarch64-unknown-aros"
 asset = "aros-toolchain-v1-llvm11.0.0-macos-aarch64-rpi-aarch64.tar.xz"
-sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
-tree_sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+sha256 = "a61538b0d8f0a5a0f1ac9e0484725b1625c8e46719af1d7a6a7e068bb27ee3bb"
+tree_sha256 = "472c2385d46fd40dd2e8cbf887899de10094c41da7771762f9d6e3f2096fd545"
 llvm_version = "11.0.0"
-enabled = false
-disabled_reason = "No deterministic GitHub release has been published yet"
-required_paths = ["bin/clang", "bin/clang++", "bin/ld.lld", "bin/llvm-ar", "bin/aros-collect", "bin/collect-aros", "include/c++/v1", "lib/libc++.a", "lib/libc++abi.a", "lib/libunwind.a"]
+size = 25962584
+enabled = true
+strip_components = 1
+required_paths = ["bin/clang", "bin/clang++", "bin/ld.lld", "bin/llvm-ar", "bin/llvm-ranlib", "bin/llvm-nm", "bin/llvm-strip", "bin/llvm-objcopy", "bin/llvm-objdump", "bin/aros-collect", "bin/collect-aros", "include/c++/v1/algorithm", "include/c++/v1/cerrno", "include/c++/v1/cinttypes", "include/c++/v1/cstddef", "include/c++/v1/cstdint", "include/c++/v1/deque", "include/c++/v1/memory", "include/c++/v1/string", "include/c++/v1/system_error", "include/c++/v1/vector", "lib/libc++.a", "lib/libc++abi.a", "lib/libunwind.a", "toolchain-manifest.json", "lib/clang/11.0.0/lib/aros/libclang_rt.builtins-aarch64.a"]
 
 [[artifacts]]
 host = "macos-x86_64"
 target_profile = "pc-x86_64"
 target_triple = "x86_64-unknown-aros"
 asset = "aros-toolchain-v1-llvm11.0.0-macos-x86_64-pc-x86_64.tar.xz"
-sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
-tree_sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+sha256 = "8cdf8f6aee3f8553212aa91e2dbf6d8d6828e8545f20b1e120ec0e4f7e0c6d3a"
+tree_sha256 = "68f50f991399061fdecc5496aa3d13ee2f1186f5761e3421b4161c0d4fd60b4c"
 llvm_version = "11.0.0"
-enabled = false
-disabled_reason = "No deterministic GitHub release has been published yet"
-required_paths = ["bin/clang", "bin/clang++", "bin/ld.lld", "bin/llvm-ar", "bin/aros-collect", "bin/collect-aros", "bin/collect-aros32", "include/c++/v1", "lib/libc++.a", "lib/libc++abi.a", "lib/libunwind.a"]
+size = 29328796
+enabled = true
+strip_components = 1
+required_paths = ["bin/clang", "bin/clang++", "bin/ld.lld", "bin/llvm-ar", "bin/llvm-ranlib", "bin/llvm-nm", "bin/llvm-strip", "bin/llvm-objcopy", "bin/llvm-objdump", "bin/aros-collect", "bin/collect-aros", "bin/collect-aros32", "include/c++/v1/algorithm", "include/c++/v1/cerrno", "include/c++/v1/cinttypes", "include/c++/v1/cstddef", "include/c++/v1/cstdint", "include/c++/v1/deque", "include/c++/v1/memory", "include/c++/v1/string", "include/c++/v1/system_error", "include/c++/v1/vector", "lib/libc++.a", "lib/libc++abi.a", "lib/libunwind.a", "toolchain-manifest.json", "lib/clang/11.0.0/lib/aros/libclang_rt.builtins-x86_64.a", "lib/clang/11.0.0/lib/aros/libclang_rt.builtins-i386.a"]
 
 [[artifacts]]
 host = "macos-x86_64"
 target_profile = "arm-raspi"
 target_triple = "arm-unknown-aros"
 asset = "aros-toolchain-v1-llvm11.0.0-macos-x86_64-arm-raspi.tar.xz"
-sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
-tree_sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+sha256 = "a56443d5f35f062ae40304c4a18bfc3410d8ff3ad76abbc1f56f13e235425531"
+tree_sha256 = "b44ae2155d471e46e80f3156e85bbdbedd22c92eabffd0221424ca66b466d7f5"
 llvm_version = "11.0.0"
-enabled = false
-disabled_reason = "No deterministic GitHub release has been published yet"
-required_paths = ["bin/clang", "bin/clang++", "bin/ld.lld", "bin/llvm-ar", "bin/aros-collect", "bin/collect-aros", "include/c++/v1", "lib/libc++.a", "lib/libc++abi.a", "lib/libunwind.a"]
+size = 28889800
+enabled = true
+strip_components = 1
+required_paths = ["bin/clang", "bin/clang++", "bin/ld.lld", "bin/llvm-ar", "bin/llvm-ranlib", "bin/llvm-nm", "bin/llvm-strip", "bin/llvm-objcopy", "bin/llvm-objdump", "bin/aros-collect", "bin/collect-aros", "include/c++/v1/algorithm", "include/c++/v1/cerrno", "include/c++/v1/cinttypes", "include/c++/v1/cstddef", "include/c++/v1/cstdint", "include/c++/v1/deque", "include/c++/v1/memory", "include/c++/v1/string", "include/c++/v1/system_error", "include/c++/v1/vector", "lib/libc++.a", "lib/libc++abi.a", "lib/libunwind.a", "toolchain-manifest.json", "lib/clang/11.0.0/lib/aros/libclang_rt.builtins-armhf.a"]
 
 [[artifacts]]
 host = "macos-x86_64"
 target_profile = "rpi-aarch64"
 target_triple = "aarch64-unknown-aros"
 asset = "aros-toolchain-v1-llvm11.0.0-macos-x86_64-rpi-aarch64.tar.xz"
-sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
-tree_sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+sha256 = "5e043c533e886452d044da74991817293cdb69463a1ff858aa414231ae6f5337"
+tree_sha256 = "c6f7b79a9bbf25e0b22d4ec22673d69526e7e0224e5bfc76ba87eb495ffe3b3c"
 llvm_version = "11.0.0"
-enabled = false
-disabled_reason = "No deterministic GitHub release has been published yet"
-required_paths = ["bin/clang", "bin/clang++", "bin/ld.lld", "bin/llvm-ar", "bin/aros-collect", "bin/collect-aros", "include/c++/v1", "lib/libc++.a", "lib/libc++abi.a", "lib/libunwind.a"]
+size = 28857296
+enabled = true
+strip_components = 1
+required_paths = ["bin/clang", "bin/clang++", "bin/ld.lld", "bin/llvm-ar", "bin/llvm-ranlib", "bin/llvm-nm", "bin/llvm-strip", "bin/llvm-objcopy", "bin/llvm-objdump", "bin/aros-collect", "bin/collect-aros", "include/c++/v1/algorithm", "include/c++/v1/cerrno", "include/c++/v1/cinttypes", "include/c++/v1/cstddef", "include/c++/v1/cstdint", "include/c++/v1/deque", "include/c++/v1/memory", "include/c++/v1/string", "include/c++/v1/system_error", "include/c++/v1/vector", "lib/libc++.a", "lib/libc++abi.a", "lib/libunwind.a", "toolchain-manifest.json", "lib/clang/11.0.0/lib/aros/libclang_rt.builtins-aarch64.a"]
 
 [[artifacts]]
 host = "linux-x86_64"
 target_profile = "pc-x86_64"
 target_triple = "x86_64-unknown-aros"
 asset = "aros-toolchain-v1-llvm11.0.0-linux-x86_64-pc-x86_64.tar.xz"
-sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
-tree_sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+sha256 = "06c4efea7a17df81620098263f814d8d5ecc85e90cbec403715e0e7259c59479"
+tree_sha256 = "52208369e05846aa07b182bb3127532638e850f394e1a61a999d92db444cc6e0"
 llvm_version = "11.0.0"
-enabled = false
-disabled_reason = "No deterministic GitHub release has been published yet"
-required_paths = ["bin/clang", "bin/clang++", "bin/ld.lld", "bin/llvm-ar", "bin/aros-collect", "bin/collect-aros", "bin/collect-aros32", "include/c++/v1", "lib/libc++.a", "lib/libc++abi.a", "lib/libunwind.a"]
+size = 38633292
+enabled = true
+strip_components = 1
+required_paths = ["bin/clang", "bin/clang++", "bin/ld.lld", "bin/llvm-ar", "bin/llvm-ranlib", "bin/llvm-nm", "bin/llvm-strip", "bin/llvm-objcopy", "bin/llvm-objdump", "bin/aros-collect", "bin/collect-aros", "bin/collect-aros32", "include/c++/v1/algorithm", "include/c++/v1/cerrno", "include/c++/v1/cinttypes", "include/c++/v1/cstddef", "include/c++/v1/cstdint", "include/c++/v1/deque", "include/c++/v1/memory", "include/c++/v1/string", "include/c++/v1/system_error", "include/c++/v1/vector", "lib/libc++.a", "lib/libc++abi.a", "lib/libunwind.a", "toolchain-manifest.json", "lib/clang/11.0.0/lib/aros/libclang_rt.builtins-x86_64.a", "lib/clang/11.0.0/lib/aros/libclang_rt.builtins-i386.a"]
 
 [[artifacts]]
 host = "linux-x86_64"
 target_profile = "arm-raspi"
 target_triple = "arm-unknown-aros"
 asset = "aros-toolchain-v1-llvm11.0.0-linux-x86_64-arm-raspi.tar.xz"
-sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
-tree_sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+sha256 = "117b521f37be3c88c8d4639caebbcf7a15499dd86f98cb1bdce862f6bc7f06c9"
+tree_sha256 = "c5de45ebe8b271c2fca2830b4c7fd8a3b74a80bd38751c1f23a722b094453c3c"
 llvm_version = "11.0.0"
-enabled = false
-disabled_reason = "No deterministic GitHub release has been published yet"
-required_paths = ["bin/clang", "bin/clang++", "bin/ld.lld", "bin/llvm-ar", "bin/aros-collect", "bin/collect-aros", "include/c++/v1", "lib/libc++.a", "lib/libc++abi.a", "lib/libunwind.a"]
+size = 38072952
+enabled = true
+strip_components = 1
+required_paths = ["bin/clang", "bin/clang++", "bin/ld.lld", "bin/llvm-ar", "bin/llvm-ranlib", "bin/llvm-nm", "bin/llvm-strip", "bin/llvm-objcopy", "bin/llvm-objdump", "bin/aros-collect", "bin/collect-aros", "include/c++/v1/algorithm", "include/c++/v1/cerrno", "include/c++/v1/cinttypes", "include/c++/v1/cstddef", "include/c++/v1/cstdint", "include/c++/v1/deque", "include/c++/v1/memory", "include/c++/v1/string", "include/c++/v1/system_error", "include/c++/v1/vector", "lib/libc++.a", "lib/libc++abi.a", "lib/libunwind.a", "toolchain-manifest.json", "lib/clang/11.0.0/lib/aros/libclang_rt.builtins-armhf.a"]
 
 [[artifacts]]
 host = "linux-x86_64"
 target_profile = "rpi-aarch64"
 target_triple = "aarch64-unknown-aros"
 asset = "aros-toolchain-v1-llvm11.0.0-linux-x86_64-rpi-aarch64.tar.xz"
-sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
-tree_sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+sha256 = "62d6118c2c6fdf9adc05d7bb2f4c9f58ee0320aec562b7040ab71ef869f61d97"
+tree_sha256 = "13c3dfba03c1eb9a3ec4259fd796f7525d34ecd9b9cd098a98a162454491eccc"
 llvm_version = "11.0.0"
-enabled = false
-disabled_reason = "No deterministic GitHub release has been published yet"
-required_paths = ["bin/clang", "bin/clang++", "bin/ld.lld", "bin/llvm-ar", "bin/aros-collect", "bin/collect-aros", "include/c++/v1", "lib/libc++.a", "lib/libc++abi.a", "lib/libunwind.a"]
+size = 38051528
+enabled = true
+strip_components = 1
+required_paths = ["bin/clang", "bin/clang++", "bin/ld.lld", "bin/llvm-ar", "bin/llvm-ranlib", "bin/llvm-nm", "bin/llvm-strip", "bin/llvm-objcopy", "bin/llvm-objdump", "bin/aros-collect", "bin/collect-aros", "include/c++/v1/algorithm", "include/c++/v1/cerrno", "include/c++/v1/cinttypes", "include/c++/v1/cstddef", "include/c++/v1/cstdint", "include/c++/v1/deque", "include/c++/v1/memory", "include/c++/v1/string", "include/c++/v1/system_error", "include/c++/v1/vector", "lib/libc++.a", "lib/libc++abi.a", "lib/libunwind.a", "toolchain-manifest.json", "lib/clang/11.0.0/lib/aros/libclang_rt.builtins-aarch64.a"]
 
 [[artifacts]]
 host = "linux-aarch64"
 target_profile = "pc-x86_64"
 target_triple = "x86_64-unknown-aros"
 asset = "aros-toolchain-v1-llvm11.0.0-linux-aarch64-pc-x86_64.tar.xz"
-sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
-tree_sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+sha256 = "91097b894e00bdeaf8640d5acb93800e8d57c73cdbf3c7bebc46c790963d3ee9"
+tree_sha256 = "dc30dd5b69439c434c438033f9002c91023086f2b18617efeb9bb384583a7e71"
 llvm_version = "11.0.0"
-enabled = false
-disabled_reason = "No deterministic GitHub release has been published yet"
-required_paths = ["bin/clang", "bin/clang++", "bin/ld.lld", "bin/llvm-ar", "bin/aros-collect", "bin/collect-aros", "bin/collect-aros32", "include/c++/v1", "lib/libc++.a", "lib/libc++abi.a", "lib/libunwind.a"]
+size = 35074720
+enabled = true
+strip_components = 1
+required_paths = ["bin/clang", "bin/clang++", "bin/ld.lld", "bin/llvm-ar", "bin/llvm-ranlib", "bin/llvm-nm", "bin/llvm-strip", "bin/llvm-objcopy", "bin/llvm-objdump", "bin/aros-collect", "bin/collect-aros", "bin/collect-aros32", "include/c++/v1/algorithm", "include/c++/v1/cerrno", "include/c++/v1/cinttypes", "include/c++/v1/cstddef", "include/c++/v1/cstdint", "include/c++/v1/deque", "include/c++/v1/memory", "include/c++/v1/string", "include/c++/v1/system_error", "include/c++/v1/vector", "lib/libc++.a", "lib/libc++abi.a", "lib/libunwind.a", "toolchain-manifest.json", "lib/clang/11.0.0/lib/aros/libclang_rt.builtins-x86_64.a", "lib/clang/11.0.0/lib/aros/libclang_rt.builtins-i386.a"]
 
 [[artifacts]]
 host = "linux-aarch64"
 target_profile = "arm-raspi"
 target_triple = "arm-unknown-aros"
 asset = "aros-toolchain-v1-llvm11.0.0-linux-aarch64-arm-raspi.tar.xz"
-sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
-tree_sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+sha256 = "8f370f8afe3b85530c178a67618d103385c7d4121098cc67f50b7129a1c306de"
+tree_sha256 = "a4f16548e7982017ccc12436f15aa8e3d1eb4215c38f87eb68986cc9b2fa6bf8"
 llvm_version = "11.0.0"
-enabled = false
-disabled_reason = "No deterministic GitHub release has been published yet"
-required_paths = ["bin/clang", "bin/clang++", "bin/ld.lld", "bin/llvm-ar", "bin/aros-collect", "bin/collect-aros", "include/c++/v1", "lib/libc++.a", "lib/libc++abi.a", "lib/libunwind.a"]
+size = 34603916
+enabled = true
+strip_components = 1
+required_paths = ["bin/clang", "bin/clang++", "bin/ld.lld", "bin/llvm-ar", "bin/llvm-ranlib", "bin/llvm-nm", "bin/llvm-strip", "bin/llvm-objcopy", "bin/llvm-objdump", "bin/aros-collect", "bin/collect-aros", "include/c++/v1/algorithm", "include/c++/v1/cerrno", "include/c++/v1/cinttypes", "include/c++/v1/cstddef", "include/c++/v1/cstdint", "include/c++/v1/deque", "include/c++/v1/memory", "include/c++/v1/string", "include/c++/v1/system_error", "include/c++/v1/vector", "lib/libc++.a", "lib/libc++abi.a", "lib/libunwind.a", "toolchain-manifest.json", "lib/clang/11.0.0/lib/aros/libclang_rt.builtins-armhf.a"]
 
 [[artifacts]]
 host = "linux-aarch64"
 target_profile = "rpi-aarch64"
 target_triple = "aarch64-unknown-aros"
 asset = "aros-toolchain-v1-llvm11.0.0-linux-aarch64-rpi-aarch64.tar.xz"
-sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
-tree_sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+sha256 = "14b93159b3060e1eb403efa045749275fcb00bcce7d7c915119840e030fcc5a9"
+tree_sha256 = "4f2314e4c8e805f8b2a12992bb5f94858402cd560d0b7a90ef97d1de4d769670"
 llvm_version = "11.0.0"
-enabled = false
-disabled_reason = "No deterministic GitHub release has been published yet"
-required_paths = ["bin/clang", "bin/clang++", "bin/ld.lld", "bin/llvm-ar", "bin/aros-collect", "bin/collect-aros", "include/c++/v1", "lib/libc++.a", "lib/libc++abi.a", "lib/libunwind.a"]
+size = 34574968
+enabled = true
+strip_components = 1
+required_paths = ["bin/clang", "bin/clang++", "bin/ld.lld", "bin/llvm-ar", "bin/llvm-ranlib", "bin/llvm-nm", "bin/llvm-strip", "bin/llvm-objcopy", "bin/llvm-objdump", "bin/aros-collect", "bin/collect-aros", "include/c++/v1/algorithm", "include/c++/v1/cerrno", "include/c++/v1/cinttypes", "include/c++/v1/cstddef", "include/c++/v1/cstdint", "include/c++/v1/deque", "include/c++/v1/memory", "include/c++/v1/string", "include/c++/v1/system_error", "include/c++/v1/vector", "lib/libc++.a", "lib/libc++abi.a", "lib/libunwind.a", "toolchain-manifest.json", "lib/clang/11.0.0/lib/aros/libclang_rt.builtins-aarch64.a"]
 
 [[artifacts]]
 host = "macos-aarch64"
@@ -161,7 +173,8 @@ sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
 tree_sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
 llvm_version = "11.0.0"
 enabled = false
-disabled_reason = "No deterministic GitHub release has been published yet"
+strip_components = 1
+disabled_reason = "RISC-V is not part of toolchain-v1-20260829-rc3"
 required_paths = ["bin/clang", "bin/clang++", "bin/ld.lld", "bin/llvm-ar", "bin/aros-collect", "bin/collect-aros", "include/c++/v1", "lib/libc++.a", "lib/libc++abi.a", "lib/libunwind.a"]
 
 [[artifacts]]
@@ -173,7 +186,8 @@ sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
 tree_sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
 llvm_version = "11.0.0"
 enabled = false
-disabled_reason = "No deterministic GitHub release has been published yet"
+strip_components = 1
+disabled_reason = "RISC-V is not part of toolchain-v1-20260829-rc3"
 required_paths = ["bin/clang", "bin/clang++", "bin/ld.lld", "bin/llvm-ar", "bin/aros-collect", "bin/collect-aros", "include/c++/v1", "lib/libc++.a", "lib/libc++abi.a", "lib/libunwind.a"]
 
 [[artifacts]]
@@ -185,7 +199,8 @@ sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
 tree_sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
 llvm_version = "11.0.0"
 enabled = false
-disabled_reason = "No deterministic GitHub release has been published yet"
+strip_components = 1
+disabled_reason = "RISC-V is not part of toolchain-v1-20260829-rc3"
 required_paths = ["bin/clang", "bin/clang++", "bin/ld.lld", "bin/llvm-ar", "bin/aros-collect", "bin/collect-aros", "include/c++/v1", "lib/libc++.a", "lib/libc++abi.a", "lib/libunwind.a"]
 
 [[artifacts]]
@@ -197,5 +212,6 @@ sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
 tree_sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
 llvm_version = "11.0.0"
 enabled = false
-disabled_reason = "No deterministic GitHub release has been published yet"
+strip_components = 1
+disabled_reason = "RISC-V is not part of toolchain-v1-20260829-rc3"
 required_paths = ["bin/clang", "bin/clang++", "bin/ld.lld", "bin/llvm-ar", "bin/aros-collect", "bin/collect-aros", "include/c++/v1", "lib/libc++.a", "lib/libc++abi.a", "lib/libunwind.a"]
