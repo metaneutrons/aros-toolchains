@@ -28,9 +28,9 @@ identity mismatch before compilation.
 The current standalone qualification deliberately pins:
 
 - AROS source: `metaneutrons/AROS-NX` at
-  `7abaf5511753807176ef1bc3020d8c4187f5664a`;
+  `ce884eb42ef68187f154e25172080d17e8bddb68`;
 - aros-tools: `metaneutrons/aros-tools` at
-  `272bd110c279421375c927c7bfd415b866719ced`.
+  `707037be4f8ff37300a1a89166c35f661c28bafe`.
 
 The pinned commits are the reviewed migration heads after the AROS-NX upstream
 sync and deterministic aros-tools distribution were merged. They must pass the
