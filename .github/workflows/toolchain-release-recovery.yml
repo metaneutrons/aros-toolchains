@@ -12,6 +12,9 @@ on:
       source_commit:
         required: true
         type: string
+      producer_commit:
+        required: true
+        type: string
       release_tag:
         required: true
         type: string
@@ -26,7 +29,11 @@ on:
         required: true
         type: string
       source_commit:
-        description: Exact source commit recorded by the producer recipe
+        description: Exact AROS source commit recorded by the producer recipe
+        required: true
+        type: string
+      producer_commit:
+        description: Exact producer commit and recovery-tag target
         required: true
         type: string
       release_tag:
@@ -66,6 +73,7 @@ jobs:
           SOURCE_RUN_ID: ${{ inputs.source_run_id }}
           SOURCE_TAG: ${{ inputs.source_tag }}
           SOURCE_COMMIT: ${{ inputs.source_commit }}
+          PRODUCER_COMMIT: ${{ inputs.producer_commit }}
           RELEASE_TAG: ${{ inputs.release_tag }}
         run: |
           set -euo pipefail
@@ -79,13 +87,16 @@ jobs:
           source_tag = os.environ["SOURCE_TAG"]
           release_tag = os.environ["RELEASE_TAG"]
           source_commit = os.environ["SOURCE_COMMIT"]
+          producer_commit = os.environ["PRODUCER_COMMIT"]
           tag_pattern = re.compile(r"toolchain-v1-[A-Za-z0-9._-]+\Z")
           if not tag_pattern.fullmatch(source_tag) or not tag_pattern.fullmatch(release_tag):
               raise SystemExit("source and recovery tags must use the toolchain-v1 namespace")
           if source_tag == release_tag:
               raise SystemExit("recovery tag must differ from the failed source tag")
           if not re.fullmatch(r"[0-9a-f]{40}", source_commit):
-              raise SystemExit("source commit must be a full lowercase Git SHA")
+              raise SystemExit("AROS source commit must be a full lowercase Git SHA")
+          if not re.fullmatch(r"[0-9a-f]{40}", producer_commit):
+              raise SystemExit("producer commit must be a full lowercase Git SHA")
 
           run = json.load(open("source-run.json", encoding="utf-8"))
           expected_run = int(os.environ["SOURCE_RUN_ID"])
@@ -93,7 +104,7 @@ jobs:
               raise SystemExit("GitHub returned a different source run")
           if run.get("event") != "push" or run.get("head_branch") != source_tag:
               raise SystemExit("source run was not the immutable source-tag push")
-          if run.get("head_sha") != source_commit or run.get("status") != "completed":
+          if run.get("head_sha") != producer_commit or run.get("status") != "completed":
               raise SystemExit("source run commit or completion state differs")
 
           pages = json.load(open("source-job-pages.json", encoding="utf-8"))
@@ -123,8 +134,8 @@ jobs:
               raise SystemExit(f"source run has non-packaging failures: {failures}")
           PY
           git fetch --force origin "refs/tags/$SOURCE_TAG:refs/tags/$SOURCE_TAG"
-          if [[ $(git rev-list -n 1 "$SOURCE_TAG") != "$SOURCE_COMMIT" ]]; then
-            echo "source tag does not resolve to the requested source commit" >&2
+          if [[ $(git rev-list -n 1 "$SOURCE_TAG") != "$PRODUCER_COMMIT" ]]; then
+            echo "source tag does not resolve to the requested producer commit" >&2
             exit 1
           fi
           if ! git fetch --force origin "refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"; then
@@ -135,8 +146,8 @@ jobs:
             echo "recovery tag must be annotated" >&2
             exit 1
           fi
-          if [[ $(git rev-list -n 1 "$RELEASE_TAG") != "$SOURCE_COMMIT" ]]; then
-            echo "recovery tag does not resolve to the requested source commit" >&2
+          if [[ $(git rev-list -n 1 "$RELEASE_TAG") != "$PRODUCER_COMMIT" ]]; then
+            echo "recovery tag does not resolve to the requested producer commit" >&2
             exit 1
           fi
           git rev-parse "$RELEASE_TAG^{tag}" > recovery-tag-object.sha
@@ -177,14 +188,17 @@ jobs:
         env:
           SOURCE_TAG: ${{ inputs.source_tag }}
           SOURCE_COMMIT: ${{ inputs.source_commit }}
+          PRODUCER_COMMIT: ${{ inputs.producer_commit }}
           RELEASE_TAG: ${{ inputs.release_tag }}
         run: |
           set -euo pipefail
-          python3 - "$SOURCE_COMMIT" <<'PY'
+          python3 - "$SOURCE_COMMIT" "$PRODUCER_COMMIT" <<'PY'
           import json, sys
           recipe = json.load(open("release-input/recipe.json", encoding="utf-8"))
           if recipe.get("source_commit") != sys.argv[1]:
-              raise SystemExit("downloaded recipe belongs to a different source commit")
+              raise SystemExit("downloaded recipe belongs to a different AROS source commit")
+          if recipe.get("producer_commit") != sys.argv[2]:
+              raise SystemExit("downloaded recipe belongs to a different producer commit")
           PY
           mkdir repack-a repack-b release
           shopt -s nullglob
@@ -216,7 +230,7 @@ jobs:
           RELEASE_TAG: ${{ inputs.release_tag }}
         run: |
           set -euo pipefail
-          cp release-input/recipe.json release/toolchain-recipe-v1.json
+          cp release-input/recipe.json release/toolchain-recipe-v2.json
           cp "$SOURCE_LOCK" release/
           cp "$PROFILES" release/
           cp toolchains/toolchain-manifest-v1.schema.json release/
@@ -250,6 +264,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           SOURCE_TAG: ${{ inputs.source_tag }}
           SOURCE_COMMIT: ${{ inputs.source_commit }}
+          PRODUCER_COMMIT: ${{ inputs.producer_commit }}
           SOURCE_RUN_ID: ${{ inputs.source_run_id }}
           RELEASE_TAG: ${{ inputs.release_tag }}
         run: |
@@ -265,7 +280,7 @@ jobs:
             echo "recovery tag object changed during assembly; refusing to publish" >&2
             exit 1
           fi
-          if [[ "$remote_commit" != "$SOURCE_COMMIT" ]]; then
+          if [[ "$remote_commit" != "$PRODUCER_COMMIT" ]]; then
             echo "recovery tag target changed during assembly; refusing to publish" >&2
             exit 1
           fi
@@ -282,6 +297,6 @@ jobs:
           gh release create "$RELEASE_TAG" \
             --verify-tag \
             --draft \
-            --title "AROS-NG deterministic toolchains $RELEASE_TAG" \
+            --title "AROS deterministic toolchains $RELEASE_TAG" \
             --notes-file "$notes" \
             "${assets[@]}"

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ $# -ne 6 ]]; then
-    echo "usage: AROS_TOOLCHAIN_SOURCE_CACHE=DIR $0 ARCHIVE HOST PROFILE PROFILES_JSON UPSTREAM_COMMIT WORK_DIR" >&2
+if [[ $# -ne 8 ]]; then
+    echo "usage: AROS_TOOLCHAIN_SOURCE_CACHE=DIR $0 ARCHIVE HOST PROFILE PROFILES_JSON UPSTREAM_COMMIT WORK_DIR AROS_SOURCE_ROOT AROS_TOOLS_ROOT" >&2
     exit 2
 fi
 
@@ -12,10 +12,14 @@ profile=$3
 profiles=$4
 upstream_commit=$5
 work_dir=$6
+aros_source_root=$7
+aros_tools_root=$8
 script_dir=$(cd "$(dirname "$0")" && pwd -P)
-source_root=$(cd "$script_dir/../.." && pwd -P)
+producer_root=$(cd "$script_dir/../.." && pwd -P)
+aros_source_root=$(cd "$aros_source_root" && pwd -P)
+aros_tools_root=$(cd "$aros_tools_root" && pwd -P)
 source_cache=${AROS_TOOLCHAIN_SOURCE_CACHE:-}
-source_lock=${AROS_TOOLCHAIN_SOURCE_LOCK:-"$source_root/toolchains/llvm-11.0.0.sources.json"}
+source_lock=${AROS_TOOLCHAIN_SOURCE_LOCK:-"$producer_root/toolchains/llvm-11.0.0.sources.json"}
 
 if [[ -z "$source_cache" || ! -d "$source_cache" ]]; then
     echo "compatibility probe requires AROS_TOOLCHAIN_SOURCE_CACHE with verified host Python sources" >&2
@@ -72,7 +76,7 @@ tar -xJf "$archive" -C "$work_dir/extracted"
 # commit. Build the closed configure/build tools into the isolated probe root and
 # pass that root explicitly to CMake.
 cargo build --release \
-    --manifest-path "$source_root/tools/aros-tools/Cargo.toml" \
+    --manifest-path "$aros_tools_root/Cargo.toml" \
     --target-dir "$work_dir/rust-target" \
     -p aros-transpiler \
     -p aros-genmodule \
@@ -93,8 +97,8 @@ PY
 # probe below. It exercises the release manifest, prefix-owned tools, target
 # selection, compiler checks, and a fresh top-level generation from the
 # current checkout.
-cmake -S "$source_root" -B "$work_dir/ng-build" -G Ninja \
-    -DCMAKE_TOOLCHAIN_FILE="$source_root/cmake/toolchains/AROS.cmake" \
+cmake -S "$aros_source_root" -B "$work_dir/ng-build" -G Ninja \
+    -DCMAKE_TOOLCHAIN_FILE="$aros_source_root/cmake/toolchains/AROS.cmake" \
     -DAROS_CROSS_TOOLCHAIN_ROOT="$work_dir/extracted/toolchain" \
     -DAROS_TARGET_CPU="$target_cpu" \
     -DAROS_TARGET_PLATFORM="$target_platform" \
@@ -177,4 +181,4 @@ for output in outputs:
 print(f"standalone collector probe passed for {len(outputs)} C/C++ outputs")
 PY
 
-echo "AROS-NG CMake and upstream compatibility probes passed at $upstream_commit for $profile"
+echo "AROS CMake and upstream compatibility probes passed at $upstream_commit for $profile"

@@ -6,10 +6,13 @@ from __future__ import annotations
 import shutil
 import subprocess
 import tempfile
+import os
 from pathlib import Path
 
 
-SOURCE_ROOT = Path(__file__).resolve().parents[3]
+if "AROS_TEST_SOURCE_ROOT" not in os.environ:
+    raise SystemExit("AROS_TEST_SOURCE_ROOT must name the AROS source checkout")
+SOURCE_ROOT = Path(os.environ["AROS_TEST_SOURCE_ROOT"]).resolve()
 PATCH = SOURCE_ROOT / "tools" / "crosstools" / "llvm" / "llvm-11.0.0.src-aros.diff"
 
 

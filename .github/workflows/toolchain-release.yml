@@ -29,7 +29,11 @@ on:
         required: false
         type: string
       source_commit:
-        description: Recovery only - exact recipe source commit
+        description: Recovery only - exact AROS source commit in the recipe
+        required: false
+        type: string
+      producer_commit:
+        description: Recovery only - exact producer commit and tag target
         required: false
         type: string
       release_tag:
@@ -52,6 +56,10 @@ env:
   PROFILES: toolchains/profiles-v1.json
   LLVM_VERSION: 11.0.0
   PYTHONHASHSEED: "0"
+  AROS_SOURCE_REPOSITORY: metaneutrons/AROS-NG
+  AROS_SOURCE_COMMIT: 9e839795bb0629aa6b0d2623f354f184d9a59929
+  AROS_TOOLS_REPOSITORY: metaneutrons/aros-tools
+  AROS_TOOLS_COMMIT: 4b13d3ff1a30fffbab5e32cddc480a0959fa1667
 
 jobs:
   plan:
@@ -65,12 +73,28 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ env.AROS_SOURCE_REPOSITORY }}
+          ref: ${{ env.AROS_SOURCE_COMMIT }}
+          fetch-depth: 0
+          path: dependencies/aros
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ env.AROS_TOOLS_REPOSITORY }}
+          ref: ${{ env.AROS_TOOLS_COMMIT }}
+          fetch-depth: 0
+          path: dependencies/aros-tools
 
       - name: Validate locks and compute recipe identity
+        env:
+          AROS_TEST_SOURCE_ROOT: ${{ github.workspace }}/dependencies/aros
         run: |
           set -euo pipefail
           python3 scripts/toolchain/producer.py recipe \
-            --source-root . \
+            --producer-root . \
+            --source-root dependencies/aros \
+            --tools-root dependencies/aros-tools \
             --lock "$SOURCE_LOCK" \
             --profiles "$PROFILES" \
             --output recipe.json
@@ -125,6 +149,11 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ env.AROS_TOOLS_REPOSITORY }}
+          ref: ${{ env.AROS_TOOLS_COMMIT }}
+          path: dependencies/aros-tools
       - uses: ./.github/actions/setup-aros-rust
       - name: Fetch and verify immutable toolchain and host Python sources
         run: |
@@ -140,7 +169,7 @@ jobs:
         run: |
           set -euo pipefail
           cargo vendor --locked --versioned-dirs \
-            --manifest-path tools/aros-tools/Cargo.toml \
+            --manifest-path dependencies/aros-tools/Cargo.toml \
             source-cache/cargo-vendor > source-cache/cargo-vendor-config.toml
           python3 - <<'PY'
           from pathlib import Path
@@ -174,6 +203,18 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ env.AROS_SOURCE_REPOSITORY }}
+          ref: ${{ env.AROS_SOURCE_COMMIT }}
+          fetch-depth: 0
+          path: dependencies/aros
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ env.AROS_TOOLS_REPOSITORY }}
+          ref: ${{ env.AROS_TOOLS_COMMIT }}
+          fetch-depth: 0
+          path: dependencies/aros-tools
 
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
@@ -209,7 +250,9 @@ jobs:
         run: |
           set -euo pipefail
           scripts/toolchain/build-release.sh \
-            --source-root "$GITHUB_WORKSPACE" \
+            --producer-root "$GITHUB_WORKSPACE" \
+            --aros-source-root "$GITHUB_WORKSPACE/dependencies/aros" \
+            --aros-tools-root "$GITHUB_WORKSPACE/dependencies/aros-tools" \
             --work-dir "$RUNNER_TEMP/aros-${{ matrix.copy }}-${{ matrix.profile }}" \
             --source-cache "$GITHUB_WORKSPACE/source-cache" \
             --recipe "$GITHUB_WORKSPACE/producer-input/recipe.json" \
@@ -276,8 +319,17 @@ jobs:
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          repository: ${{ env.AROS_SOURCE_REPOSITORY }}
+          ref: ${{ env.AROS_SOURCE_COMMIT }}
           submodules: recursive
+          path: dependencies/aros
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ env.AROS_TOOLS_REPOSITORY }}
+          ref: ${{ env.AROS_TOOLS_COMMIT }}
+          path: dependencies/aros-tools
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           name: verified-${{ matrix.host }}-${{ matrix.profile }}
@@ -288,7 +340,7 @@ jobs:
           path: source-cache
       - uses: ./.github/actions/setup-aros-rust
       - name: Install audited consumer prerequisites
-        run: bash scripts/ci/install-build-prerequisites.sh
+        run: bash dependencies/aros/scripts/ci/install-build-prerequisites.sh
       - name: Two-root relocation and pinned upstream compatibility
         env:
           AROS_TOOLCHAIN_SOURCE_CACHE: ${{ github.workspace }}/source-cache
@@ -302,7 +354,9 @@ jobs:
             "${{ matrix.profile }}" \
             "$GITHUB_WORKSPACE/$PROFILES" \
             "$upstream_commit" \
-            "$RUNNER_TEMP/consumer-${{ matrix.profile }}"
+            "$RUNNER_TEMP/consumer-${{ matrix.profile }}" \
+            "$GITHUB_WORKSPACE/dependencies/aros" \
+            "$GITHUB_WORKSPACE/dependencies/aros-tools"
 
   draft-release:
     needs: [plan, compatibility]
@@ -336,7 +390,7 @@ jobs:
       - name: Add immutable recipe inputs
         run: |
           set -euo pipefail
-          cp release-input/recipe.json release/toolchain-recipe-v1.json
+          cp release-input/recipe.json release/toolchain-recipe-v2.json
           cp "$SOURCE_LOCK" release/
           cp "$PROFILES" release/
           cp toolchains/toolchain-manifest-v1.schema.json release/
@@ -381,7 +435,7 @@ jobs:
           gh release create "$GITHUB_REF_NAME" \
             --verify-tag \
             --draft \
-            --title "AROS-NG deterministic toolchains $GITHUB_REF_NAME" \
+            --title "AROS deterministic toolchains $GITHUB_REF_NAME" \
             --notes "Built twice, byte-compared, relocation-tested, and verified against the pinned upstream AROS commit. This release remains a draft for human promotion." \
             "${assets[@]}"
 
@@ -397,4 +451,5 @@ jobs:
       source_run_id: ${{ inputs.source_run_id }}
       source_tag: ${{ inputs.source_tag }}
       source_commit: ${{ inputs.source_commit }}
+      producer_commit: ${{ inputs.producer_commit }}
       release_tag: ${{ inputs.release_tag }}

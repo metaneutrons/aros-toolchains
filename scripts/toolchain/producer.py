@@ -134,6 +134,8 @@ def validate_manifest(manifest: dict, context: str = "toolchain manifest") -> No
         "source_lock_sha256": str,
         "profiles_sha256": str,
         "source_commit": str,
+        "producer_commit": str,
+        "tools_commit": str,
         "source_date_epoch": int,
         "capabilities": list,
         "build_environment": dict,
@@ -167,10 +169,11 @@ def validate_manifest(manifest: dict, context: str = "toolchain manifest") -> No
             fail(f"{context} has invalid {field}")
     if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", manifest["llvm_version"]):
         fail(f"{context} has invalid llvm_version")
-    if len(manifest["source_commit"]) != 40 or any(
-        character not in "0123456789abcdef" for character in manifest["source_commit"]
-    ):
-        fail(f"{context} has invalid source_commit")
+    for field in ("source_commit", "producer_commit", "tools_commit"):
+        if len(manifest[field]) != 40 or any(
+            character not in "0123456789abcdef" for character in manifest[field]
+        ):
+            fail(f"{context} has invalid {field}")
     if type(manifest["source_date_epoch"]) is not int or manifest["source_date_epoch"] < 0:
         fail(f"{context} has invalid source_date_epoch")
     capabilities = manifest["capabilities"]
@@ -353,11 +356,15 @@ def validate_host_python_packages(lock: dict) -> list[dict]:
 
 
 def validate_recipe(recipe: dict, context: str = "toolchain recipe") -> None:
-    if recipe.get("schema") != "aros-ng-toolchain-recipe-v1":
+    if recipe.get("schema") != "aros-toolchain-recipe-v2":
         fail(f"{context} has an unsupported schema")
     for field, length in (
         ("source_commit", 40),
         ("source_tree", 40),
+        ("producer_commit", 40),
+        ("producer_tree", 40),
+        ("tools_commit", 40),
+        ("tools_tree", 40),
         ("source_lock_sha256", 64),
         ("profiles_sha256", 64),
         ("recipe_sha256", 64),
@@ -423,7 +430,7 @@ def command_prefetch(args: argparse.Namespace) -> None:
             temporary = target.with_name(target.name + f".tmp-{os.getpid()}")
             try:
                 request = urllib.request.Request(
-                    source["url"], headers={"User-Agent": "AROS-NG-toolchain-producer/1"}
+                    source["url"], headers={"User-Agent": "aros-toolchain-producer/2"}
                 )
                 with urllib.request.urlopen(request, timeout=60) as response, temporary.open(
                     "wb"
@@ -461,14 +468,27 @@ def git(source_root: Path, *arguments: str) -> str:
     return result.stdout.strip()
 
 
-def command_recipe(args: argparse.Namespace) -> None:
-    root = args.source_root.resolve()
-    if not args.allow_dirty:
+def repository_identity(root: Path, label: str, allow_dirty: bool) -> tuple[str, str, int]:
+    root = root.resolve()
+    if not allow_dirty:
         dirty = git(root, "status", "--porcelain", "--untracked-files=all")
         if dirty:
-            fail("source tree is dirty; release recipes require a clean commit")
+            fail(f"{label} tree is dirty; release recipes require clean commits")
     commit = git(root, "rev-parse", "HEAD")
     tree = git(root, "rev-parse", "HEAD^{tree}")
+    epoch = int(git(root, "show", "-s", "--format=%ct", commit))
+    return commit, tree, epoch
+
+
+def command_recipe(args: argparse.Namespace) -> None:
+    root = args.source_root.resolve()
+    commit, tree, source_epoch = repository_identity(root, "AROS source", args.allow_dirty)
+    producer_commit, producer_tree, producer_epoch = repository_identity(
+        args.producer_root, "producer", args.allow_dirty
+    )
+    tools_commit, tools_tree, tools_epoch = repository_identity(
+        args.tools_root, "aros-tools", args.allow_dirty
+    )
     lock = args.lock.resolve()
     profiles = args.profiles.resolve()
     lock_data = read_json(lock)
@@ -486,12 +506,15 @@ def command_recipe(args: argparse.Namespace) -> None:
         patches.append(
             {"path": patch.relative_to(root).as_posix(), "sha256": sha256_file(patch)}
         )
-    epoch = int(git(root, "show", "-s", "--format=%ct", commit))
     material = {
-        "schema": "aros-ng-toolchain-recipe-v1",
+        "schema": "aros-toolchain-recipe-v2",
         "source_commit": commit,
         "source_tree": tree,
-        "source_date_epoch": epoch,
+        "producer_commit": producer_commit,
+        "producer_tree": producer_tree,
+        "tools_commit": tools_commit,
+        "tools_tree": tools_tree,
+        "source_date_epoch": max(source_epoch, producer_epoch, tools_epoch),
         "source_lock_sha256": sha256_file(lock),
         "profiles_sha256": sha256_file(profiles),
         "patches": sorted(patches, key=lambda item: item["path"]),
@@ -511,19 +534,27 @@ def command_verify_checkout(args: argparse.Namespace) -> None:
         fail("source lock differs from checkout recipe")
     if sha256_file(args.profiles) != recipe["profiles_sha256"]:
         fail("target profiles differ from checkout recipe")
-    dirty = git(root, "status", "--porcelain", "--untracked-files=no")
-    if dirty:
-        fail("tracked source tree differs from HEAD")
-    actual_commit = git(root, "rev-parse", "HEAD")
-    actual_tree = git(root, "rev-parse", "HEAD^{tree}")
-    if actual_commit != recipe["source_commit"]:
-        fail(
-            f"checkout commit differs from recipe: "
-            f"{actual_commit} != {recipe['source_commit']}"
-        )
-    if actual_tree != recipe["source_tree"]:
-        fail(f"checkout tree differs from recipe: {actual_tree} != {recipe['source_tree']}")
-    print(f"verified checkout {actual_commit} {actual_tree}")
+    for checkout, label, commit_field, tree_field in (
+        (root, "AROS source", "source_commit", "source_tree"),
+        (args.producer_root.resolve(), "producer", "producer_commit", "producer_tree"),
+        (args.tools_root.resolve(), "aros-tools", "tools_commit", "tools_tree"),
+    ):
+        dirty = git(checkout, "status", "--porcelain", "--untracked-files=no")
+        if dirty:
+            fail(f"tracked {label} tree differs from HEAD")
+        actual_commit = git(checkout, "rev-parse", "HEAD")
+        actual_tree = git(checkout, "rev-parse", "HEAD^{tree}")
+        if actual_commit != recipe[commit_field]:
+            fail(
+                f"{label} commit differs from recipe: "
+                f"{actual_commit} != {recipe[commit_field]}"
+            )
+        if actual_tree != recipe[tree_field]:
+            fail(
+                f"{label} tree differs from recipe: "
+                f"{actual_tree} != {recipe[tree_field]}"
+            )
+        print(f"verified {label} {actual_commit} {actual_tree}")
 
 
 def profile_by_name(path: Path, name: str) -> tuple[dict, dict]:
@@ -653,7 +684,7 @@ def write_spdx(path: Path, manifest: dict, lock: dict) -> None:
     packages = [
         {
             "SPDXID": "SPDXRef-Package-AROSToolchain",
-            "name": f"AROS-NG {manifest['target_profile']} toolchain",
+            "name": f"AROS {manifest['target_profile']} toolchain",
             "versionInfo": manifest["release_id"],
             "downloadLocation": "NOASSERTION",
             "filesAnalyzed": False,
@@ -712,11 +743,11 @@ def write_spdx(path: Path, manifest: dict, lock: dict) -> None:
         "spdxVersion": "SPDX-2.3",
         "dataLicense": "CC0-1.0",
         "SPDXID": "SPDXRef-DOCUMENT",
-        "name": f"AROS-NG-toolchain-{manifest['tree_sha256'][:16]}",
-        "documentNamespace": f"https://github.com/metaneutrons/AROS-NG/toolchain/{manifest['tree_sha256']}",
+        "name": f"AROS-toolchain-{manifest['tree_sha256'][:16]}",
+        "documentNamespace": f"https://github.com/metaneutrons/aros-toolchains/toolchain/{manifest['tree_sha256']}",
         "creationInfo": {
             "created": epoch.strftime("%Y-%m-%dT%H:%M:%SZ"),
-            "creators": ["Tool: AROS-NG-toolchain-producer-1"],
+            "creators": ["Tool: aros-toolchain-producer-2"],
         },
         "documentDescribes": ["SPDXRef-Package-AROSToolchain"],
         "packages": packages,
@@ -766,6 +797,8 @@ def command_package(args: argparse.Namespace) -> None:
             "source_lock_sha256": recipe["source_lock_sha256"],
             "profiles_sha256": recipe["profiles_sha256"],
             "source_commit": recipe["source_commit"],
+            "producer_commit": recipe["producer_commit"],
+            "tools_commit": recipe["tools_commit"],
             "source_date_epoch": epoch,
             "capabilities": profile.get("capabilities", []),
             "build_environment": build_environment,
@@ -818,8 +851,13 @@ def command_repackage(args: argparse.Namespace) -> None:
                 "source archive release ID differs from the recovery request: "
                 f"{manifest['release_id']} != {args.source_release_id}"
             )
-        if manifest["source_commit"] != recipe["source_commit"]:
-            fail("source archive commit differs from the release recipe")
+        for field, label in (
+            ("source_commit", "AROS source"),
+            ("producer_commit", "producer"),
+            ("tools_commit", "aros-tools"),
+        ):
+            if manifest[field] != recipe[field]:
+                fail(f"source archive {label} commit differs from the release recipe")
         if manifest["recipe_sha256"] != recipe["recipe_sha256"]:
             fail("source archive recipe digest differs from the release recipe")
         if manifest["source_lock_sha256"] != recipe["source_lock_sha256"]:
@@ -994,6 +1032,9 @@ def command_index(args: argparse.Namespace) -> None:
     recipe_digests = set()
     source_lock_digests = set()
     profiles_digests = set()
+    source_commits = set()
+    producer_commits = set()
+    tools_commits = set()
     for manifest_path in manifests:
         manifest = read_json(manifest_path)
         validate_manifest(manifest, str(manifest_path))
@@ -1026,6 +1067,9 @@ def command_index(args: argparse.Namespace) -> None:
         recipe_digests.add(manifest.get("recipe_sha256"))
         source_lock_digests.add(manifest.get("source_lock_sha256"))
         profiles_digests.add(manifest.get("profiles_sha256"))
+        source_commits.add(manifest.get("source_commit"))
+        producer_commits.add(manifest.get("producer_commit"))
+        tools_commits.add(manifest.get("tools_commit"))
         assets.append(
             {
                 "asset": asset_name,
@@ -1049,14 +1093,28 @@ def command_index(args: argparse.Namespace) -> None:
         missing = sorted(COMPLETE_V1_MATRIX - matrix_entries)
         extra = sorted(matrix_entries - COMPLETE_V1_MATRIX)
         fail(f"incomplete v1 release matrix; missing={missing}, extra={extra}")
-    if len(recipe_digests) != 1 or len(source_lock_digests) != 1 or len(profiles_digests) != 1:
+    if (
+        len(recipe_digests) != 1
+        or len(source_lock_digests) != 1
+        or len(profiles_digests) != 1
+        or len(source_commits) != 1
+        or len(producer_commits) != 1
+        or len(tools_commits) != 1
+    ):
         fail("mixed or missing recipe input digests in publish directory")
     if args.require_complete_v1:
-        recipe_path = directory / "toolchain-recipe-v1.json"
+        recipe_path = directory / "toolchain-recipe-v2.json"
         recipe = read_json(recipe_path)
         validate_recipe(recipe, str(recipe_path))
         if recipe_digests != {recipe["recipe_sha256"]}:
             fail("published recipe does not match artifact manifests")
+        for values, field in (
+            (source_commits, "source_commit"),
+            (producer_commits, "producer_commit"),
+            (tools_commits, "tools_commit"),
+        ):
+            if values != {recipe[field]}:
+                fail(f"published {field} does not match artifact manifests")
         source_locks = sorted(directory.glob("*.sources.json"))
         if len(source_locks) != 1 or source_lock_digests != {sha256_file(source_locks[0])}:
             fail("published source lock does not match artifact manifests")
@@ -1064,7 +1122,7 @@ def command_index(args: argparse.Namespace) -> None:
         if not profiles_path.is_file() or profiles_digests != {sha256_file(profiles_path)}:
             fail("published profiles do not match artifact manifests")
         required_support = {
-            "toolchain-recipe-v1.json",
+            "toolchain-recipe-v2.json",
             source_locks[0].name,
             "profiles-v1.json",
             "toolchain-manifest-v1.schema.json",
@@ -1109,6 +1167,9 @@ def command_index(args: argparse.Namespace) -> None:
         "schema": 1,
         "release_id": release_id,
         "base_url": base_url,
+        "source_commit": next(iter(source_commits)),
+        "producer_commit": next(iter(producer_commits)),
+        "tools_commit": next(iter(tools_commits)),
         "artifacts": assets,
     }
     (directory / "toolchain-index-v1.json").write_text(json.dumps(index, sort_keys=True, indent=2) + "\n")
@@ -1129,6 +1190,8 @@ def parser() -> argparse.ArgumentParser:
     prefetch.set_defaults(function=command_prefetch)
     recipe = commands.add_parser("recipe")
     recipe.add_argument("--source-root", type=Path, required=True)
+    recipe.add_argument("--producer-root", type=Path, required=True)
+    recipe.add_argument("--tools-root", type=Path, required=True)
     recipe.add_argument("--lock", type=Path, required=True)
     recipe.add_argument("--profiles", type=Path, required=True)
     recipe.add_argument("--output", type=Path, required=True)
@@ -1136,6 +1199,8 @@ def parser() -> argparse.ArgumentParser:
     recipe.set_defaults(function=command_recipe)
     checkout = commands.add_parser("verify-checkout")
     checkout.add_argument("--source-root", type=Path, required=True)
+    checkout.add_argument("--producer-root", type=Path, required=True)
+    checkout.add_argument("--tools-root", type=Path, required=True)
     checkout.add_argument("--recipe", type=Path, required=True)
     checkout.add_argument("--lock", type=Path, required=True)
     checkout.add_argument("--profiles", type=Path, required=True)

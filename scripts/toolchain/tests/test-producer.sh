@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2016
 set -euo pipefail
 export PYTHONDONTWRITEBYTECODE=1
 
 script_dir=$(cd "$(dirname "$0")" && pwd -P)
 source_root=$(cd "$script_dir/../../.." && pwd -P)
 producer="$source_root/scripts/toolchain/producer.py"
+: "${AROS_TEST_SOURCE_ROOT:?AROS_TEST_SOURCE_ROOT must name the AROS source checkout}"
 asset=aros-toolchain-v1-llvm11.0.0-linux-x86_64-pc-x86_64.tar.xz
 grep -Fq -- '--with-toolchain=llvm' "$source_root/scripts/toolchain/compatibility.sh"
 grep -Fq -- '--with-aros-toolchain=yes' "$source_root/scripts/toolchain/compatibility.sh"
@@ -34,14 +36,12 @@ grep -Fq -- 'env ac_cv_prog_cc_c23=' "$source_root/scripts/toolchain/compatibili
 grep -Fq -- 'AROS_TOOLCHAIN_SOURCE_CACHE' "$source_root/.github/workflows/toolchain-release.yml"
 grep -Fq -- 'submodules: recursive' "$source_root/.github/workflows/toolchain-release.yml"
 python3 - "$source_root/.github/workflows/toolchain-release.yml" \
-    "$source_root/.github/workflows/toolchain-release-recovery.yml" \
-    "$source_root/scripts/ci/install-build-prerequisites.sh" <<'PY'
+    "$source_root/.github/workflows/toolchain-release-recovery.yml" <<'PY'
 from pathlib import Path
 import sys
 
 workflow = Path(sys.argv[1]).read_text(encoding="utf-8")
 recovery = Path(sys.argv[2]).read_text(encoding="utf-8")
-prerequisites = Path(sys.argv[3]).read_text(encoding="utf-8")
 start = workflow.index("          name: verified-toolchain-sources")
 end = workflow.index("\n\n  build:", start)
 source_artifact = workflow[start:end]
@@ -92,14 +92,8 @@ if workflow.count("libpng-dev") != 1 or workflow.count("gnu-sed") != 1:
 consumer_start = workflow.index("      - name: Install audited consumer prerequisites")
 consumer_end = workflow.index("      - name: Two-root relocation", consumer_start)
 consumer = workflow[consumer_start:consumer_end]
-if "bash scripts/ci/install-build-prerequisites.sh" not in consumer:
-    raise SystemExit("toolchain consumers must use the shared host prerequisite contract")
-for package in ("clang", "libpng-dev", "lld", "llvm", "netpbm"):
-    if package not in prerequisites:
-        raise SystemExit(f"Linux consumer lost audited build prerequisite {package}")
-for formula in ("coreutils", "gettext", "lld", "llvm", "pkgconf", "python@3.14", "texinfo"):
-    if formula not in prerequisites:
-        raise SystemExit(f"macOS consumer lost audited GRUB prerequisite {formula}")
+if "bash dependencies/aros/scripts/ci/install-build-prerequisites.sh" not in consumer:
+    raise SystemExit("toolchain consumers must use the checked-out AROS prerequisite contract")
 if "name: build-observation-${{ matrix.host }}-${{ matrix.profile }}-${{ matrix.copy }}" not in workflow:
     raise SystemExit("each producer must retain its observed environment outside the release archive")
 PY
@@ -114,68 +108,8 @@ if workflow.count("github-token: ${{ github.token }}") != 2:
     raise SystemExit("cross-run artifact downloads require the scoped GitHub token")
 if workflow.count("profile:") != 12:
     raise SystemExit("compatibility replay must cover the complete twelve-lane matrix")
-if workflow.count("bash scripts/ci/install-build-prerequisites.sh") != 1:
+if workflow.count("bash dependencies/aros/scripts/ci/install-build-prerequisites.sh") != 1:
     raise SystemExit("compatibility replay must use the shared host prerequisite contract")
-PY
-python3 - "$source_root/.github/workflows/ci-build-matrix.yml" \
-    "$source_root/aros-toolchains.lock.toml" <<'PY'
-from pathlib import Path
-import sys
-import tomllib
-
-workflow = Path(sys.argv[1]).read_text(encoding="utf-8")
-lock = tomllib.load(open(sys.argv[2], "rb"))
-if "toolchain_source_run_id:" not in workflow:
-    raise SystemExit("product qualification must retain the explicit candidate-run input")
-input_start = workflow.index("      toolchain_source_run_id:")
-input_end = workflow.index("  push:", input_start)
-input_contract = workflow[input_start:input_end]
-if "        required: false" not in input_contract or "        default: ''" not in input_contract:
-    raise SystemExit("published-lock qualification must be the default manual path")
-if workflow.count("run-id: ${{ inputs.toolchain_source_run_id }}") != 1:
-    raise SystemExit("candidate qualification must source its toolchain from the declared producer run")
-if workflow.count("github-token: ${{ github.token }}") != 1:
-    raise SystemExit("cross-run candidate qualification requires the scoped GitHub token")
-if workflow.count("if: inputs.toolchain_source_run_id != ''") != 2:
-    raise SystemExit("only candidate download and extraction may depend on the optional run ID")
-build_start = workflow.index("  build-matrix:")
-build_steps = workflow.index("    steps:", build_start)
-if "if: inputs.toolchain_source_run_id" in workflow[build_start:build_steps]:
-    raise SystemExit("published-lock product builds must run without a candidate run ID")
-for host, runner in (("linux-x86_64", "ubuntu-24.04"), ("macos-aarch64", "macos-15")):
-    for profile in ("pc-x86_64", "arm-raspi", "rpi-aarch64"):
-        lane = f"- {{ host: {host}, runner: {runner}, preset: {profile} }}"
-        if workflow.count(lane) != 1:
-            raise SystemExit(f"product qualification lost {host}/{profile}")
-if workflow.count("target/release/aros build") != 2:
-    raise SystemExit("lock and candidate qualification must both use the public aros build path")
-if workflow.count("--toolchain-dir \"$RUNNER_TEMP/aros-toolchain\"") != 1:
-    raise SystemExit("only candidate qualification may pass an explicit toolchain directory")
-if 'if [[ -n "$TOOLCHAIN_SOURCE_RUN_ID" ]]' not in workflow:
-    raise SystemExit("product qualification must select candidate mode explicitly")
-if workflow.count("scripts/toolchain/producer.py verify") != 1:
-    raise SystemExit("unpublished candidate archives must pass the safe producer verifier")
-if "cmake --preset" in workflow or "cmake --build build/" in workflow:
-    raise SystemExit("product qualification must not bypass aros-cli with host-compiler CMake calls")
-published_hosts = {"linux-x86_64", "linux-aarch64", "macos-x86_64", "macos-aarch64"}
-published_profiles = {"pc-x86_64", "arm-raspi", "rpi-aarch64"}
-published = {
-    (artifact["host"], artifact["target_profile"]): artifact
-    for artifact in lock["artifacts"]
-    if artifact["enabled"]
-}
-if set(published) != {(host, profile) for host in published_hosts for profile in published_profiles}:
-    raise SystemExit("published lock must enable exactly the four-host by three-profile matrix")
-expected_base_url = (
-    "https://github.com/metaneutrons/AROS-NG/releases/download/" + lock["release_id"]
-)
-if lock.get("base_url") != expected_base_url:
-    raise SystemExit("published lock must use the canonical immutable GitHub release URL")
-for selector, artifact in published.items():
-    if artifact["sha256"] == "0" * 64 or artifact["tree_sha256"] == "0" * 64:
-        raise SystemExit(f"published lock contains a null digest for {selector}")
-    if artifact.get("size", 0) <= 0 or artifact.get("disabled_reason"):
-        raise SystemExit(f"published lock contains provisional metadata for {selector}")
 PY
 python3 - "$source_root/scripts/toolchain/build-release.sh" <<'PY'
 from pathlib import Path
@@ -205,7 +139,21 @@ trap 'rm -rf "$temporary"' EXIT
 mkdir -p "$temporary/checkout"
 git -C "$temporary/checkout" init -q
 printf '%s\n' 'tracked fixture' > "$temporary/checkout/tracked.txt"
-git -C "$temporary/checkout" add tracked.txt
+python3 - "$source_root/toolchains/llvm-11.0.0.sources.json" "$temporary/checkout" <<'PY'
+import json
+from pathlib import Path
+import sys
+
+lock = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+root = Path(sys.argv[2]) / "tools" / "crosstools" / "llvm"
+root.mkdir(parents=True)
+for source in lock["sources"]:
+    filename = source["filename"]
+    (root / f"{filename.removesuffix('.tar.xz')}-aros.diff").write_text(
+        f"fixture patch for {filename}\n", encoding="utf-8"
+    )
+PY
+git -C "$temporary/checkout" add .
 git -C "$temporary/checkout" \
     -c user.name=AROS-NG \
     -c user.email=toolchain-producer@example.invalid \
@@ -223,9 +171,13 @@ import json
 from pathlib import Path
 import sys
 recipe = {
-    "schema": "aros-ng-toolchain-recipe-v1",
+    "schema": "aros-toolchain-recipe-v2",
     "source_commit": sys.argv[2],
     "source_tree": sys.argv[3],
+    "producer_commit": sys.argv[2],
+    "producer_tree": sys.argv[3],
+    "tools_commit": sys.argv[2],
+    "tools_tree": sys.argv[3],
     "source_date_epoch": int(sys.argv[4]),
     "source_lock_sha256": hashlib.sha256(Path(sys.argv[5]).read_bytes()).hexdigest(),
     "profiles_sha256": hashlib.sha256(Path(sys.argv[6]).read_bytes()).hexdigest(),
@@ -239,6 +191,8 @@ Path(sys.argv[1]).write_text(json.dumps(recipe, sort_keys=True, indent=2) + "\n"
 PY
 python3 "$producer" verify-checkout \
     --source-root "$temporary/checkout" \
+    --producer-root "$temporary/checkout" \
+    --tools-root "$temporary/checkout" \
     --recipe "$temporary/checkout-recipe.json" \
     --lock "$temporary/checkout-lock.json" \
     --profiles "$temporary/checkout-profiles.json" >/dev/null
@@ -246,12 +200,16 @@ mkdir -p "$temporary/checkout/source-cache"
 printf '%s\n' 'allowed untracked cache' > "$temporary/checkout/source-cache/input"
 python3 "$producer" verify-checkout \
     --source-root "$temporary/checkout" \
+    --producer-root "$temporary/checkout" \
+    --tools-root "$temporary/checkout" \
     --recipe "$temporary/checkout-recipe.json" \
     --lock "$temporary/checkout-lock.json" \
     --profiles "$temporary/checkout-profiles.json" >/dev/null
 printf '%s\n' 'mutated source lock fixture' > "$temporary/checkout-lock.json"
 if python3 "$producer" verify-checkout \
     --source-root "$temporary/checkout" \
+    --producer-root "$temporary/checkout" \
+    --tools-root "$temporary/checkout" \
     --recipe "$temporary/checkout-recipe.json" \
     --lock "$temporary/checkout-lock.json" \
     --profiles "$temporary/checkout-profiles.json" >/dev/null 2>&1; then
@@ -262,6 +220,8 @@ printf '%s\n' 'source lock fixture' > "$temporary/checkout-lock.json"
 printf '%s\n' 'tracked mutation' >> "$temporary/checkout/tracked.txt"
 if python3 "$producer" verify-checkout \
     --source-root "$temporary/checkout" \
+    --producer-root "$temporary/checkout" \
+    --tools-root "$temporary/checkout" \
     --recipe "$temporary/checkout-recipe.json" \
     --lock "$temporary/checkout-lock.json" \
     --profiles "$temporary/checkout-profiles.json" >/dev/null 2>&1; then
@@ -304,7 +264,9 @@ make_fixture() {
 make_fixture "$temporary/root-a"
 make_fixture "$temporary/root-b"
 python3 "$producer" recipe \
-    --source-root "$source_root" \
+    --source-root "$temporary/checkout" \
+    --producer-root "$temporary/checkout" \
+    --tools-root "$temporary/checkout" \
     --lock "$source_root/toolchains/llvm-11.0.0.sources.json" \
     --profiles "$source_root/toolchains/profiles-v1.json" \
     --output "$temporary/recipe.json" \
@@ -360,7 +322,8 @@ recovered = json.load(open(sys.argv[2], encoding="utf-8"))
 assert source["release_id"] == "toolchain-test-v1"
 assert recovered["release_id"] == "toolchain-recovery-test-v1"
 for field in (
-    "source_commit", "recipe_sha256", "source_lock_sha256",
+    "source_commit", "producer_commit", "tools_commit",
+    "recipe_sha256", "source_lock_sha256",
     "profiles_sha256", "tree_sha256", "build_environment",
 ):
     assert recovered[field] == source[field]
@@ -506,7 +469,7 @@ for host in linux-x86_64 linux-aarch64 macos-x86_64 macos-aarch64; do
             --forbid-prefix "$temporary" >/dev/null
     done
 done
-cp "$temporary/recipe.json" "$temporary/complete/toolchain-recipe-v1.json"
+cp "$temporary/recipe.json" "$temporary/complete/toolchain-recipe-v2.json"
 cp "$source_root/toolchains/llvm-11.0.0.sources.json" "$temporary/complete/"
 cp "$source_root/toolchains/profiles-v1.json" "$temporary/complete/"
 cp "$source_root/toolchains/toolchain-manifest-v1.schema.json" "$temporary/complete/"

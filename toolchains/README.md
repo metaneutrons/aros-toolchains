@@ -1,4 +1,4 @@
-# AROS-NG toolchain releases
+# AROS toolchain release contract
 
 This directory defines the immutable inputs and target profiles used by the
 GitHub toolchain producer. The producer deliberately invokes the historical
@@ -50,7 +50,8 @@ into a separate hand-maintained download lock.
 
 1. Download the complete draft and verify every entry in `SHA256SUMS`, the
    GitHub/Sigstore provenance bundle, all twelve SBOMs, and the successful
-   comparison/relocation/upstream/AROS-NG jobs for the tag. Do not replace an
+   comparison, relocation, vanilla-upstream, and AROS-NX jobs for the tag. Do
+   not replace an
    asset in place; rebuild under a new tag if anything differs.
 2. Inspect `toolchain-index-v1.json`: it must contain the tag as `release_id`,
    the final GitHub release-download URL as `base_url`, and exactly twelve
@@ -61,7 +62,8 @@ into a separate hand-maintained download lock.
    download at least one asset through its final `base_url` and recheck its
    SHA-256. The JSON catalog can also be exercised directly with
    `AROS_TOOLCHAIN_LOCK=/path/to/toolchain-index-v1.json`.
-4. Promote the same data into `aros-toolchains.lock.toml`: set its
+4. Promote the same data into the consuming repository's
+   `aros-toolchains.lock.toml`: set its
    `release_id` and `base_url`, copy every artifact's asset name, archive SHA,
    tree SHA, size, LLVM version, extraction depth, and required paths, remove
    `disabled_reason`, and set `enabled = true`. Commit that lock change only
@@ -69,9 +71,9 @@ into a separate hand-maintained download lock.
 
 These gates were completed for
 [`toolchain-v1-20260829-rc3`](https://github.com/metaneutrons/AROS-NG/releases/tag/toolchain-v1-20260829-rc3).
-Its twelve four-host/three-profile entries are enabled in the repository lock;
-the separate RISC-V declarations remain disabled because RC3 contains no
-RISC-V artifacts.
+Its twelve four-host/three-profile entries were enabled in the AROS-NG consumer
+lock; the separate RISC-V declarations remained disabled because RC3 contains
+no RISC-V artifacts. RC3 is historical evidence and is not republished here.
 
 ### Recover a packaging-only draft failure
 

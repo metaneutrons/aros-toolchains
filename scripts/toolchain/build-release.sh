@@ -2,11 +2,13 @@
 set -euo pipefail
 
 usage() {
-    echo "usage: $0 --source-root DIR --work-dir DIR --source-cache DIR --recipe FILE --lock FILE --profiles FILE --profile NAME --host ID --release-id ID --output-dir DIR" >&2
+    echo "usage: $0 --producer-root DIR --aros-source-root DIR --aros-tools-root DIR --work-dir DIR --source-cache DIR --recipe FILE --lock FILE --profiles FILE --profile NAME --host ID --release-id ID --output-dir DIR" >&2
     exit 2
 }
 
-source_root=
+producer_root=
+aros_source_root=
+aros_tools_root=
 work_dir=
 source_cache=
 recipe=
@@ -20,7 +22,9 @@ jobs="${AROS_TOOLCHAIN_JOBS:-2}"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --source-root) source_root=$2; shift 2 ;;
+        --producer-root) producer_root=$2; shift 2 ;;
+        --aros-source-root) aros_source_root=$2; shift 2 ;;
+        --aros-tools-root) aros_tools_root=$2; shift 2 ;;
         --work-dir) work_dir=$2; shift 2 ;;
         --source-cache) source_cache=$2; shift 2 ;;
         --recipe) recipe=$2; shift 2 ;;
@@ -35,11 +39,14 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-[[ -n "$source_root" && -n "$work_dir" && -n "$source_cache" && -n "$recipe" && \
+[[ -n "$producer_root" && -n "$aros_source_root" && -n "$aros_tools_root" && \
+   -n "$work_dir" && -n "$source_cache" && -n "$recipe" && \
    -n "$lock" && -n "$profiles" && -n "$profile" && -n "$host_id" && \
    -n "$release_id" && -n "$output_dir" ]] || usage
 
-source_root=$(cd "$source_root" && pwd -P)
+producer_root=$(cd "$producer_root" && pwd -P)
+aros_source_root=$(cd "$aros_source_root" && pwd -P)
+aros_tools_root=$(cd "$aros_tools_root" && pwd -P)
 mkdir -p "$work_dir" "$source_cache" "$output_dir"
 work_dir=$(cd "$work_dir" && pwd -P)
 source_cache=$(cd "$source_cache" && pwd -P)
@@ -66,8 +73,10 @@ target_triple=${profile_values#*|}
 llvm_version=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["version"])' "$lock")
 source_epoch=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["source_date_epoch"])' "$recipe")
 
-python3 "$source_root/scripts/toolchain/producer.py" verify-checkout \
-    --source-root "$source_root" \
+python3 "$producer_root/scripts/toolchain/producer.py" verify-checkout \
+    --producer-root "$producer_root" \
+    --source-root "$aros_source_root" \
+    --tools-root "$aros_tools_root" \
     --recipe "$recipe" \
     --lock "$lock" \
     --profiles "$profiles"
@@ -99,10 +108,10 @@ open(sys.argv[1], "w", encoding="utf-8").write(json.dumps(contract, sort_keys=Tr
 open(sys.argv[2], "w", encoding="utf-8").write(json.dumps(observation, sort_keys=True, indent=2) + "\n")
 PY
 
-python3 "$source_root/scripts/toolchain/producer.py" prefetch \
+python3 "$producer_root/scripts/toolchain/producer.py" prefetch \
     --lock "$lock" --destination "$source_cache" --offline
 
-rust_version=$(python3 - "$source_root/toolchains/rust-toolchain.toml" <<'PY'
+rust_version=$(python3 - "$producer_root/toolchains/rust-toolchain.toml" <<'PY'
 import sys, tomllib
 print(tomllib.load(open(sys.argv[1], "rb"))["toolchain"]["channel"])
 PY
@@ -133,12 +142,12 @@ if [[ $(uname -s) == Linux ]]; then
     export RANLIBFLAGS=-D
 fi
 export AROS_VERIFIED_SOURCE_INDEX="$source_cache/sources.verified.json"
-export AROS_UPSTREAM_FETCH="$source_root/scripts/fetch.sh"
+export AROS_UPSTREAM_FETCH="$aros_source_root/scripts/fetch.sh"
 # `cmake --build` is not a GNU-make recursive recipe, so it cannot consume
 # the outer jobserver. Keep all nested CMake stages at the requested producer
 # parallelism instead of silently falling back to one job.
 export CMAKE_BUILD_PARALLEL_LEVEL="$jobs"
-prefix_maps="-ffile-prefix-map=$source_root=/usr/src/aros-ng -fdebug-prefix-map=$source_root=/usr/src/aros-ng -fmacro-prefix-map=$source_root=/usr/src/aros-ng -ffile-prefix-map=$work_dir=/usr/src/aros-build -fdebug-prefix-map=$work_dir=/usr/src/aros-build -fmacro-prefix-map=$work_dir=/usr/src/aros-build"
+prefix_maps="-ffile-prefix-map=$producer_root=/usr/src/aros-toolchain-producer -fdebug-prefix-map=$producer_root=/usr/src/aros-toolchain-producer -fmacro-prefix-map=$producer_root=/usr/src/aros-toolchain-producer -ffile-prefix-map=$aros_source_root=/usr/src/aros -fdebug-prefix-map=$aros_source_root=/usr/src/aros -fmacro-prefix-map=$aros_source_root=/usr/src/aros -ffile-prefix-map=$aros_tools_root=/usr/src/aros-tools -fdebug-prefix-map=$aros_tools_root=/usr/src/aros-tools -fmacro-prefix-map=$aros_tools_root=/usr/src/aros-tools -ffile-prefix-map=$work_dir=/usr/src/aros-build -fdebug-prefix-map=$work_dir=/usr/src/aros-build -fmacro-prefix-map=$work_dir=/usr/src/aros-build"
 export CFLAGS="${CFLAGS:-} $prefix_maps"
 export CXXFLAGS="${CXXFLAGS:-} $prefix_maps"
 # The target runtime CMake invocations set CMAKE_{C,CXX,ASM}_FLAGS explicitly,
@@ -149,14 +158,14 @@ umask 022
 
 mkdir -p "$build_dir" "$prefix"
 host_python_runner=(
-    python3 -B "$source_root/scripts/toolchain/host-python-env.py"
+    python3 -B "$producer_root/scripts/toolchain/host-python-env.py"
     --lock "$lock"
     --cache "$source_cache"
 )
 (
     cd "$build_dir"
     "${host_python_runner[@]}" --work-dir "$work_dir/host-python-configure" -- \
-        "$source_root/configure" \
+        "$aros_source_root/configure" \
         --target="$configure_target" \
         --with-toolchain=llvm \
         --with-llvm-version="$llvm_version" \
@@ -172,7 +181,7 @@ fi
 "${host_python_runner[@]}" --work-dir "$work_dir/host-python-make" -- \
     "$make_program" -C "$build_dir" -j "$jobs" crosstools-release \
     AROS_TOOLCHAIN_DEFAULT_SYSROOT= \
-    FETCH="$source_root/scripts/toolchain/offline-fetch.py"
+    FETCH="$producer_root/scripts/toolchain/offline-fetch.py"
 
 # The release collector is the focused Rust implementation shared with
 # aros-cli. Cargo.lock fixes every crate source; the workflow materialises the
@@ -196,11 +205,11 @@ PY
 # and Rust retains their source locations for panic diagnostics even when
 # debuginfo is stripped. Remap that producer input as deliberately as the
 # checkout and build roots; otherwise two caches yield different collectors.
-collector_rustflags="--remap-path-prefix=$source_cache=/usr/src/aros-sources --remap-path-prefix=$source_root=/usr/src/aros-ng --remap-path-prefix=$work_dir=/usr/src/aros-build -Cdebuginfo=0 -Cstrip=symbols -Ccodegen-units=1"
+collector_rustflags="--remap-path-prefix=$source_cache=/usr/src/aros-sources --remap-path-prefix=$aros_tools_root=/usr/src/aros-tools --remap-path-prefix=$work_dir=/usr/src/aros-build -Cdebuginfo=0 -Cstrip=symbols -Ccodegen-units=1"
 collector_cargo=(cargo --config 'net.offline=true' --config "$vendor_config")
 collector_args=(
     --locked --offline --release --package aros-collect
-    --manifest-path "$source_root/tools/aros-tools/Cargo.toml"
+    --manifest-path "$aros_tools_root/Cargo.toml"
     --target-dir "$work_dir/rust-target"
 )
 RUSTFLAGS="$collector_rustflags" "${collector_cargo[@]}" build \
@@ -219,7 +228,7 @@ rm -f "$prefix/bin/llvm-config"
 rm -rf "$prefix/lib/cmake/llvm"
 
 asset_name="aros-toolchain-v1-llvm${llvm_version}-${host_id}-${profile}.tar.xz"
-python3 "$source_root/scripts/toolchain/producer.py" package \
+python3 "$producer_root/scripts/toolchain/producer.py" package \
     --root "$prefix" \
     --recipe "$recipe" \
     --lock "$lock" \
@@ -231,7 +240,9 @@ python3 "$source_root/scripts/toolchain/producer.py" package \
     --output-dir "$output_dir" \
     --build-environment "$work_dir/build-environment.json" \
     --forbid-prefix "$source_cache" \
-    --forbid-prefix "$source_root" \
+    --forbid-prefix "$producer_root" \
+    --forbid-prefix "$aros_source_root" \
+    --forbid-prefix "$aros_tools_root" \
     --forbid-prefix "$work_dir" \
     --forbid-prefix "$prefix"
 

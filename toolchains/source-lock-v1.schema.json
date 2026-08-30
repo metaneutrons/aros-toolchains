@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/metaneutrons/AROS-NG/toolchains/source-lock-v1.schema.json",
-  "title": "AROS-NG toolchain source lock v1",
+  "$id": "https://github.com/metaneutrons/aros-toolchains/toolchains/source-lock-v1.schema.json",
+  "title": "AROS toolchain source lock v1",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema", "family", "version", "sources", "host_python_packages"],

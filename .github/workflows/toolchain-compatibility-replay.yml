@@ -16,6 +16,10 @@ env:
   LLVM_VERSION: 11.0.0
   PROFILES: toolchains/profiles-v1.json
   SOURCE_LOCK: toolchains/llvm-11.0.0.sources.json
+  AROS_SOURCE_REPOSITORY: metaneutrons/AROS-NG
+  AROS_SOURCE_COMMIT: 9e839795bb0629aa6b0d2623f354f184d9a59929
+  AROS_TOOLS_REPOSITORY: metaneutrons/aros-tools
+  AROS_TOOLS_COMMIT: 4b13d3ff1a30fffbab5e32cddc480a0959fa1667
 
 jobs:
   compatibility:
@@ -39,8 +43,17 @@ jobs:
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          repository: ${{ env.AROS_SOURCE_REPOSITORY }}
+          ref: ${{ env.AROS_SOURCE_COMMIT }}
           submodules: recursive
+          path: dependencies/aros
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ env.AROS_TOOLS_REPOSITORY }}
+          ref: ${{ env.AROS_TOOLS_COMMIT }}
+          path: dependencies/aros-tools
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           name: verified-${{ matrix.host }}-${{ matrix.profile }}
@@ -55,7 +68,7 @@ jobs:
           run-id: ${{ inputs.source_run_id }}
       - uses: ./.github/actions/setup-aros-rust
       - name: Install audited consumer prerequisites
-        run: bash scripts/ci/install-build-prerequisites.sh
+        run: bash dependencies/aros/scripts/ci/install-build-prerequisites.sh
       - name: Two-root relocation and pinned upstream compatibility
         env:
           AROS_TOOLCHAIN_SOURCE_CACHE: ${{ github.workspace }}/source-cache
@@ -69,4 +82,6 @@ jobs:
             "${{ matrix.profile }}" \
             "$GITHUB_WORKSPACE/$PROFILES" \
             "$upstream_commit" \
-            "$RUNNER_TEMP/consumer-${{ matrix.profile }}"
+            "$RUNNER_TEMP/consumer-${{ matrix.profile }}" \
+            "$GITHUB_WORKSPACE/dependencies/aros" \
+            "$GITHUB_WORKSPACE/dependencies/aros-tools"
