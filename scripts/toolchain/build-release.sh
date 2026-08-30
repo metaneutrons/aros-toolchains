@@ -89,11 +89,11 @@ def version(command):
     except Exception:
         return "unavailable"
 contract = {
-    "schema": "aros-ng-toolchain-build-environment-v1",
+    "schema": "aros-toolchain-build-environment-v1",
     "host": sys.argv[3],
 }
 observation = {
-    "schema": "aros-ng-toolchain-build-observation-v1",
+    "schema": "aros-toolchain-build-observation-v1",
     "host": sys.argv[3],
     "runner_image": os.environ.get("ImageOS", "local"),
     "runner_image_version": os.environ.get("ImageVersion", "local"),

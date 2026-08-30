@@ -464,7 +464,7 @@ def command_prefetch(args: argparse.Namespace) -> None:
         )
         print(f"verified {source['filename']} {source['sha256']}")
     index = {
-        "schema": "aros-ng-toolchain-verified-sources-v1",
+        "schema": "aros-toolchain-verified-sources-v1",
         "lock_sha256": sha256_file(lock_path),
         "sources": sorted(verified, key=lambda item: item["filename"]),
     }
