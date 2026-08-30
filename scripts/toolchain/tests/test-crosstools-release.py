@@ -389,7 +389,14 @@ def main() -> None:
     )
     assert "tools: $(GENMODULE)" in root_tools
     makefile_source = (SOURCE_ROOT / "Makefile.in").read_text(encoding="iso-8859-1")
-    assert "crosstools-release : crosstools-toolchain features" in makefile_source
+    assert "crosstools-release : crosstools-toolchain" in makefile_source
+    release_rule = re.search(
+        r"^crosstools-release\s*:\s*(?P<dependencies>[^\n]+)$",
+        makefile_source,
+        re.MULTILINE,
+    )
+    assert release_rule, "crosstools-release rule is missing"
+    assert "features" not in release_rule.group("dependencies").split()
     assert "toolchain-linklibs-release" in makefile_source
     release_script = (PRODUCER_ROOT / "scripts" / "toolchain" / "build-release.sh").read_text(encoding="utf-8")
     assert "--enable-toolchain-release" in release_script
