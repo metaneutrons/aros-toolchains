@@ -28,6 +28,9 @@ placeholders.
 The source lock establishes deterministic resolution. Bit-for-bit build
 reproducibility is a separate release gate: every host/profile lane is built
 twice, normalized, and compared before compatibility tests or publication.
+This complete four-host by three-profile A/B matrix runs once for an annotated
+release tag. Manual dispatches are limited to diagnostic Linux tiers and cannot
+replace or precede the tag gate.
 Before either build starts, the producer also requires the checkout commit,
 Git tree, source lock, and profile document to match the signed-off recipe and
 rejects any tracked working-tree mutation; untracked transport caches do not
@@ -145,14 +148,15 @@ argument; the downloaded archive must pass `producer.py verify` first.
 
 ## Historical pre-release reproducibility proof
 
-Manual GitHub Actions run
+Historical manual GitHub Actions run
 [`33020916404`](https://github.com/metaneutrons/AROS-NG/actions/runs/33020916404)
 completed all 24 independent producers and all 12 A/B comparisons for the
 four-host by three-profile matrix. Every pair is byte-identical. The exact
 commit, tree, recipe, archive SHA-256 table and the successful 12-lane consumer
 replay are recorded in [HANDOFF.md](HANDOFF.md). This proves the release recipe
-but does not publish artifacts: a new tag must still pass the same fail-closed
-gates and produce a reviewed draft release.
+but does not publish artifacts. It is historical evidence, not a recurring
+precondition: future full A/B qualification occurs exactly once in the
+annotated-tag producer that creates the reviewed draft release.
 
 Observed runner details are deliberately retained beside, rather than inside,
 the stable byte-compared build contract. Each producer uploads a

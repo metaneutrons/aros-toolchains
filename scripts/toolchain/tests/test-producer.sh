@@ -85,6 +85,12 @@ if "uses: ./.github/workflows/toolchain-release-recovery.yml" not in workflow:
     raise SystemExit("registered producer workflow must expose the recovery workflow")
 if "inputs.mode == 'recover'" not in workflow:
     raise SystemExit("producer workflow recovery entry point is not mode-gated")
+if '          - all' in workflow:
+    raise SystemExit("manual producer dispatch must not offer the full host matrix")
+if 'manual scope must be linux-x86_64 or linux' not in workflow:
+    raise SystemExit("manual producer dispatch must fail closed outside diagnostic host tiers")
+if 'the complete four-host A/B matrix is tag-only' not in workflow:
+    raise SystemExit("complete A/B qualification must remain tag-only")
 if workflow.count("netpbm") != 2:
     raise SystemExit("both producer runner families must install netpbm")
 if workflow.count("libpng-dev") != 1 or workflow.count("gnu-sed") != 1:
