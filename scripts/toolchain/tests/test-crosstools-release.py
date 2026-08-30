@@ -21,6 +21,7 @@ from pathlib import Path
 if "AROS_TEST_SOURCE_ROOT" not in os.environ:
     raise SystemExit("AROS_TEST_SOURCE_ROOT must name the AROS source checkout")
 SOURCE_ROOT = Path(os.environ["AROS_TEST_SOURCE_ROOT"]).resolve()
+PRODUCER_ROOT = Path(__file__).resolve().parents[3]
 GENMF = SOURCE_ROOT / "tools" / "genmf" / "genmf.py"
 VARIABLE = re.compile(r"\$\(([^()]+)\)")
 
@@ -381,7 +382,7 @@ def main() -> None:
     makefile_source = (SOURCE_ROOT / "Makefile.in").read_text(encoding="iso-8859-1")
     assert "crosstools-release : crosstools-toolchain features" in makefile_source
     assert "toolchain-linklibs-release" in makefile_source
-    release_script = (SOURCE_ROOT / "scripts" / "toolchain" / "build-release.sh").read_text(encoding="utf-8")
+    release_script = (PRODUCER_ROOT / "scripts" / "toolchain" / "build-release.sh").read_text(encoding="utf-8")
     assert "--enable-toolchain-release" in release_script
     assert "crosstools-release" in release_script
     assert 'export AROS_TOOLCHAIN_REPRO_FLAGS="$prefix_maps"' in release_script

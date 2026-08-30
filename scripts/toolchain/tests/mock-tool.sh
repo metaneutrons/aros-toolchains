@@ -2,7 +2,7 @@
 set -eu
 
 if [ "${1:-}" = "--version" ]; then
-    echo "AROS-NG producer probe mock 1"
+    echo "AROS toolchain producer probe mock 1"
     exit 0
 fi
 
@@ -20,4 +20,4 @@ if [ -z "$output" ]; then
     echo "mock tool: missing -o" >&2
     exit 2
 fi
-printf 'AROS-NG deterministic relocation probe\n' > "$output"
+printf 'AROS deterministic relocation probe\n' > "$output"
