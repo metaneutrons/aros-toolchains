@@ -20,7 +20,7 @@ import tempfile
 import urllib.request
 
 SOURCE_SCHEMA = "aros-ng-toolchain-source-lock-v1"
-PROFILE_SCHEMA = "aros-ng-toolchain-profiles-v1"
+PROFILE_SCHEMA = "aros-toolchain-profiles-v1"
 MANIFEST_SCHEMA = 1
 SUPPORTED_HOSTS = {
     "linux-x86_64",

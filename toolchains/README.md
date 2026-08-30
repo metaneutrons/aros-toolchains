@@ -100,7 +100,7 @@ manifest's `source_commit` remains exact; only the release identity and its
 derived archive/SBOM/checksum files change.  A new index, complete 56-file
 inventory, and GitHub/Sigstore provenance bundle are generated before the new
 draft is created.  This path is not valid for a compiler-build, comparison,
-relocation, upstream-compatibility, or AROS-NG-compatibility failure.
+relocation, upstream-compatibility, or AROS-NX-compatibility failure.
 
 `tree_sha256` is the SHA-256 of the canonical payload inventory, not of the
 compressed archive. The producer walks every payload entry in path order,
@@ -194,6 +194,6 @@ matching, separately produced Developer sysroot. A future `aros-cli`
 application workflow should consume two immutable artifacts: this host/profile
 toolchain and an upstream-compatible target SDK/sysroot. Keeping those
 artifacts separate lets applications select or update an AROS system contract
-without rebuilding the host compiler and lets AROS-NG coexist with vanilla
+without rebuilding the host compiler and lets AROS-NX coexist with vanilla
 AROS SDKs. See [HANDOFF.md](HANDOFF.md) for the current build-check state and
 the exact continuation sequence.

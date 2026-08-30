@@ -1,0 +1,40 @@
+name: Producer contracts
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: producer-contracts-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  AROS_SOURCE_REPOSITORY: metaneutrons/AROS-NX
+  AROS_SOURCE_COMMIT: 5eda8ebd4da5412092528c2bb2323b90e19ef6d0
+  PYTHONDONTWRITEBYTECODE: '1'
+  PYTHONHASHSEED: '0'
+
+jobs:
+  contracts:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout producer
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          path: producer
+      - name: Checkout exact AROS-NX source contract
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: ${{ env.AROS_SOURCE_REPOSITORY }}
+          ref: ${{ env.AROS_SOURCE_COMMIT }}
+          path: aros-source
+      - name: Run complete offline producer contract suite
+        working-directory: producer
+        env:
+          AROS_TEST_SOURCE_ROOT: ${{ github.workspace }}/aros-source
+        run: scripts/toolchain/tests/test-producer.sh

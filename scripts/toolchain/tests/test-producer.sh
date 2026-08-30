@@ -155,7 +155,7 @@ for source in lock["sources"]:
 PY
 git -C "$temporary/checkout" add .
 git -C "$temporary/checkout" \
-    -c user.name=AROS-NG \
+    -c user.name='AROS Toolchain Fixture' \
     -c user.email=toolchain-producer@example.invalid \
     commit -q -m fixture
 checkout_commit=$(git -C "$temporary/checkout" rev-parse HEAD)
@@ -397,7 +397,7 @@ assert manifest["target_triple"] == "x86_64-unknown-aros"
 
 # Known-answer digest for the normalized filesystem fixture. Together with
 # toolchains/tree-digest-v1.fixture.json this pins the documented algorithm.
-assert manifest["tree_sha256"] == "da14b04095b9ec76398632f4f2947a995ee126b37b9716f75f6da6e641e36fba"
+assert manifest["tree_sha256"] == "f91796eac82733e14061e7727ab4054e0f73bbb82b469fd26db931b1382fe078"
 
 spdx = json.loads((directory / f"{asset}.spdx.json").read_text())
 assert spdx["documentDescribes"] == ["SPDXRef-Package-AROSToolchain"]

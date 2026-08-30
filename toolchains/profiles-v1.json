@@ -1,6 +1,6 @@
 {
-  "schema": "aros-ng-toolchain-profiles-v1",
-  "upstream_commit": "6e196552834ec338072dda8675cf0c3f1d2df0d6",
+  "schema": "aros-toolchain-profiles-v1",
+  "upstream_commit": "6722a0ae9e03fe5d26e32703360bd2059e0864cc",
   "profiles": [
     {
       "name": "pc-x86_64",
