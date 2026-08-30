@@ -25,16 +25,16 @@ retain `source_commit` for the AROS source and add mandatory
 of the three commit timestamps. Release builds reject tracked changes or an
 identity mismatch before compilation.
 
-During migration the workflows deliberately pin:
+The first standalone qualification deliberately pins:
 
-- AROS source: `metaneutrons/AROS-NG` at
-  `9e839795bb0629aa6b0d2623f354f184d9a59929`;
+- AROS source: `metaneutrons/AROS-NX` at
+  `5eda8ebd4da5412092528c2bb2323b90e19ef6d0`;
 - aros-tools: `metaneutrons/aros-tools` at
-  `4b13d3ff1a30fffbab5e32cddc480a0959fa1667`.
+  `8fc0eb2f3646f27db53a1552d2b0e10265dd4fc2`.
 
-The AROS source pin must move to a qualified AROS-NX commit before the first
-release from this repository. CI must fail if either explicit pin is missing;
-there is no branch-name fallback.
+The AROS-NX source commit passed the standalone producer contracts and a
+complete local `pc-x86_64` RC3 consumer build before promotion here. CI still
+fails if either explicit pin is missing; there is no branch-name fallback.
 
 ## Repository layout
 
