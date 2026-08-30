@@ -137,7 +137,7 @@ jobs:
               output.write("release_id=" + release_id + "\n")
           PY
 
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: toolchain-recipe
           path: recipe.json
@@ -184,7 +184,7 @@ jobs:
               raise SystemExit(f"expected one Cargo vendor directory, found {replaced}")
           config.write_text("\n".join(lines) + "\n", encoding="utf-8")
           PY
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: verified-toolchain-sources
           path: source-cache/
@@ -265,14 +265,14 @@ jobs:
 
       - name: Preserve observed producer environment
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: build-observation-${{ matrix.host }}-${{ matrix.profile }}-${{ matrix.copy }}
           path: ${{ runner.temp }}/aros-${{ matrix.copy }}-${{ matrix.profile }}/build-observation.json
           if-no-files-found: warn
           retention-days: 7
 
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: candidate-${{ matrix.host }}-${{ matrix.profile }}-${{ matrix.copy }}
           path: release-output/
@@ -303,7 +303,7 @@ jobs:
             --left "candidate-a/$asset" \
             --right "candidate-b/$asset" \
             --output-dir verified
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: verified-${{ matrix.host }}-${{ matrix.profile }}
           path: verified/
