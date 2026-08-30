@@ -12,7 +12,10 @@ GitHub release, every external source reached by the producer's current AROS
 target-build closure, and the small pure-Python host runtime needed by upstream
 `configure`. Each entry records its own version and whether it is a toolchain
 component or a target-build dependency, so the SBOM does not mislabel an AROS
-port as LLVM. The producer verifies both size and SHA-256 before allowing the
+port as LLVM. Each consumed AROS patch is declared explicitly by its
+repository-relative `patch` field. A source without that field is intentionally
+unpatched; the producer never derives hidden patch names from archive filenames.
+The producer verifies both size and SHA-256 before allowing the
 upstream fetcher to run, and release builds run through an offline guard. The
 Mako runtime is extracted into a private work directory and exposed only via a
 locked `PYTHONPATH`; it is never installed with pip or resolved from host site

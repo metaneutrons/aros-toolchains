@@ -250,10 +250,11 @@ def validate_source_lock(lock: dict) -> list[dict]:
     if not isinstance(sources, list) or not sources:
         fail("source lock contains no sources")
     seen: set[str] = set()
+    seen_patches: set[str] = set()
     for source in sources:
         if not isinstance(source, dict):
             fail("source entry is not an object")
-        if set(source) != {
+        required_fields = {
             "component",
             "version",
             "purpose",
@@ -261,7 +262,10 @@ def validate_source_lock(lock: dict) -> list[dict]:
             "url",
             "sha256",
             "size",
-        }:
+        }
+        if not required_fields.issubset(source) or not set(source).issubset(
+            required_fields | {"patch"}
+        ):
             fail("source entry has unexpected or missing fields")
         component = source.get("component")
         version = source.get("version")
@@ -270,12 +274,28 @@ def validate_source_lock(lock: dict) -> list[dict]:
         checksum = source.get("sha256")
         url = source.get("url")
         size = source.get("size")
+        patch = source.get("patch")
         if not isinstance(component, str) or not re.fullmatch(r"[A-Za-z0-9+._-]+", component):
             fail(f"invalid source component: {component!r}")
         if not isinstance(version, str) or not re.fullmatch(r"[A-Za-z0-9+._-]+", version):
             fail(f"invalid source version for {component}: {version!r}")
         if purpose not in {"toolchain-component", "target-build-dependency"}:
             fail(f"invalid source purpose for {component}: {purpose!r}")
+        if patch is not None:
+            if not isinstance(patch, str) or not re.fullmatch(
+                r"tools/crosstools/llvm/[A-Za-z0-9+._-]+-aros\.diff", patch
+            ):
+                fail(f"unsafe AROS patch path for {component}: {patch!r}")
+            patch_path = PurePosixPath(patch)
+            if (
+                patch_path.is_absolute()
+                or ".." in patch_path.parts
+                or patch_path.as_posix() != patch
+            ):
+                fail(f"unsafe AROS patch path for {component}: {patch!r}")
+            if patch in seen_patches:
+                fail(f"duplicate AROS patch path: {patch}")
+            seen_patches.add(patch)
         if not isinstance(filename, str) or Path(filename).name != filename:
             fail(f"unsafe source filename: {filename!r}")
         if filename in seen:
@@ -531,13 +551,20 @@ def command_recipe(args: argparse.Namespace) -> None:
         fail("unsupported profile schema")
     patches = []
     for source in sources:
-        patch = root / "tools" / "crosstools" / "llvm" / (
-            source["filename"].removesuffix(".tar.xz") + "-aros.diff"
-        )
+        declared_patch = source.get("patch")
+        if declared_patch is None:
+            continue
+        patch = root / declared_patch
         if not patch.is_file():
-            fail(f"required AROS patch is missing: {patch}")
+            fail(f"declared AROS patch is missing: {patch}")
+        if patch.is_symlink():
+            fail(f"declared AROS patch must be a regular file, not a symlink: {patch}")
+        try:
+            patch.resolve().relative_to(root)
+        except ValueError:
+            fail(f"declared AROS patch escapes the source checkout: {patch}")
         patches.append(
-            {"path": patch.relative_to(root).as_posix(), "sha256": sha256_file(patch)}
+            {"path": declared_patch, "sha256": sha256_file(patch)}
         )
     material = {
         "schema": "aros-toolchain-recipe-v2",

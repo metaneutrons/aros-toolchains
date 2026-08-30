@@ -145,13 +145,13 @@ from pathlib import Path
 import sys
 
 lock = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
-root = Path(sys.argv[2]) / "tools" / "crosstools" / "llvm"
-root.mkdir(parents=True)
 for source in lock["sources"]:
-    filename = source["filename"]
-    (root / f"{filename.removesuffix('.tar.xz')}-aros.diff").write_text(
-        f"fixture patch for {filename}\n", encoding="utf-8"
-    )
+    patch = source.get("patch")
+    if patch is None:
+        continue
+    path = Path(sys.argv[2]) / patch
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(f"fixture patch for {source['filename']}\n", encoding="utf-8")
 PY
 git -C "$temporary/checkout" add .
 git -C "$temporary/checkout" \
@@ -271,6 +271,82 @@ python3 "$producer" recipe \
     --profiles "$source_root/toolchains/profiles-v1.json" \
     --output "$temporary/recipe.json" \
     --allow-dirty
+python3 - "$source_root/toolchains/llvm-11.0.0.sources.json" \
+    "$temporary/recipe.json" "$temporary/checkout" <<'PY'
+import hashlib
+import json
+from pathlib import Path
+import sys
+
+lock = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+recipe = json.loads(Path(sys.argv[2]).read_text(encoding="utf-8"))
+checkout = Path(sys.argv[3])
+declared = {
+    source["patch"]: hashlib.sha256((checkout / source["patch"]).read_bytes()).hexdigest()
+    for source in lock["sources"]
+    if "patch" in source
+}
+observed = {patch["path"]: patch["sha256"] for patch in recipe["patches"]}
+assert observed == declared
+assert "patch" not in next(
+    source for source in lock["sources"] if source["component"] == "expat"
+)
+PY
+python3 - "$producer" "$source_root/toolchains/llvm-11.0.0.sources.json" <<'PY'
+import copy
+import importlib.util
+import json
+from pathlib import Path
+import sys
+
+spec = importlib.util.spec_from_file_location("toolchain_producer", sys.argv[1])
+producer = importlib.util.module_from_spec(spec)
+assert spec.loader is not None
+spec.loader.exec_module(producer)
+lock = json.loads(Path(sys.argv[2]).read_text(encoding="utf-8"))
+
+unsafe = copy.deepcopy(lock)
+unsafe["sources"][0]["patch"] = "tools/crosstools/llvm/../escape-aros.diff"
+try:
+    producer.validate_source_lock(unsafe)
+except SystemExit as error:
+    assert "unsafe AROS patch path" in str(error)
+else:
+    raise AssertionError("producer accepted an escaping patch declaration")
+
+duplicate = copy.deepcopy(lock)
+duplicate["sources"][1]["patch"] = duplicate["sources"][0]["patch"]
+try:
+    producer.validate_source_lock(duplicate)
+except SystemExit as error:
+    assert "duplicate AROS patch path" in str(error)
+else:
+    raise AssertionError("producer accepted a duplicate patch declaration")
+PY
+python3 - "$source_root/toolchains/llvm-11.0.0.sources.json" \
+    "$temporary/missing-patch-lock.json" <<'PY'
+import json
+from pathlib import Path
+import sys
+
+lock = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+lock["sources"][0]["patch"] = "tools/crosstools/llvm/missing-aros.diff"
+Path(sys.argv[2]).write_text(
+    json.dumps(lock, sort_keys=True, indent=2) + "\n", encoding="utf-8"
+)
+PY
+if python3 "$producer" recipe \
+    --source-root "$temporary/checkout" \
+    --producer-root "$temporary/checkout" \
+    --tools-root "$temporary/checkout" \
+    --lock "$temporary/missing-patch-lock.json" \
+    --profiles "$source_root/toolchains/profiles-v1.json" \
+    --output "$temporary/missing-patch-recipe.json" \
+    --allow-dirty >"$temporary/missing-patch.stdout" 2>"$temporary/missing-patch.stderr"; then
+    echo "producer accepted a missing declared patch" >&2
+    exit 1
+fi
+grep -Fq -- 'declared AROS patch is missing:' "$temporary/missing-patch.stderr"
 printf '%s\n' '{"schema":"fixture-build-environment-v1"}' \
     > "$temporary/environment.json"
 

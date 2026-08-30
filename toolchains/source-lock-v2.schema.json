@@ -20,6 +20,11 @@
           "component": { "type": "string", "pattern": "^[A-Za-z0-9+._-]+$" },
           "version": { "type": "string", "pattern": "^[A-Za-z0-9+._-]+$" },
           "purpose": { "enum": ["toolchain-component", "target-build-dependency"] },
+          "patch": {
+            "description": "Optional AROS-relative patch consumed by the toolchain recipe. Absence means that the locked source is intentionally unpatched.",
+            "type": "string",
+            "pattern": "^tools/crosstools/llvm/[A-Za-z0-9+._-]+-aros\\.diff$"
+          },
           "filename": { "type": "string", "pattern": "^[A-Za-z0-9+._-]+$" },
           "url": { "type": "string", "pattern": "^https://" },
           "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
