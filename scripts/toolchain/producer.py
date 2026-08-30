@@ -472,6 +472,25 @@ def command_prefetch(args: argparse.Namespace) -> None:
     output.write_bytes(json_bytes(index))
 
 
+def command_verify_source_usage(args: argparse.Namespace) -> None:
+    lock = read_json(args.lock.resolve())
+    expected = {source["filename"] for source in validate_source_lock(lock)}
+    try:
+        lines = args.usage.resolve().read_text(encoding="utf-8").splitlines()
+    except OSError as exc:
+        fail(f"cannot read verified source usage {args.usage}: {exc}")
+    if any(not line or Path(line).name != line for line in lines):
+        fail("verified source usage contains an unsafe or empty filename")
+    observed = set(lines)
+    unexpected = sorted(observed - expected)
+    missing = sorted(expected - observed)
+    if unexpected:
+        fail(f"unlocked sources were consumed: {', '.join(unexpected)}")
+    if missing:
+        fail(f"locked sources were not consumed: {', '.join(missing)}")
+    print(f"verified source usage: {len(expected)} locked archives consumed")
+
+
 def git(source_root: Path, *arguments: str) -> str:
     result = subprocess.run(
         ["git", "-C", str(source_root), *arguments],
@@ -1211,6 +1230,10 @@ def parser() -> argparse.ArgumentParser:
     prefetch.add_argument("--index", type=Path)
     prefetch.add_argument("--offline", action="store_true")
     prefetch.set_defaults(function=command_prefetch)
+    verify_usage = commands.add_parser("verify-source-usage")
+    verify_usage.add_argument("--lock", type=Path, required=True)
+    verify_usage.add_argument("--usage", type=Path, required=True)
+    verify_usage.set_defaults(function=command_verify_source_usage)
     recipe = commands.add_parser("recipe")
     recipe.add_argument("--source-root", type=Path, required=True)
     recipe.add_argument("--producer-root", type=Path, required=True)

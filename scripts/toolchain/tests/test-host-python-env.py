@@ -6,6 +6,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import os
 from pathlib import Path, PurePosixPath
 import subprocess
 import sys
@@ -16,6 +17,7 @@ import tempfile
 SOURCE_ROOT = Path(__file__).resolve().parents[3]
 PRODUCER = SOURCE_ROOT / "scripts/toolchain/producer.py"
 HELPER = SOURCE_ROOT / "scripts/toolchain/host-python-env.py"
+OFFLINE_FETCH = SOURCE_ROOT / "scripts/toolchain/offline-fetch.py"
 
 
 def sha256(path: Path) -> str:
@@ -140,6 +142,78 @@ def main() -> None:
         assert [item["filename"] for item in index["sources"]] == sorted(
             (llvm.name, mako.name, markupsafe.name)
         )
+
+        upstream_fetch = root / "upstream-fetch.sh"
+        upstream_fetch.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+        upstream_fetch.chmod(0o755)
+        usage = root / "source-usage.log"
+        fetch_environment = os.environ.copy()
+        fetch_environment.update(
+            {
+                "AROS_VERIFIED_SOURCE_INDEX": str(cache / "sources.verified.json"),
+                "AROS_VERIFIED_SOURCE_USAGE": str(usage),
+                "AROS_UPSTREAM_FETCH": str(upstream_fetch),
+            }
+        )
+        fetched = subprocess.run(
+            [
+                sys.executable,
+                str(OFFLINE_FETCH),
+                "-a",
+                "llvm-11.0.0.src",
+                "-l",
+                str(cache),
+                "-s",
+                "tar.xz",
+            ],
+            env=fetch_environment,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        assert fetched.returncode == 0, fetched.stderr
+        assert usage.read_text(encoding="utf-8") == f"{llvm.name}\n"
+        run(
+            [
+                sys.executable,
+                str(PRODUCER),
+                "verify-source-usage",
+                "--lock",
+                str(lock_path),
+                "--usage",
+                str(usage),
+            ]
+        )
+        usage.write_text("", encoding="utf-8")
+        missing_usage = run(
+            [
+                sys.executable,
+                str(PRODUCER),
+                "verify-source-usage",
+                "--lock",
+                str(lock_path),
+                "--usage",
+                str(usage),
+            ],
+            check=False,
+        )
+        assert missing_usage.returncode != 0
+        assert "locked sources were not consumed" in missing_usage.stderr
+        usage.write_text(f"{llvm.name}\nnot-locked.tar.xz\n", encoding="utf-8")
+        unexpected_usage = run(
+            [
+                sys.executable,
+                str(PRODUCER),
+                "verify-source-usage",
+                "--lock",
+                str(lock_path),
+                "--usage",
+                str(usage),
+            ],
+            check=False,
+        )
+        assert unexpected_usage.returncode != 0
+        assert "unlocked sources were consumed" in unexpected_usage.stderr
 
         command = [
             sys.executable,

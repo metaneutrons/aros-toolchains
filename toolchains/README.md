@@ -17,7 +17,10 @@ upstream fetcher to run, and release builds run through an offline guard. The
 Mako runtime is extracted into a private work directory and exposed only via a
 locked `PYTHONPATH`; it is never installed with pip or resolved from host site
 packages. A new or changed source is rejected until its real digest is added
-to a reviewed lock file. Do not insert placeholders.
+to a reviewed lock file. At the end of every producer lane, the observed fetch
+inventory must equal the locked build-source inventory exactly; this rejects
+both undeclared downloads and obsolete, no-longer-consumed pins. Do not insert
+placeholders.
 
 The source lock establishes deterministic resolution. Bit-for-bit build
 reproducibility is a separate release gate: every host/profile lane is built
