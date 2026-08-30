@@ -19,7 +19,7 @@ import tarfile
 import tempfile
 import urllib.request
 
-SOURCE_SCHEMA = "aros-ng-toolchain-source-lock-v1"
+SOURCE_SCHEMA = "aros-toolchain-source-lock-v2"
 PROFILE_SCHEMA = "aros-toolchain-profiles-v1"
 MANIFEST_SCHEMA = 1
 SUPPORTED_HOSTS = {
@@ -250,18 +250,52 @@ def validate_source_lock(lock: dict) -> list[dict]:
     if not isinstance(sources, list) or not sources:
         fail("source lock contains no sources")
     seen: set[str] = set()
+    seen_patches: set[str] = set()
     for source in sources:
         if not isinstance(source, dict):
             fail("source entry is not an object")
-        if set(source) != {"component", "filename", "url", "sha256", "size"}:
+        required_fields = {
+            "component",
+            "version",
+            "purpose",
+            "filename",
+            "url",
+            "sha256",
+            "size",
+        }
+        if not required_fields.issubset(source) or not set(source).issubset(
+            required_fields | {"patch"}
+        ):
             fail("source entry has unexpected or missing fields")
         component = source.get("component")
+        version = source.get("version")
+        purpose = source.get("purpose")
         filename = source.get("filename")
         checksum = source.get("sha256")
         url = source.get("url")
         size = source.get("size")
+        patch = source.get("patch")
         if not isinstance(component, str) or not re.fullmatch(r"[A-Za-z0-9+._-]+", component):
             fail(f"invalid source component: {component!r}")
+        if not isinstance(version, str) or not re.fullmatch(r"[A-Za-z0-9+._-]+", version):
+            fail(f"invalid source version for {component}: {version!r}")
+        if purpose not in {"toolchain-component", "target-build-dependency"}:
+            fail(f"invalid source purpose for {component}: {purpose!r}")
+        if patch is not None:
+            if not isinstance(patch, str) or not re.fullmatch(
+                r"tools/crosstools/llvm/[A-Za-z0-9+._-]+-aros\.diff", patch
+            ):
+                fail(f"unsafe AROS patch path for {component}: {patch!r}")
+            patch_path = PurePosixPath(patch)
+            if (
+                patch_path.is_absolute()
+                or ".." in patch_path.parts
+                or patch_path.as_posix() != patch
+            ):
+                fail(f"unsafe AROS patch path for {component}: {patch!r}")
+            if patch in seen_patches:
+                fail(f"duplicate AROS patch path: {patch}")
+            seen_patches.add(patch)
         if not isinstance(filename, str) or Path(filename).name != filename:
             fail(f"unsafe source filename: {filename!r}")
         if filename in seen:
@@ -450,12 +484,31 @@ def command_prefetch(args: argparse.Namespace) -> None:
         )
         print(f"verified {source['filename']} {source['sha256']}")
     index = {
-        "schema": "aros-ng-toolchain-verified-sources-v1",
+        "schema": "aros-toolchain-verified-sources-v1",
         "lock_sha256": sha256_file(lock_path),
         "sources": sorted(verified, key=lambda item: item["filename"]),
     }
     output = args.index or destination / "sources.verified.json"
     output.write_bytes(json_bytes(index))
+
+
+def command_verify_source_usage(args: argparse.Namespace) -> None:
+    lock = read_json(args.lock.resolve())
+    expected = {source["filename"] for source in validate_source_lock(lock)}
+    try:
+        lines = args.usage.resolve().read_text(encoding="utf-8").splitlines()
+    except OSError as exc:
+        fail(f"cannot read verified source usage {args.usage}: {exc}")
+    if any(not line or Path(line).name != line for line in lines):
+        fail("verified source usage contains an unsafe or empty filename")
+    observed = set(lines)
+    unexpected = sorted(observed - expected)
+    missing = sorted(expected - observed)
+    if unexpected:
+        fail(f"unlocked sources were consumed: {', '.join(unexpected)}")
+    if missing:
+        fail(f"locked sources were not consumed: {', '.join(missing)}")
+    print(f"verified source usage: {len(expected)} locked archives consumed")
 
 
 def git(source_root: Path, *arguments: str) -> str:
@@ -498,13 +551,20 @@ def command_recipe(args: argparse.Namespace) -> None:
         fail("unsupported profile schema")
     patches = []
     for source in sources:
-        patch = root / "tools" / "crosstools" / "llvm" / (
-            source["filename"].removesuffix(".tar.xz") + "-aros.diff"
-        )
+        declared_patch = source.get("patch")
+        if declared_patch is None:
+            continue
+        patch = root / declared_patch
         if not patch.is_file():
-            fail(f"required AROS patch is missing: {patch}")
+            fail(f"declared AROS patch is missing: {patch}")
+        if patch.is_symlink():
+            fail(f"declared AROS patch must be a regular file, not a symlink: {patch}")
+        try:
+            patch.resolve().relative_to(root)
+        except ValueError:
+            fail(f"declared AROS patch escapes the source checkout: {patch}")
         patches.append(
-            {"path": patch.relative_to(root).as_posix(), "sha256": sha256_file(patch)}
+            {"path": declared_patch, "sha256": sha256_file(patch)}
         )
     material = {
         "schema": "aros-toolchain-recipe-v2",
@@ -701,7 +761,7 @@ def write_spdx(path: Path, manifest: dict, lock: dict) -> None:
             {
                 "SPDXID": identifier,
                 "name": source["component"],
-                "versionInfo": lock["version"],
+                "versionInfo": source["version"],
                 "downloadLocation": source["url"],
                 "filesAnalyzed": False,
                 "checksums": [{"algorithm": "SHA256", "checksumValue": source["sha256"]}],
@@ -710,13 +770,22 @@ def write_spdx(path: Path, manifest: dict, lock: dict) -> None:
                 "copyrightText": "NOASSERTION",
             }
         )
-        relationships.append(
-            {
-                "spdxElementId": "SPDXRef-Package-AROSToolchain",
-                "relationshipType": "GENERATED_FROM",
-                "relatedSpdxElement": identifier,
-            }
-        )
+        if source["purpose"] == "toolchain-component":
+            relationships.append(
+                {
+                    "spdxElementId": "SPDXRef-Package-AROSToolchain",
+                    "relationshipType": "GENERATED_FROM",
+                    "relatedSpdxElement": identifier,
+                }
+            )
+        else:
+            relationships.append(
+                {
+                    "spdxElementId": identifier,
+                    "relationshipType": "BUILD_DEPENDENCY_OF",
+                    "relatedSpdxElement": "SPDXRef-Package-AROSToolchain",
+                }
+            )
     for index, package in enumerate(validate_host_python_packages(lock), start=1):
         identifier = f"SPDXRef-HostPython-{index}"
         packages.append(
@@ -1188,6 +1257,10 @@ def parser() -> argparse.ArgumentParser:
     prefetch.add_argument("--index", type=Path)
     prefetch.add_argument("--offline", action="store_true")
     prefetch.set_defaults(function=command_prefetch)
+    verify_usage = commands.add_parser("verify-source-usage")
+    verify_usage.add_argument("--lock", type=Path, required=True)
+    verify_usage.add_argument("--usage", type=Path, required=True)
+    verify_usage.set_defaults(function=command_verify_source_usage)
     recipe = commands.add_parser("recipe")
     recipe.add_argument("--source-root", type=Path, required=True)
     recipe.add_argument("--producer-root", type=Path, required=True)

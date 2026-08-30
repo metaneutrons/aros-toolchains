@@ -1,12 +1,12 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/metaneutrons/aros-toolchains/toolchains/source-lock-v1.schema.json",
-  "title": "AROS toolchain source lock v1",
+  "$id": "https://github.com/metaneutrons/aros-toolchains/toolchains/source-lock-v2.schema.json",
+  "title": "AROS toolchain source lock v2",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema", "family", "version", "sources", "host_python_packages"],
   "properties": {
-    "schema": { "const": "aros-ng-toolchain-source-lock-v1" },
+    "schema": { "const": "aros-toolchain-source-lock-v2" },
     "family": { "const": "llvm" },
     "version": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$" },
     "sources": {
@@ -15,9 +15,16 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["component", "filename", "url", "sha256", "size"],
+        "required": ["component", "version", "purpose", "filename", "url", "sha256", "size"],
         "properties": {
           "component": { "type": "string", "pattern": "^[A-Za-z0-9+._-]+$" },
+          "version": { "type": "string", "pattern": "^[A-Za-z0-9+._-]+$" },
+          "purpose": { "enum": ["toolchain-component", "target-build-dependency"] },
+          "patch": {
+            "description": "Optional AROS-relative patch consumed by the toolchain recipe. Absence means that the locked source is intentionally unpatched.",
+            "type": "string",
+            "pattern": "^tools/crosstools/llvm/[A-Za-z0-9+._-]+-aros\\.diff$"
+          },
           "filename": { "type": "string", "pattern": "^[A-Za-z0-9+._-]+$" },
           "url": { "type": "string", "pattern": "^https://" },
           "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },

@@ -89,11 +89,11 @@ def version(command):
     except Exception:
         return "unavailable"
 contract = {
-    "schema": "aros-ng-toolchain-build-environment-v1",
+    "schema": "aros-toolchain-build-environment-v1",
     "host": sys.argv[3],
 }
 observation = {
-    "schema": "aros-ng-toolchain-build-observation-v1",
+    "schema": "aros-toolchain-build-observation-v1",
     "host": sys.argv[3],
     "runner_image": os.environ.get("ImageOS", "local"),
     "runner_image_version": os.environ.get("ImageVersion", "local"),
@@ -142,6 +142,7 @@ if [[ $(uname -s) == Linux ]]; then
     export RANLIBFLAGS=-D
 fi
 export AROS_VERIFIED_SOURCE_INDEX="$source_cache/sources.verified.json"
+export AROS_VERIFIED_SOURCE_USAGE="$work_dir/verified-source-usage.log"
 export AROS_UPSTREAM_FETCH="$aros_source_root/scripts/fetch.sh"
 # `cmake --build` is not a GNU-make recursive recipe, so it cannot consume
 # the outer jobserver. Keep all nested CMake stages at the requested producer
@@ -182,6 +183,10 @@ fi
     "$make_program" -C "$build_dir" -j "$jobs" crosstools-release \
     AROS_TOOLCHAIN_DEFAULT_SYSROOT= \
     FETCH="$producer_root/scripts/toolchain/offline-fetch.py"
+
+python3 "$producer_root/scripts/toolchain/producer.py" verify-source-usage \
+    --lock "$lock" \
+    --usage "$AROS_VERIFIED_SOURCE_USAGE"
 
 # The release collector is the focused Rust implementation shared with
 # aros-cli. Cargo.lock fixes every crate source; the workflow materialises the

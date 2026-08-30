@@ -293,6 +293,15 @@ def main() -> None:
     )
     assert "LLVM_REPRO_FLAGS        :=$(AROS_TOOLCHAIN_REPRO_FLAGS)" in llvm_source
     assert "$(ISA_FLAGS) $(LLVM_REPRO_FLAGS)" in llvm_source
+    for unused_host_tool in ("SANCOV", "SANSTATS"):
+        assert f"-DLLVM_TOOL_{unused_host_tool}_BUILD=OFF" in llvm_source
+    darwin_lto_guard = re.search(
+        r"ifeq \(darwin,\$\(AROS_HOST_ARCH\)\)\s+"
+        r"LLVM_CMAKEOPTIONS \+= -DLLVM_ENABLE_LTO=OFF\s+"
+        r"else\s+LLVM_CMAKEOPTIONS \+= -DLLVM_ENABLE_LTO=ON\s+endif",
+        llvm_source,
+    )
+    assert darwin_lto_guard, "Darwin LLVM host build must remain on the qualified non-LTO path"
     compiler_rt32_start = llvm_source.index("LLVM_COMPILER_RT32_CMAKEOPTIONS :=")
     compiler_rt32_end = llvm_source.index(
         "%build_with_cmake mmake=crosstools-compiler-rt32 package=compiler-rt32",
@@ -380,7 +389,8 @@ def main() -> None:
     )
     assert "tools: $(GENMODULE)" in root_tools
     makefile_source = (SOURCE_ROOT / "Makefile.in").read_text(encoding="iso-8859-1")
-    assert "crosstools-release : crosstools-toolchain features" in makefile_source
+    assert "crosstools-release : crosstools-toolchain\n" in makefile_source
+    assert "crosstools-release : crosstools-toolchain features" not in makefile_source
     assert "toolchain-linklibs-release" in makefile_source
     release_script = (PRODUCER_ROOT / "scripts" / "toolchain" / "build-release.sh").read_text(encoding="utf-8")
     assert "--enable-toolchain-release" in release_script

@@ -25,8 +25,12 @@ suffixes = value("-s", arguments).split()
 location = Path(value("-l", arguments, ".")).resolve()
 index_path = os.environ.get("AROS_VERIFIED_SOURCE_INDEX")
 upstream = os.environ.get("AROS_UPSTREAM_FETCH")
-if not archive or not index_path or not upstream:
-    die("archive, AROS_VERIFIED_SOURCE_INDEX, and AROS_UPSTREAM_FETCH are required")
+usage_path = os.environ.get("AROS_VERIFIED_SOURCE_USAGE")
+if not archive or not index_path or not upstream or not usage_path:
+    die(
+        "archive, AROS_VERIFIED_SOURCE_INDEX, AROS_VERIFIED_SOURCE_USAGE, "
+        "and AROS_UPSTREAM_FETCH are required"
+    )
 index = json.loads(Path(index_path).read_text(encoding="utf-8"))
 locked = {item["filename"]: item for item in index.get("sources", [])}
 candidates = [archive + "." + suffix for suffix in suffixes] if suffixes else [archive]
@@ -36,4 +40,9 @@ if match is None:
 digest = hashlib.sha256((location / match).read_bytes()).hexdigest()
 if digest != locked[match]["sha256"]:
     die(f"verified archive changed after prefetch: {match}")
+usage_fd = os.open(usage_path, os.O_APPEND | os.O_CREAT | os.O_WRONLY, 0o600)
+try:
+    os.write(usage_fd, f"{match}\n".encode("utf-8"))
+finally:
+    os.close(usage_fd)
 os.execv("/bin/bash", ["bash", upstream, *arguments])
