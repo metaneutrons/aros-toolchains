@@ -19,7 +19,7 @@ import tarfile
 import tempfile
 import urllib.request
 
-SOURCE_SCHEMA = "aros-ng-toolchain-source-lock-v1"
+SOURCE_SCHEMA = "aros-toolchain-source-lock-v2"
 PROFILE_SCHEMA = "aros-toolchain-profiles-v1"
 MANIFEST_SCHEMA = 1
 SUPPORTED_HOSTS = {
@@ -253,15 +253,29 @@ def validate_source_lock(lock: dict) -> list[dict]:
     for source in sources:
         if not isinstance(source, dict):
             fail("source entry is not an object")
-        if set(source) != {"component", "filename", "url", "sha256", "size"}:
+        if set(source) != {
+            "component",
+            "version",
+            "purpose",
+            "filename",
+            "url",
+            "sha256",
+            "size",
+        }:
             fail("source entry has unexpected or missing fields")
         component = source.get("component")
+        version = source.get("version")
+        purpose = source.get("purpose")
         filename = source.get("filename")
         checksum = source.get("sha256")
         url = source.get("url")
         size = source.get("size")
         if not isinstance(component, str) or not re.fullmatch(r"[A-Za-z0-9+._-]+", component):
             fail(f"invalid source component: {component!r}")
+        if not isinstance(version, str) or not re.fullmatch(r"[A-Za-z0-9+._-]+", version):
+            fail(f"invalid source version for {component}: {version!r}")
+        if purpose not in {"toolchain-component", "target-build-dependency"}:
+            fail(f"invalid source purpose for {component}: {purpose!r}")
         if not isinstance(filename, str) or Path(filename).name != filename:
             fail(f"unsafe source filename: {filename!r}")
         if filename in seen:
@@ -701,7 +715,7 @@ def write_spdx(path: Path, manifest: dict, lock: dict) -> None:
             {
                 "SPDXID": identifier,
                 "name": source["component"],
-                "versionInfo": lock["version"],
+                "versionInfo": source["version"],
                 "downloadLocation": source["url"],
                 "filesAnalyzed": False,
                 "checksums": [{"algorithm": "SHA256", "checksumValue": source["sha256"]}],
@@ -710,13 +724,22 @@ def write_spdx(path: Path, manifest: dict, lock: dict) -> None:
                 "copyrightText": "NOASSERTION",
             }
         )
-        relationships.append(
-            {
-                "spdxElementId": "SPDXRef-Package-AROSToolchain",
-                "relationshipType": "GENERATED_FROM",
-                "relatedSpdxElement": identifier,
-            }
-        )
+        if source["purpose"] == "toolchain-component":
+            relationships.append(
+                {
+                    "spdxElementId": "SPDXRef-Package-AROSToolchain",
+                    "relationshipType": "GENERATED_FROM",
+                    "relatedSpdxElement": identifier,
+                }
+            )
+        else:
+            relationships.append(
+                {
+                    "spdxElementId": identifier,
+                    "relationshipType": "BUILD_DEPENDENCY_OF",
+                    "relatedSpdxElement": "SPDXRef-Package-AROSToolchain",
+                }
+            )
     for index, package in enumerate(validate_host_python_packages(lock), start=1):
         identifier = f"SPDXRef-HostPython-{index}"
         packages.append(

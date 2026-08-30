@@ -98,7 +98,7 @@ jobs:
             --lock "$SOURCE_LOCK" \
             --profiles "$PROFILES" \
             --output recipe.json
-          python3 -m json.tool toolchains/source-lock-v1.schema.json >/dev/null
+          python3 -m json.tool toolchains/source-lock-v2.schema.json >/dev/null
           python3 -m json.tool toolchains/toolchain-manifest-v1.schema.json >/dev/null
           python3 -m json.tool "$SOURCE_LOCK" >/dev/null
           python3 -m json.tool "$PROFILES" >/dev/null

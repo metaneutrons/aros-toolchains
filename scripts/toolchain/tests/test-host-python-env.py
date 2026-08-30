@@ -86,12 +86,14 @@ def main() -> None:
             {"src/markupsafe/__init__.py": "__version__ = '3.0.2'\n"},
         )
         lock = {
-            "schema": "aros-ng-toolchain-source-lock-v1",
+            "schema": "aros-toolchain-source-lock-v2",
             "family": "llvm",
             "version": "11.0.0",
             "sources": [
                 {
                     "component": "llvm",
+                    "version": "11.0.0",
+                    "purpose": "toolchain-component",
                     "filename": llvm.name,
                     "url": "https://example.invalid/llvm-11.0.0.src.tar.xz",
                     "sha256": sha256(llvm),

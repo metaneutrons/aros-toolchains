@@ -408,11 +408,23 @@ host_python = {
 }
 assert host_python["mako"]["versionInfo"] == "1.3.10"
 assert host_python["markupsafe"]["versionInfo"] == "3.0.2"
-assert {
+source_packages = {
+    package["name"]: package
+    for package in spdx["packages"]
+    if package["SPDXID"].startswith("SPDXRef-Source-")
+}
+assert source_packages["llvm"]["versionInfo"] == "11.0.0"
+assert source_packages["expat"]["versionInfo"] == "2.8.2"
+build_dependencies = {
     relationship["spdxElementId"]
     for relationship in spdx["relationships"]
     if relationship["relationshipType"] == "BUILD_DEPENDENCY_OF"
-} == {"SPDXRef-HostPython-1", "SPDXRef-HostPython-2"}
+}
+assert build_dependencies == {
+    "SPDXRef-HostPython-1",
+    "SPDXRef-HostPython-2",
+    source_packages["expat"]["SPDXID"],
+}
 
 index = json.loads((directory / "toolchain-index-v1.json").read_text())
 assert type(index["schema"]) is int and index["schema"] == 1

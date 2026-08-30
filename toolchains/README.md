@@ -8,8 +8,11 @@ toolchain implementation.
 ## Trust and bootstrap
 
 `llvm-11.0.0.sources.json` pins the exact bytes served by the official LLVM
-GitHub release and the small pure-Python host runtime needed by upstream
-`configure`. The producer verifies both size and SHA-256 before allowing the
+GitHub release, every external source reached by the producer's current AROS
+target-build closure, and the small pure-Python host runtime needed by upstream
+`configure`. Each entry records its own version and whether it is a toolchain
+component or a target-build dependency, so the SBOM does not mislabel an AROS
+port as LLVM. The producer verifies both size and SHA-256 before allowing the
 upstream fetcher to run, and release builds run through an offline guard. The
 Mako runtime is extracted into a private work directory and exposed only via a
 locked `PYTHONPATH`; it is never installed with pip or resolved from host site
