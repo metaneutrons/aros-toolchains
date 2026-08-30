@@ -12,14 +12,13 @@ on:
           - produce
           - recover
       scope:
-        description: Host tier to exercise (manual runs never publish)
+        description: Diagnostic host tier (manual runs never publish or exercise all hosts)
         required: true
         default: linux-x86_64
         type: choice
         options:
           - linux-x86_64
           - linux
-          - all
       source_run_id:
         description: Recovery only - qualified producer run ID
         required: false
@@ -124,8 +123,11 @@ jobs:
                   hosts = [item for item in hosts if item["host"] == scope]
               elif scope == "linux":
                   hosts = [item for item in hosts if item["host"].startswith("linux-")]
-              elif scope != "all":
-                  raise SystemExit(f"unsupported scope: {scope}")
+              else:
+                  raise SystemExit(
+                      "manual scope must be linux-x86_64 or linux; "
+                      "the complete four-host A/B matrix is tag-only"
+                  )
           profiles = ["pc-x86_64", "arm-raspi", "rpi-aarch64"]
           verify = [{**host, "profile": profile} for host, profile in itertools.product(hosts, profiles)]
           build = [{**item, "copy": copy} for item, copy in itertools.product(verify, ["a", "b"])]

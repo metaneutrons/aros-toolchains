@@ -28,7 +28,7 @@ identity mismatch before compilation.
 The current standalone qualification deliberately pins:
 
 - AROS source: `metaneutrons/AROS-NX` at
-  `ce884eb42ef68187f154e25172080d17e8bddb68`;
+  `b27e3758d93f49285caa75788a123026a447c05c`;
 - aros-tools: `metaneutrons/aros-tools` at
   `707037be4f8ff37300a1a89166c35f661c28bafe`.
 
@@ -78,6 +78,24 @@ by three-profile publication inventory.
 - complete index and `SHA256SUMS`;
 - fresh provenance for the exact repository and tag;
 - immutable annotated tags, with no retargeting or asset replacement.
+
+## Qualification execution policy
+
+The full four-host by three-profile A/B matrix is a release gate, not routine
+CI. It runs exactly once for an annotated `toolchain-v1-*` tag: each of the
+twelve lanes produces two independent normalized archives, which must compare
+byte-for-byte before its compatibility checks and draft assembly proceed.
+
+Pull requests run the offline source, patch, MetaMake-closure, archive and
+relocation contracts. Manual producer dispatches are deliberately limited to
+the `linux-x86_64` or `linux` diagnostic tiers and never publish. They cannot
+select all four hosts. A complete manual A/B prequalification is therefore not
+a prerequisite for a tagged release and must not be repeated before one.
+
+Rerun the full matrix only for a release tag, or after a failed release gate
+once the narrow cause has been corrected. A scheduled reproducibility audit
+may use the same tagged-equivalent matrix, but it is separate from ordinary
+changes and releases.
 
 See [the detailed release contract](toolchains/README.md) and
 [migration provenance](docs/migration-provenance.md).
