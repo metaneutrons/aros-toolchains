@@ -127,6 +127,7 @@ def main() -> None:
         generated_atomic = temporary_path / "atomic.mmakefile"
         generate(SOURCE_ROOT / "tools" / "crosstools" / "llvm" / "mmakefile.src", generated_llvm)
         generate(SOURCE_ROOT / "compiler" / "atomic" / "mmakefile.src", generated_atomic)
+        generated_llvm_text = generated_llvm.read_text(encoding="iso-8859-1")
 
         rules = merge_rules(
             parse_meta_rules(SOURCE_ROOT / "tools" / "crosstools" / "mmakefile.src", variables),
@@ -171,6 +172,8 @@ def main() -> None:
     }, release_llvm_toolchain
     if "includes-copy" in trace(rules, "tools-crosstools-llvm-toolchain-release"):
         raise AssertionError("release LLVM toolchain reaches global includes-copy")
+    if "tools-crosstools-llvm-toolchain-release: $(llvm-installflag)" not in generated_llvm_text:
+        raise AssertionError("release LLVM MetaMake target lacks its physical Make rule")
 
     # kernel-security-includes is reached by the runtime linklib closure. It
     # must select the release SDK barrier instead of reopening global includes.
