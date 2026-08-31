@@ -28,7 +28,7 @@ identity mismatch before compilation.
 The current standalone qualification deliberately pins:
 
 - AROS source: `metaneutrons/AROS-NX` at
-  `b27e3758d93f49285caa75788a123026a447c05c`;
+  `b9d85029515cb1174366494f9ea4c557443c6011`;
 - aros-tools: `metaneutrons/aros-tools` at
   `707037be4f8ff37300a1a89166c35f661c28bafe`.
 
