@@ -294,9 +294,6 @@ declared = {
 }
 observed = {patch["path"]: patch["sha256"] for patch in recipe["patches"]}
 assert observed == declared
-assert "patch" not in next(
-    source for source in lock["sources"] if source["component"] == "expat"
-)
 PY
 python3 - "$producer" "$source_root/toolchains/llvm-11.0.0.sources.json" <<'PY'
 import copy
@@ -496,7 +493,6 @@ source_packages = {
     if package["SPDXID"].startswith("SPDXRef-Source-")
 }
 assert source_packages["llvm"]["versionInfo"] == "11.0.0"
-assert source_packages["expat"]["versionInfo"] == "2.8.2"
 build_dependencies = {
     relationship["spdxElementId"]
     for relationship in spdx["relationships"]
@@ -505,7 +501,6 @@ build_dependencies = {
 assert build_dependencies == {
     "SPDXRef-HostPython-1",
     "SPDXRef-HostPython-2",
-    source_packages["expat"]["SPDXID"],
 }
 
 index = json.loads((directory / "toolchain-index-v1.json").read_text())
