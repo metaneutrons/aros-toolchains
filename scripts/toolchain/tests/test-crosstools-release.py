@@ -137,6 +137,7 @@ def main() -> None:
             parse_meta_rules(SOURCE_ROOT / "compiler" / "arossupport" / "mmakefile.src", variables),
             parse_meta_rules(SOURCE_ROOT / "compiler" / "alib" / "mmakefile.src", variables),
             parse_meta_rules(SOURCE_ROOT / "compiler" / "autoinit" / "mmakefile.src", variables),
+            parse_meta_rules(SOURCE_ROOT / "rom" / "security" / "mmakefile.src", variables),
         )
 
     # The producer aggregate never uses the regular generic CPU aggregate.
@@ -150,8 +151,8 @@ def main() -> None:
     if "toolchain-linklibs-x86_64" in release_aggregate:
         raise AssertionError("release aggregate accidentally uses the generic CPU linklib closure")
 
-    # `%build_linklib` hits includes-generate-deps directly; release mode must
-    # retain generated architecture headers while suppressing Ports only there.
+    # The historical aggregate remains intentionally broad for normal AROS
+    # builds. Release targets must select the explicit SDK node instead.
     include_dependencies = set(rules["includes-generate-deps"])
     assert include_dependencies == {
         "includes-copy",
@@ -160,6 +161,23 @@ def main() -> None:
     }, include_dependencies
     if "ports-includes" in trace(rules, "linklibs-atomic"):
         raise AssertionError("release linklib trace reaches ports-includes")
+
+    normal_llvm_toolchain = set(rules["tools-crosstools-llvm-toolchain"])
+    require_contains(normal_llvm_toolchain, "includes-copy", "normal LLVM toolchain")
+    release_llvm_toolchain = set(rules["tools-crosstools-llvm-toolchain-release"])
+    assert release_llvm_toolchain == {
+        "sdk-includes-1",
+        "crosstools-llvm-toolchain-cmake",
+    }, release_llvm_toolchain
+    if "includes-copy" in trace(rules, "tools-crosstools-llvm-toolchain-release"):
+        raise AssertionError("release LLVM toolchain reaches global includes-copy")
+
+    # kernel-security-includes is reached by the runtime linklib closure. It
+    # must select the release SDK barrier instead of reopening global includes.
+    security_headers = set(rules["kernel-security-includes"])
+    require_contains(security_headers, "sdk-includes-1", "security header barrier")
+    if "includes" in security_headers:
+        raise AssertionError("release security headers reach global includes")
 
     # startup.c and detach.c include proto/dos.h directly. Ordinary builds used
     # to obtain that generated header accidentally through the broad `includes`
@@ -247,6 +265,13 @@ def main() -> None:
     if "includes" in release_compiler_rt:
         raise AssertionError("release compiler-rt target reaches global includes")
     require_contains(release_compiler_rt, "tools-crosstools-runtime-linklibs", "release compiler-rt target")
+    require_contains(
+        release_compiler_rt,
+        "tools-crosstools-llvm-toolchain-release",
+        "release compiler-rt target",
+    )
+    if "tools-crosstools-llvm-toolchain" in release_compiler_rt:
+        raise AssertionError("release compiler-rt target reaches normal LLVM toolchain")
     normal_compiler_rt = set(rules["crosstools-compiler-rt"])
     require_contains(normal_compiler_rt, "core-linklibs", "normal compiler-rt target")
     require_contains(normal_compiler_rt, "includes", "normal compiler-rt target")
@@ -266,11 +291,32 @@ def main() -> None:
     unwind_cmake = set(rules["crosstools-libunwind-release-cmake"])
     for required in {
         "crosstools-libunwind-setup",
-        "tools-crosstools-llvm-toolchain",
+        "tools-crosstools-llvm-toolchain-release",
         "tools-crosstools-llvm-libcxx-release",
         "tools-crosstools-llvm-libcxxabi-release",
     }:
         require_contains(unwind_cmake, required, "release libunwind CMake target")
+    if "tools-crosstools-llvm-toolchain" in unwind_cmake:
+        raise AssertionError("release libunwind CMake target reaches normal LLVM toolchain")
+
+    # GenMF templates must keep regular builds unchanged while routing every
+    # generated program/module/linklib release dependency through sdk-includes.
+    make_template = (SOURCE_ROOT / "config" / "make.tmpl").read_text(encoding="utf-8")
+    for required in (
+        "#MM %(mmake) : sdk-includes-$(AROS_TOOLCHAIN_RELEASE) core-linklibs",
+        "#MM %(mmake) : core-linklibs sdk-includes-$(AROS_TOOLCHAIN_RELEASE)",
+        "sdk-includes-$(AROS_TOOLCHAIN_RELEASE) %(mmake)-fd",
+        "#MM %(mmake) : sdk-includes-$(AROS_TOOLCHAIN_RELEASE)",
+    ):
+        if required not in make_template:
+            raise AssertionError(f"release template is missing {required!r}")
+    for forbidden in (
+        "#MM %(mmake) : includes-generate-deps core-linklibs",
+        "#MM %(mmake) : core-linklibs includes-generate-deps",
+        "includes-generate-deps %(mmake)-fd",
+    ):
+        if forbidden in make_template:
+            raise AssertionError(f"release template still uses broad closure {forbidden!r}")
 
     # libc++abi's normal CMake compiler probe would otherwise attempt a target
     # executable link before the deliberately minimal release SDK is complete.
