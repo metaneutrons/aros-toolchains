@@ -81,11 +81,14 @@ into a separate hand-maintained download lock.
    `disabled_reason`, and set `enabled = true`. Commit that lock change only
    after every final URL verifies; never enable a placeholder entry.
 
-These gates were completed for
-[`toolchain-v1-20260829-rc3`](https://github.com/metaneutrons/AROS-NG/releases/tag/toolchain-v1-20260829-rc3).
-Its twelve four-host/three-profile entries were enabled in the AROS-NG consumer
-lock; the separate RISC-V declarations remained disabled because RC3 contains
-no RISC-V artifacts. RC3 is historical evidence and is not republished here.
+The current standalone release is
+[`toolchain-v1-20260831-rc3`](https://github.com/metaneutrons/aros-toolchains/releases/tag/toolchain-v1-20260831-rc3).
+Its twelve four-host/three-profile entries are enabled in the AROS-NX consumer
+lock; separate RISC-V declarations remain disabled because this release
+contains no RISC-V artifacts. Its producer run and exact three-repository
+identities are recorded in [migration provenance](../docs/migration-provenance.md#standalone-release).
+The earlier `toolchain-v1-20260829-rc3` in AROS-NG is a distinct historical
+release; its artifacts or attestations were not transplanted into this one.
 
 ### Recover a packaging-only draft failure
 
@@ -153,7 +156,9 @@ Historical manual GitHub Actions run
 completed all 24 independent producers and all 12 A/B comparisons for the
 four-host by three-profile matrix. Every pair is byte-identical. The exact
 commit, tree, recipe, archive SHA-256 table and the successful 12-lane consumer
-replay are recorded in [HANDOFF.md](HANDOFF.md). This proves the release recipe
+replay are recorded in the
+[historical handoff](https://github.com/metaneutrons/AROS-NG/blob/a74b18a10f/HANDOFF.md).
+This proves the release recipe
 but does not publish artifacts. It is historical evidence, not a recurring
 precondition: future full A/B qualification occurs exactly once in the
 annotated-tag producer that creates the reviewed draft release.
