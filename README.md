@@ -1,13 +1,18 @@
 # AROS toolchains
 
 Deterministic producer, verification, and release infrastructure for AROS
-cross-toolchains. GitHub Releases in this repository will be the canonical
+cross-toolchains. GitHub Releases in this repository are the canonical
 distribution channel for new immutable toolchain archives.
 
-This repository is currently a migration workspace. It does not yet publish a
-standalone release. The verified historical RC3 remains immutable at
-[`metaneutrons/AROS-NG`](https://github.com/metaneutrons/AROS-NG/releases/tag/toolchain-v1-20260829-rc3);
-its artifacts and attestations are not copied or reissued here.
+The first standalone prerelease,
+[`toolchain-v1-20260831-rc3`](https://github.com/metaneutrons/aros-toolchains/releases/tag/toolchain-v1-20260831-rc3),
+was published on 31 August 2026. It provides twelve LLVM 11 archives for Linux
+and macOS on x86-64 and ARM64, each covering `pc-x86_64`, `arm-raspi` and
+`rpi-aarch64`. The release includes a measured index, checksums, manifests,
+SPDX SBOMs and fresh GitHub provenance. RISC-V is not part of this release.
+
+The older AROS-NG release remains historical evidence, not a required download
+source for these archives. See [standalone release evidence](docs/migration-provenance.md#standalone-release).
 
 ## Three-repository build identity
 
@@ -25,18 +30,19 @@ retain `source_commit` for the AROS source and add mandatory
 of the three commit timestamps. Release builds reject tracked changes or an
 identity mismatch before compilation.
 
-The current standalone qualification deliberately pins:
+The current published standalone release records:
 
 - AROS source: `metaneutrons/AROS-NX` at
   `f3cfc243a84065166a46da28b0a5b22bbd0f8869`;
 - aros-tools: `metaneutrons/aros-tools` at
-  `707037be4f8ff37300a1a89166c35f661c28bafe`.
+  `707037be4f8ff37300a1a89166c35f661c28bafe`;
+- producer: `metaneutrons/aros-toolchains` at
+  `c8039cf2b7291097ad62c6750bd7367e91a068f4`.
 
-The pinned commits are the reviewed migration heads after the AROS-NX upstream
-sync and deterministic aros-tools distribution were merged. They must pass the
-standalone producer contracts and the complete four-host release qualification
-before promotion here. CI fails if either explicit pin is missing; there is no
-branch-name fallback.
+These identities are not moving branch aliases. A newer AROS-NX or tools
+commit does not change the published release's provenance. Future releases
+must qualify their own explicit source/tools/producer recipe; CI rejects
+missing identities rather than falling back to branch names.
 
 ## Repository layout
 
