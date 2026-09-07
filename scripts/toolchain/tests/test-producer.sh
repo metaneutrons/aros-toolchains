@@ -135,6 +135,36 @@ PY
 python3 -B "$script_dir/test-host-python-env.py"
 python3 -B "$script_dir/test-llvm-patch.py"
 python3 -B "$script_dir/test-crosstools-release.py"
+python3 - "$source_root/toolchains/producer-executor-v1.toml" <<'PY'
+import re
+import sys
+import tomllib
+from pathlib import Path
+
+path = Path(sys.argv[1])
+with path.open("rb") as stream:
+    declaration = tomllib.load(stream)
+expected = {
+    "schema_version", "contract_id", "contract_path", "contract_sha256",
+    "tools_commit", "source_lock", "profiles",
+}
+if set(declaration) != expected:
+    raise SystemExit("native executor declaration must have one closed field set")
+if declaration["schema_version"] != 1:
+    raise SystemExit("native executor declaration has an unsupported schema")
+if declaration["contract_id"] != "aros-toolchain-producer-v1":
+    raise SystemExit("native executor declaration has an unexpected contract ID")
+if declaration["contract_path"] != "contracts/toolchain-producer-v1.toml":
+    raise SystemExit("native executor declaration has an unexpected contract path")
+if declaration["source_lock"] != "toolchains/llvm-11.0.0.sources.json":
+    raise SystemExit("native executor declaration has an unexpected source lock")
+if declaration["profiles"] != "toolchains/profiles-v1.json":
+    raise SystemExit("native executor declaration has an unexpected profile matrix")
+for field, length in (("contract_sha256", 64), ("tools_commit", 40)):
+    value = declaration[field]
+    if not isinstance(value, str) or re.fullmatch(rf"[0-9a-f]{{{length}}}", value) is None:
+        raise SystemExit(f"native executor declaration {field} must be a lowercase Git/hash identity")
+PY
 temporary=$(mktemp -d "${TMPDIR:-/tmp}/aros-toolchain-producer-test.XXXXXX")
 case "$temporary" in
     "${TMPDIR:-/tmp}"/aros-toolchain-producer-test.*) ;;

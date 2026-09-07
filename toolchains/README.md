@@ -36,6 +36,20 @@ Git tree, source lock, and profile document to match the signed-off recipe and
 rejects any tracked working-tree mutation; untracked transport caches do not
 alter that identity.
 
+## Native executor declaration
+
+`producer-executor-v1.toml` selects the reviewed `aros-tools` implementation
+for its native local lifecycle. It binds the exact tools commit, the measured
+producer-contract digest, this source lock, and this profile document. The
+native CLI rejects an absent, malformed, or mismatched declaration before it
+creates a compiler work directory.
+
+This declaration is a local-candidate input, not release provenance and not a
+workflow cutover. The current Python producer remains the release path until
+the separately reviewed CI migration accepts the same native implementation.
+Changing any selected input requires a new declaration with measured values;
+do not replace it with a branch name or a placeholder digest.
+
 ## Release invariants
 
 - A stable asset has the native upstream `CROSSTOOLSDIR` layout.
