@@ -33,7 +33,7 @@ grep -Fq -- '-fno-unwind-tables -fno-asynchronous-unwind-tables' "$source_root/s
 grep -Fq -- '-ffreestanding -fno-exceptions' "$source_root/scripts/toolchain/compatibility.sh"
 grep -Fq -- '${target_float_flag:+"$target_float_flag"}' "$source_root/scripts/toolchain/compatibility.sh"
 grep -Fq -- 'env ac_cv_prog_cc_c23=' "$source_root/scripts/toolchain/compatibility.sh"
-grep -Fq -- 'AROS_TOOLCHAIN_SOURCE_CACHE' "$source_root/.github/workflows/toolchain-release.yml"
+grep -Fq -- '--python-cache-dir "$GITHUB_WORKSPACE/source-cache"' "$source_root/.github/workflows/toolchain-release.yml"
 grep -Fq -- 'submodules: recursive' "$source_root/.github/workflows/toolchain-release.yml"
 python3 - "$source_root/.github/workflows/toolchain-release.yml" \
     "$source_root/.github/workflows/toolchain-release-recovery.yml" <<'PY'
@@ -59,7 +59,7 @@ for pattern in patterns:
         raise SystemExit(f"recovery must select exactly one {pattern} artifact family")
 if "pattern: verified-*\n" in workflow or "pattern: verified-*\n" in recovery:
     raise SystemExit("release assembly must not merge the verified source cache")
-if workflow.count("--require-provenance") != 1 or recovery.count("--require-provenance") != 1:
+if workflow.count("--stage final") != 1 or recovery.count("--require-provenance") != 1:
     raise SystemExit("every final release inventory must require provenance")
 if workflow.count('"${assets[@]}"') != 1 or recovery.count('"${assets[@]}"') != 1:
     raise SystemExit("release upload must use the validated regular-file inventory")
@@ -96,21 +96,21 @@ if workflow.count("netpbm") != 2:
 if workflow.count("libpng-dev") != 1 or workflow.count("gnu-sed") != 1:
     raise SystemExit("producer prerequisites lost Linux libpng or macOS GNU sed")
 consumer_start = workflow.index("      - name: Install audited consumer prerequisites")
-consumer_end = workflow.index("      - name: Two-root relocation", consumer_start)
+consumer_end = workflow.index("      - name: Build the exact native compatibility helpers externally", consumer_start)
 consumer = workflow[consumer_start:consumer_end]
 if "bash dependencies/aros/scripts/ci/install-build-prerequisites.sh" not in consumer:
     raise SystemExit("toolchain consumers must use the checked-out AROS prerequisite contract")
-if "name: build-observation-${{ matrix.host }}-${{ matrix.profile }}-${{ matrix.copy }}" not in workflow:
-    raise SystemExit("each producer must retain its observed environment outside the release archive")
+if "name: native-lifecycle-${{ matrix.host }}-${{ matrix.profile }}-${{ matrix.copy }}" not in workflow:
+    raise SystemExit("each producer must retain native lifecycle receipts outside the release archive")
 PY
 python3 - "$source_root/.github/workflows/toolchain-compatibility-replay.yml" <<'PY'
 from pathlib import Path
 import sys
 
 workflow = Path(sys.argv[1]).read_text(encoding="utf-8")
-if workflow.count("run-id: ${{ inputs.source_run_id }}") != 2:
-    raise SystemExit("compatibility replay must source both verified archives and locked sources from one run")
-if workflow.count("github-token: ${{ github.token }}") != 2:
+if workflow.count("run-id: ${{ inputs.source_run_id }}") != 3:
+    raise SystemExit("compatibility replay must source recipe, verified package, and locked sources from one run")
+if workflow.count("github-token: ${{ github.token }}") != 3:
     raise SystemExit("cross-run artifact downloads require the scoped GitHub token")
 if workflow.count("profile:") != 12:
     raise SystemExit("compatibility replay must cover the complete twelve-lane matrix")
