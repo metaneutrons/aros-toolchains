@@ -33,7 +33,7 @@ grep -Fq -- '-fno-unwind-tables -fno-asynchronous-unwind-tables' "$source_root/s
 grep -Fq -- '-ffreestanding -fno-exceptions' "$source_root/scripts/toolchain/compatibility.sh"
 grep -Fq -- '${target_float_flag:+"$target_float_flag"}' "$source_root/scripts/toolchain/compatibility.sh"
 grep -Fq -- 'env ac_cv_prog_cc_c23=' "$source_root/scripts/toolchain/compatibility.sh"
-grep -Fq -- 'AROS_TOOLCHAIN_SOURCE_CACHE' "$source_root/.github/workflows/toolchain-release.yml"
+grep -Fq -- '--python-cache-dir "$GITHUB_WORKSPACE/source-cache"' "$source_root/.github/workflows/toolchain-release.yml"
 grep -Fq -- 'submodules: recursive' "$source_root/.github/workflows/toolchain-release.yml"
 python3 - "$source_root/.github/workflows/toolchain-release.yml" \
     "$source_root/.github/workflows/toolchain-release-recovery.yml" <<'PY'
@@ -59,28 +59,46 @@ for pattern in patterns:
         raise SystemExit(f"recovery must select exactly one {pattern} artifact family")
 if "pattern: verified-*\n" in workflow or "pattern: verified-*\n" in recovery:
     raise SystemExit("release assembly must not merge the verified source cache")
-if workflow.count("--require-provenance") != 1 or recovery.count("--require-provenance") != 1:
+if workflow.count("--stage final") != 1 or recovery.count("--stage final") != 1:
     raise SystemExit("every final release inventory must require provenance")
 if workflow.count('"${assets[@]}"') != 1 or recovery.count('"${assets[@]}"') != 1:
     raise SystemExit("release upload must use the validated regular-file inventory")
 for required in (
-    "source run has non-packaging failures",
-    "producer.py repackage",
-    "source-release-id",
-    "recovery requires exactly 12 verified archives",
+    "qualified-final-release",
+    "qualification-evidence",
+    "gh attestation verify",
+    "prepare-recovery",
+    "validate-recovery",
+    "toolchain producer repackage",
+    "--source-release-id",
+    "--recovery-release-id",
     "recovery tag must be pre-created by a trusted maintainer credential",
-    'git rev-parse "$RELEASE_TAG^{tag}" > recovery-tag-object.sha',
+    'printf \'%s\\n\' "$recovery_tag_object" > "$RUNNER_TEMP/recovery-tag-object.sha"',
     "recovery tag object changed during assembly",
     "recovery tag target changed during assembly",
 ):
     if required not in recovery:
         raise SystemExit(f"recovery workflow lost fail-closed contract: {required}")
-if 'git push origin "refs/tags/$RELEASE_TAG"' in recovery:
-    raise SystemExit("GitHub job tokens must not create recovery tags")
-if recovery.count("run-id: ${{ inputs.source_run_id }}") != 4:
-    raise SystemExit("recovery must obtain all four input artifact families from one run")
-if recovery.count("github-token: ${{ github.token }}") != 4:
+for forbidden in (
+    "producer.py", "build-release.sh", "compatibility.sh", "offline-fetch.py", "host-python-env.py",
+    'git push origin "refs/tags/$RELEASE_TAG"',
+):
+    if forbidden in recovery:
+        raise SystemExit(f"native recovery workflow still references legacy producer material: {forbidden}")
+if recovery.count("run-id: ${{ inputs.source_run_id }}") != 5:
+    raise SystemExit("recovery must obtain every closed input artifact from one run")
+if recovery.count("github-token: ${{ github.token }}") != 5:
     raise SystemExit("recovery cross-run downloads require the scoped GitHub token")
+for required in (
+    "pattern: native-lifecycle-*",
+    "pattern: comparison-*",
+    "pattern: compatibility-*",
+    "name: qualified-final-release",
+    "name: qualification-evidence",
+    "record-qualification",
+):
+    if required not in workflow:
+        raise SystemExit(f"producer draft workflow lost closed qualification evidence: {required}")
 if "uses: ./.github/workflows/toolchain-release-recovery.yml" not in workflow:
     raise SystemExit("registered producer workflow must expose the recovery workflow")
 if "inputs.mode == 'recover'" not in workflow:
@@ -96,21 +114,21 @@ if workflow.count("netpbm") != 2:
 if workflow.count("libpng-dev") != 1 or workflow.count("gnu-sed") != 1:
     raise SystemExit("producer prerequisites lost Linux libpng or macOS GNU sed")
 consumer_start = workflow.index("      - name: Install audited consumer prerequisites")
-consumer_end = workflow.index("      - name: Two-root relocation", consumer_start)
+consumer_end = workflow.index("      - name: Build the exact native compatibility helpers externally", consumer_start)
 consumer = workflow[consumer_start:consumer_end]
 if "bash dependencies/aros/scripts/ci/install-build-prerequisites.sh" not in consumer:
     raise SystemExit("toolchain consumers must use the checked-out AROS prerequisite contract")
-if "name: build-observation-${{ matrix.host }}-${{ matrix.profile }}-${{ matrix.copy }}" not in workflow:
-    raise SystemExit("each producer must retain its observed environment outside the release archive")
+if "name: native-lifecycle-${{ matrix.host }}-${{ matrix.profile }}-${{ matrix.copy }}" not in workflow:
+    raise SystemExit("each producer must retain native lifecycle receipts outside the release archive")
 PY
 python3 - "$source_root/.github/workflows/toolchain-compatibility-replay.yml" <<'PY'
 from pathlib import Path
 import sys
 
 workflow = Path(sys.argv[1]).read_text(encoding="utf-8")
-if workflow.count("run-id: ${{ inputs.source_run_id }}") != 2:
-    raise SystemExit("compatibility replay must source both verified archives and locked sources from one run")
-if workflow.count("github-token: ${{ github.token }}") != 2:
+if workflow.count("run-id: ${{ inputs.source_run_id }}") != 3:
+    raise SystemExit("compatibility replay must source recipe, verified package, and locked sources from one run")
+if workflow.count("github-token: ${{ github.token }}") != 3:
     raise SystemExit("cross-run artifact downloads require the scoped GitHub token")
 if workflow.count("profile:") != 12:
     raise SystemExit("compatibility replay must cover the complete twelve-lane matrix")
