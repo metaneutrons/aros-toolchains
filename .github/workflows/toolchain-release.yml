@@ -157,6 +157,7 @@ jobs:
       - name: Fetch and verify immutable toolchain and host Python sources
         run: |
           set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/source-cache"
           "${{ steps.native.outputs.aros }}" toolchain producer cache \
             --source-lock "$GITHUB_WORKSPACE/$SOURCE_LOCK" \
             --cache-dir "$GITHUB_WORKSPACE/source-cache"

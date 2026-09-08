@@ -43,6 +43,14 @@ import sys
 
 workflow = Path(sys.argv[1]).read_text(encoding="utf-8")
 recovery = Path(sys.argv[2]).read_text(encoding="utf-8")
+fetch_start = workflow.index("      - name: Fetch and verify immutable toolchain and host Python sources")
+fetch_end = workflow.index("\n      - name: Vendor locked Rust collector sources", fetch_start)
+fetch_step = workflow[fetch_start:fetch_end]
+cache_directory = 'mkdir -p "$GITHUB_WORKSPACE/source-cache"'
+if cache_directory not in fetch_step:
+    raise SystemExit("source cache fetch must explicitly create its selected cache directory")
+if fetch_step.index(cache_directory) > fetch_step.index("toolchain producer cache"):
+    raise SystemExit("source cache directory must exist before the native cache command")
 start = workflow.index("          name: verified-toolchain-sources")
 end = workflow.index("\n\n  build:", start)
 source_artifact = workflow[start:end]
