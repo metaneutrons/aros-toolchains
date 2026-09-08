@@ -373,6 +373,10 @@ jobs:
           path: dependencies/aros-tools
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
+          name: toolchain-recipe
+          path: producer-input
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
           name: verified-${{ matrix.host }}-${{ matrix.profile }}
           path: verified
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
@@ -380,24 +384,95 @@ jobs:
           name: verified-toolchain-sources
           path: source-cache
       - uses: ./.github/actions/setup-aros-rust
-      - name: Install audited consumer prerequisites
-        run: bash dependencies/aros/scripts/ci/install-build-prerequisites.sh
-      - name: Two-root relocation and pinned upstream compatibility
-        env:
-          AROS_TOOLCHAIN_SOURCE_CACHE: ${{ github.workspace }}/source-cache
+      - id: native
+        uses: ./.github/actions/build-aros-tools-native
+        with:
+          tools-dir: ${{ github.workspace }}/dependencies/aros-tools
+          target-dir: ${{ runner.temp }}/aros-tools-native
+      - id: profile
+        name: Select the recipe-bound upstream source
         run: |
           set -euo pipefail
-          asset="aros-toolchain-v1-llvm${LLVM_VERSION}-${{ matrix.host }}-${{ matrix.profile }}.tar.xz"
-          upstream_commit=$(python3 -c 'import json; print(json.load(open("toolchains/profiles-v1.json"))["upstream_commit"])')
-          scripts/toolchain/compatibility.sh \
-            "$GITHUB_WORKSPACE/verified/$asset" \
-            "${{ matrix.host }}" \
-            "${{ matrix.profile }}" \
-            "$GITHUB_WORKSPACE/$PROFILES" \
-            "$upstream_commit" \
-            "$RUNNER_TEMP/consumer-${{ matrix.profile }}" \
-            "$GITHUB_WORKSPACE/dependencies/aros" \
-            "$GITHUB_WORKSPACE/dependencies/aros-tools"
+          profile="$("${{ steps.native.outputs.aros }}" toolchain producer profile \
+            --recipe "$GITHUB_WORKSPACE/producer-input/recipe.json" \
+            --profiles "$GITHUB_WORKSPACE/$PROFILES" \
+            --preset "${{ matrix.profile }}" \
+            --format json)"
+          printf 'upstream_commit=%s\n' "$(jq -er '.upstream_commit' <<< "$profile")" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: aros-development-team/AROS
+          ref: ${{ steps.profile.outputs.upstream_commit }}
+          fetch-depth: 1
+          submodules: recursive
+          path: dependencies/upstream-aros
+      - name: Install audited consumer prerequisites
+        run: bash dependencies/aros/scripts/ci/install-build-prerequisites.sh
+      - name: Build the exact native compatibility helpers externally
+        run: |
+          set -euo pipefail
+          cargo build --locked --release \
+            --manifest-path "$GITHUB_WORKSPACE/dependencies/aros-tools/Cargo.toml" \
+            --target-dir "$RUNNER_TEMP/aros-tools-helpers" \
+            --package aros-transpiler \
+            --package aros-genmodule \
+            --package aros-collect \
+            --package aros-ahi-runner \
+            --package aros-fetch
+      - name: Execute two-root native compatibility qualification
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/native-compatibility-${{ matrix.host }}-${{ matrix.profile }}"
+          environment="$RUNNER_TEMP/compatibility-environment-${{ matrix.host }}-${{ matrix.profile }}.json"
+          mkdir -p "$work/engine-work"
+          aros="${{ steps.native.outputs.aros }}"
+          "$aros" toolchain producer environment \
+            --host "${{ matrix.host }}" \
+            --output "$environment"
+          "$aros" toolchain producer materialize-engine-free-source \
+            --source-dir "$GITHUB_WORKSPACE/dependencies/aros" \
+            --recipe "$GITHUB_WORKSPACE/producer-input/recipe.json" \
+            --output-dir "$work/engine-free-source"
+          make_program="$(command -v gmake || command -v make)"
+          "$aros" toolchain producer compatibility \
+            --recipe "$GITHUB_WORKSPACE/producer-input/recipe.json" \
+            --source-lock "$GITHUB_WORKSPACE/$SOURCE_LOCK" \
+            --profiles "$GITHUB_WORKSPACE/$PROFILES" \
+            --preset "${{ matrix.profile }}" \
+            --release-id "${{ needs.plan.outputs.release_id }}" \
+            --host "${{ matrix.host }}" \
+            --build-environment "$environment" \
+            --package-dir "$GITHUB_WORKSPACE/verified" \
+            --first-root "$work/package-cmake" \
+            --second-root "$work/package-upstream" \
+            --source-dir "$work/engine-free-source" \
+            --engine-work-dir "$work/engine-work" \
+            --helpers-dir "$RUNNER_TEMP/aros-tools-helpers/release" \
+            --cmake-program "$(command -v cmake)" \
+            --ninja-program "$(command -v ninja)" \
+            --upstream-source-dir "$GITHUB_WORKSPACE/dependencies/upstream-aros" \
+            --upstream-build-dir "$work/upstream-build" \
+            --python-cache-dir "$GITHUB_WORKSPACE/source-cache" \
+            --python-environment-dir "$work/python" \
+            --host-tools-dir "$work/host-tools" \
+            --host-tool "make=$make_program" \
+            --host-tool "python3=$(command -v python3)" \
+            --cmake-build-dir "$work/cmake-build" \
+            --c-fixture "$GITHUB_WORKSPACE/scripts/toolchain/fixtures/smoke.c" \
+            --cxx-fixture "$GITHUB_WORKSPACE/scripts/toolchain/fixtures/smoke.cpp" \
+            --standalone-output-dir "$work/standalone" \
+            --reports-dir "$work/reports" \
+            --jobs 3 \
+            --timeout-seconds 3600 \
+            --format json
+      - name: Preserve native compatibility evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: compatibility-${{ matrix.host }}-${{ matrix.profile }}
+          path: ${{ runner.temp }}/native-compatibility-${{ matrix.host }}-${{ matrix.profile }}/reports/
+          if-no-files-found: warn
+          retention-days: 7
 
   draft-release:
     needs: [plan, compatibility]
@@ -409,6 +484,17 @@ jobs:
       attestations: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ env.AROS_TOOLS_REPOSITORY }}
+          ref: ${{ env.AROS_TOOLS_COMMIT }}
+          path: dependencies/aros-tools
+      - uses: ./.github/actions/setup-aros-rust
+      - id: native
+        uses: ./.github/actions/build-aros-tools-native
+        with:
+          tools-dir: ${{ github.workspace }}/dependencies/aros-tools
+          target-dir: ${{ runner.temp }}/aros-tools-native
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           pattern: verified-*-pc-x86_64
@@ -439,10 +525,12 @@ jobs:
       - name: Generate release index and checksums
         run: |
           set -euo pipefail
-          python3 scripts/toolchain/producer.py index \
-            --directory release \
+          "${{ steps.native.outputs.aros }}" toolchain producer index \
+            --directory "$GITHUB_WORKSPACE/release" \
+            --release-id "$GITHUB_REF_NAME" \
             --base-url "https://github.com/$GITHUB_REPOSITORY/releases/download/$GITHUB_REF_NAME" \
-            --require-complete-v1
+            --source-lock-filename "$(basename "$SOURCE_LOCK")" \
+            --stage pre-attestation
       - name: Attest checksummed release files
         id: provenance
         uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373
@@ -454,11 +542,12 @@ jobs:
         run: |
           set -euo pipefail
           cp "$PROVENANCE_BUNDLE" release/toolchain-provenance.sigstore.json
-          python3 scripts/toolchain/producer.py index \
-            --directory release \
+          "${{ steps.native.outputs.aros }}" toolchain producer index \
+            --directory "$GITHUB_WORKSPACE/release" \
+            --release-id "$GITHUB_REF_NAME" \
             --base-url "https://github.com/$GITHUB_REPOSITORY/releases/download/$GITHUB_REF_NAME" \
-            --require-complete-v1 \
-            --require-provenance
+            --source-lock-filename "$(basename "$SOURCE_LOCK")" \
+            --stage final
       - name: Create immutable draft release
         env:
           GH_TOKEN: ${{ github.token }}
