@@ -43,6 +43,29 @@ import sys
 
 workflow = Path(sys.argv[1]).read_text(encoding="utf-8")
 recovery = Path(sys.argv[2]).read_text(encoding="utf-8")
+fetch_start = workflow.index("      - name: Fetch and verify immutable toolchain and host Python sources")
+fetch_end = workflow.index("\n      - name: Vendor locked Rust collector sources", fetch_start)
+fetch_step = workflow[fetch_start:fetch_end]
+cache_directory = 'mkdir -p "$GITHUB_WORKSPACE/source-cache"'
+if cache_directory not in fetch_step:
+    raise SystemExit("source cache fetch must explicitly create its selected cache directory")
+if fetch_step.index(cache_directory) > fetch_step.index("toolchain producer cache"):
+    raise SystemExit("source cache directory must exist before the native cache command")
+if workflow.count('git worktree add --detach "$producer_dir" "$(git rev-parse HEAD)"') != 2:
+    raise SystemExit("native recipe and build jobs must materialize distinct producer roots")
+if workflow.count('--producer-dir "$AROS_PRODUCER_DIR"') != 2:
+    raise SystemExit("native recipe and build jobs must bind the isolated producer root")
+if '--producer-dir "$GITHUB_WORKSPACE"' in workflow:
+    raise SystemExit("native recipe and build jobs must not overlap producer and dependency roots")
+recipe_start = workflow.index("      - name: Validate committed inputs and compute native recipe identity")
+recipe_end = workflow.index("\n\n      - id: matrix", recipe_start)
+recipe_step = workflow[recipe_start:recipe_end]
+for required in (
+    '--source-lock "$AROS_PRODUCER_DIR/$SOURCE_LOCK"',
+    '--profiles "$AROS_PRODUCER_DIR/$PROFILES"',
+):
+    if required not in recipe_step:
+        raise SystemExit("native recipe must bind lock and profiles below its isolated producer root")
 start = workflow.index("          name: verified-toolchain-sources")
 end = workflow.index("\n\n  build:", start)
 source_artifact = workflow[start:end]
