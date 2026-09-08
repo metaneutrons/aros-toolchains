@@ -2,6 +2,6 @@ schema_version = 1
 contract_id = "aros-toolchain-producer-v1"
 contract_path = "contracts/toolchain-producer-v1.toml"
 contract_sha256 = "3ab3657ecbcc0c386772a60882185601004cbccc1a5a3750d0c394b84c3fbf67"
-tools_commit = "674962dc391e36343f66786d4eb8e59b6c1010c1"
+tools_commit = "016a15b41cc6de346fb81487328d099b4705ccad"
 source_lock = "toolchains/llvm-11.0.0.sources.json"
 profiles = "toolchains/profiles-v1.json"
