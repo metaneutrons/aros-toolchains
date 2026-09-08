@@ -7,6 +7,7 @@ script_dir=$(cd "$(dirname "$0")" && pwd -P)
 source_root=$(cd "$script_dir/../../.." && pwd -P)
 producer="$source_root/scripts/toolchain/producer.py"
 : "${AROS_TEST_SOURCE_ROOT:?AROS_TEST_SOURCE_ROOT must name the AROS source checkout}"
+: "${AROS_TEST_TOOLS_ROOT:?AROS_TEST_TOOLS_ROOT must name the native executor checkout}"
 asset=aros-toolchain-v1-llvm11.0.0-linux-x86_64-pc-x86_64.tar.xz
 grep -Fq -- '--with-toolchain=llvm' "$source_root/scripts/toolchain/compatibility.sh"
 grep -Fq -- '--with-aros-toolchain=yes' "$source_root/scripts/toolchain/compatibility.sh"
@@ -153,13 +154,20 @@ PY
 python3 -B "$script_dir/test-host-python-env.py"
 python3 -B "$script_dir/test-llvm-patch.py"
 python3 -B "$script_dir/test-crosstools-release.py"
-python3 - "$source_root/toolchains/producer-executor-v1.toml" <<'PY'
+python3 - "$source_root/toolchains/producer-executor-v1.toml" "$AROS_TEST_TOOLS_ROOT" \
+    "$source_root/.github/workflows/toolchain-release.yml" \
+    "$source_root/.github/workflows/toolchain-release-recovery.yml" \
+    "$source_root/.github/workflows/toolchain-compatibility-replay.yml" <<'PY'
+import hashlib
 import re
+import subprocess
 import sys
 import tomllib
 from pathlib import Path
 
 path = Path(sys.argv[1])
+tools_root = Path(sys.argv[2]).resolve()
+workflows = [Path(item) for item in sys.argv[3:]]
 with path.open("rb") as stream:
     declaration = tomllib.load(stream)
 expected = {
@@ -182,6 +190,20 @@ for field, length in (("contract_sha256", 64), ("tools_commit", 40)):
     value = declaration[field]
     if not isinstance(value, str) or re.fullmatch(rf"[0-9a-f]{{{length}}}", value) is None:
         raise SystemExit(f"native executor declaration {field} must be a lowercase Git/hash identity")
+contract = tools_root / declaration["contract_path"]
+if not contract.is_file() or contract.is_symlink():
+    raise SystemExit("native executor contract must be a regular file below the checked-out tools root")
+if hashlib.sha256(contract.read_bytes()).hexdigest() != declaration["contract_sha256"]:
+    raise SystemExit("native executor declaration contract digest differs from the checked-out contract")
+tools_commit = subprocess.check_output(
+    ["git", "-C", str(tools_root), "rev-parse", "HEAD"], text=True
+).strip()
+if tools_commit != declaration["tools_commit"]:
+    raise SystemExit("native executor declaration tools commit differs from the checked-out executor")
+for workflow in workflows:
+    match = re.search(r"^  AROS_TOOLS_COMMIT: ([0-9a-f]{40})$", workflow.read_text(encoding="utf-8"), re.MULTILINE)
+    if match is None or match.group(1) != declaration["tools_commit"]:
+        raise SystemExit(f"{workflow.name} must pin the declared native executor commit")
 PY
 temporary=$(mktemp -d "${TMPDIR:-/tmp}/aros-toolchain-producer-test.XXXXXX")
 case "$temporary" in

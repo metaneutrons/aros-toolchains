@@ -16,6 +16,8 @@ concurrency:
 env:
   AROS_SOURCE_REPOSITORY: metaneutrons/AROS-NX
   AROS_SOURCE_COMMIT: f3cfc243a84065166a46da28b0a5b22bbd0f8869
+  AROS_TOOLS_REPOSITORY: metaneutrons/aros-tools
+  AROS_TOOLS_COMMIT: 016a15b41cc6de346fb81487328d099b4705ccad
   PYTHONDONTWRITEBYTECODE: '1'
   PYTHONHASHSEED: '0'
 
@@ -33,8 +35,15 @@ jobs:
           repository: ${{ env.AROS_SOURCE_REPOSITORY }}
           ref: ${{ env.AROS_SOURCE_COMMIT }}
           path: aros-source
+      - name: Checkout exact native executor contract
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: ${{ env.AROS_TOOLS_REPOSITORY }}
+          ref: ${{ env.AROS_TOOLS_COMMIT }}
+          path: aros-tools
       - name: Run complete offline producer contract suite
         working-directory: producer
         env:
           AROS_TEST_SOURCE_ROOT: ${{ github.workspace }}/aros-source
+          AROS_TEST_TOOLS_ROOT: ${{ github.workspace }}/aros-tools
         run: scripts/toolchain/tests/test-producer.sh
