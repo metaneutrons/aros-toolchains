@@ -208,6 +208,7 @@ jobs:
           repository: ${{ env.AROS_SOURCE_REPOSITORY }}
           ref: ${{ env.AROS_SOURCE_COMMIT }}
           fetch-depth: 0
+          submodules: recursive
           path: dependencies/aros
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -227,6 +228,11 @@ jobs:
           path: source-cache
 
       - uses: ./.github/actions/setup-aros-rust
+      - id: native
+        uses: ./.github/actions/build-aros-tools-native
+        with:
+          tools-dir: ${{ github.workspace }}/dependencies/aros-tools
+          target-dir: ${{ runner.temp }}/aros-tools-native
 
       - name: Install pinned-lane build prerequisites (Linux)
         if: runner.os == 'Linux'
@@ -244,31 +250,50 @@ jobs:
           brew install autoconf automake bison cmake gawk gnu-sed libtool make netpbm ninja xz
           echo "$(brew --prefix bison)/bin" >> "$GITHUB_PATH"
 
-      - name: Independent upstream configure + crosstools build
-        env:
-          AROS_TOOLCHAIN_JOBS: "3"
+      - name: Build and package one native offline candidate
         run: |
           set -euo pipefail
-          scripts/toolchain/build-release.sh \
-            --producer-root "$GITHUB_WORKSPACE" \
-            --aros-source-root "$GITHUB_WORKSPACE/dependencies/aros" \
-            --aros-tools-root "$GITHUB_WORKSPACE/dependencies/aros-tools" \
-            --work-dir "$RUNNER_TEMP/aros-${{ matrix.copy }}-${{ matrix.profile }}" \
-            --source-cache "$GITHUB_WORKSPACE/source-cache" \
-            --recipe "$GITHUB_WORKSPACE/producer-input/recipe.json" \
-            --lock "$GITHUB_WORKSPACE/$SOURCE_LOCK" \
-            --profiles "$GITHUB_WORKSPACE/$PROFILES" \
-            --profile "${{ matrix.profile }}" \
+          work="$RUNNER_TEMP/aros-${{ matrix.copy }}-${{ matrix.profile }}"
+          output="$RUNNER_TEMP/native-output-${{ matrix.copy }}-${{ matrix.profile }}"
+          environment="$RUNNER_TEMP/build-environment-${{ matrix.copy }}-${{ matrix.profile }}.json"
+          aros="${{ steps.native.outputs.aros }}"
+          "$aros" toolchain producer environment \
             --host "${{ matrix.host }}" \
+            --output "$environment"
+          "$aros" toolchain build \
+            --preset "${{ matrix.profile }}" \
+            --recipe "$GITHUB_WORKSPACE/producer-input/recipe.json" \
+            --source-dir "$GITHUB_WORKSPACE/dependencies/aros" \
+            --producer-dir "$GITHUB_WORKSPACE" \
+            --tools-dir "$GITHUB_WORKSPACE/dependencies/aros-tools" \
+            --work-dir "$work" \
+            --output-dir "$output" \
+            --cache-dir "$GITHUB_WORKSPACE/source-cache" \
+            --jobs 3 \
+            --timeout-seconds 18000 \
+            --offline \
             --release-id "${{ needs.plan.outputs.release_id }}" \
-            --output-dir "$GITHUB_WORKSPACE/release-output"
+            --format json
+          "$aros" toolchain producer package \
+            --recipe "$GITHUB_WORKSPACE/producer-input/recipe.json" \
+            --source-lock "$GITHUB_WORKSPACE/$SOURCE_LOCK" \
+            --profiles "$GITHUB_WORKSPACE/$PROFILES" \
+            --preset "${{ matrix.profile }}" \
+            --release-id "${{ needs.plan.outputs.release_id }}" \
+            --host "${{ matrix.host }}" \
+            --build-environment "$environment" \
+            --input-dir "$output/toolchain" \
+            --output-dir "$GITHUB_WORKSPACE/release-output" \
+            --forbidden-prefix "$GITHUB_WORKSPACE/source-cache" \
+            --forbidden-prefix "$GITHUB_WORKSPACE" \
+            --forbidden-prefix "$RUNNER_TEMP"
 
-      - name: Preserve observed producer environment
+      - name: Preserve native lifecycle receipts
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: build-observation-${{ matrix.host }}-${{ matrix.profile }}-${{ matrix.copy }}
-          path: ${{ runner.temp }}/aros-${{ matrix.copy }}-${{ matrix.profile }}/build-observation.json
+          name: native-lifecycle-${{ matrix.host }}-${{ matrix.profile }}-${{ matrix.copy }}
+          path: ${{ runner.temp }}/aros-${{ matrix.copy }}-${{ matrix.profile }}/native-lifecycle/receipts/
           if-no-files-found: warn
           retention-days: 7
 
@@ -287,6 +312,17 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ env.AROS_TOOLS_REPOSITORY }}
+          ref: ${{ env.AROS_TOOLS_COMMIT }}
+          path: dependencies/aros-tools
+      - uses: ./.github/actions/setup-aros-rust
+      - id: native
+        uses: ./.github/actions/build-aros-tools-native
+        with:
+          tools-dir: ${{ github.workspace }}/dependencies/aros-tools
+          target-dir: ${{ runner.temp }}/aros-tools-native
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           name: candidate-${{ matrix.host }}-${{ matrix.profile }}-a
@@ -295,18 +331,23 @@ jobs:
         with:
           name: candidate-${{ matrix.host }}-${{ matrix.profile }}-b
           path: candidate-b
-      - name: Require byte-identical normalized archives
+      - name: Require byte-identical complete native package sets
         run: |
           set -euo pipefail
-          asset="aros-toolchain-v1-llvm${LLVM_VERSION}-${{ matrix.host }}-${{ matrix.profile }}.tar.xz"
-          python3 scripts/toolchain/producer.py compare \
-            --left "candidate-a/$asset" \
-            --right "candidate-b/$asset" \
-            --output-dir verified
+          "${{ steps.native.outputs.aros }}" toolchain producer compare \
+            --left "$GITHUB_WORKSPACE/candidate-a" \
+            --right "$GITHUB_WORKSPACE/candidate-b" \
+            --output "$RUNNER_TEMP/comparison-${{ matrix.host }}-${{ matrix.profile }}.json"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: verified-${{ matrix.host }}-${{ matrix.profile }}
-          path: verified/
+          path: candidate-a/
+          if-no-files-found: error
+          retention-days: 7
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: comparison-${{ matrix.host }}-${{ matrix.profile }}
+          path: ${{ runner.temp }}/comparison-${{ matrix.host }}-${{ matrix.profile }}.json
           if-no-files-found: error
           retention-days: 7
 
