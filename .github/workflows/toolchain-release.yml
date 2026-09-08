@@ -58,7 +58,7 @@ env:
   AROS_SOURCE_REPOSITORY: metaneutrons/AROS-NX
   AROS_SOURCE_COMMIT: f3cfc243a84065166a46da28b0a5b22bbd0f8869
   AROS_TOOLS_REPOSITORY: metaneutrons/aros-tools
-  AROS_TOOLS_COMMIT: 707037be4f8ff37300a1a89166c35f661c28bafe
+  AROS_TOOLS_COMMIT: 01d262e9582c8385d158d050183f089edfba7ccf
 
 jobs:
   plan:
@@ -77,6 +77,7 @@ jobs:
           repository: ${{ env.AROS_SOURCE_REPOSITORY }}
           ref: ${{ env.AROS_SOURCE_COMMIT }}
           fetch-depth: 0
+          submodules: recursive
           path: dependencies/aros
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -85,23 +86,22 @@ jobs:
           fetch-depth: 0
           path: dependencies/aros-tools
 
-      - name: Validate locks and compute recipe identity
-        env:
-          AROS_TEST_SOURCE_ROOT: ${{ github.workspace }}/dependencies/aros
+      - uses: ./.github/actions/setup-aros-rust
+      - id: native
+        uses: ./.github/actions/build-aros-tools-native
+        with:
+          tools-dir: ${{ github.workspace }}/dependencies/aros-tools
+          target-dir: ${{ runner.temp }}/aros-tools-native
+      - name: Validate committed inputs and compute native recipe identity
         run: |
           set -euo pipefail
-          python3 scripts/toolchain/producer.py recipe \
-            --producer-root . \
-            --source-root dependencies/aros \
-            --tools-root dependencies/aros-tools \
-            --lock "$SOURCE_LOCK" \
+          "${{ steps.native.outputs.aros }}" toolchain producer recipe \
+            --source-dir "$GITHUB_WORKSPACE/dependencies/aros" \
+            --producer-dir "$GITHUB_WORKSPACE" \
+            --tools-dir "$GITHUB_WORKSPACE/dependencies/aros-tools" \
+            --source-lock "$GITHUB_WORKSPACE/$SOURCE_LOCK" \
             --profiles "$PROFILES" \
-            --output recipe.json
-          python3 -m json.tool toolchains/source-lock-v2.schema.json >/dev/null
-          python3 -m json.tool toolchains/toolchain-manifest-v1.schema.json >/dev/null
-          python3 -m json.tool "$SOURCE_LOCK" >/dev/null
-          python3 -m json.tool "$PROFILES" >/dev/null
-          scripts/toolchain/tests/test-producer.sh
+            --output "$GITHUB_WORKSPACE/recipe.json"
 
       - id: matrix
         name: Select staged host matrix
@@ -157,15 +157,20 @@ jobs:
           ref: ${{ env.AROS_TOOLS_COMMIT }}
           path: dependencies/aros-tools
       - uses: ./.github/actions/setup-aros-rust
+      - id: native
+        uses: ./.github/actions/build-aros-tools-native
+        with:
+          tools-dir: ${{ github.workspace }}/dependencies/aros-tools
+          target-dir: ${{ runner.temp }}/aros-tools-native
       - name: Fetch and verify immutable toolchain and host Python sources
         run: |
           set -euo pipefail
-          python3 scripts/toolchain/producer.py prefetch \
-            --lock "$SOURCE_LOCK" \
-            --destination source-cache
-          python3 scripts/toolchain/producer.py prefetch \
-            --lock "$SOURCE_LOCK" \
-            --destination source-cache \
+          "${{ steps.native.outputs.aros }}" toolchain producer cache \
+            --source-lock "$GITHUB_WORKSPACE/$SOURCE_LOCK" \
+            --cache-dir "$GITHUB_WORKSPACE/source-cache"
+          "${{ steps.native.outputs.aros }}" toolchain producer cache \
+            --source-lock "$GITHUB_WORKSPACE/$SOURCE_LOCK" \
+            --cache-dir "$GITHUB_WORKSPACE/source-cache" \
             --offline
       - name: Vendor locked Rust collector sources
         run: |
@@ -173,19 +178,12 @@ jobs:
           cargo vendor --locked --versioned-dirs \
             --manifest-path dependencies/aros-tools/Cargo.toml \
             source-cache/cargo-vendor > source-cache/cargo-vendor-config.toml
-          python3 - <<'PY'
-          from pathlib import Path
-          config = Path("source-cache/cargo-vendor-config.toml")
-          lines = config.read_text(encoding="utf-8").splitlines()
-          replaced = 0
-          for index, line in enumerate(lines):
-              if line.startswith("directory = "):
-                  lines[index] = 'directory = "__CARGO_VENDOR_DIRECTORY__"'
-                  replaced += 1
-          if replaced != 1:
-              raise SystemExit(f"expected one Cargo vendor directory, found {replaced}")
-          config.write_text("\n".join(lines) + "\n", encoding="utf-8")
-          PY
+          config=source-cache/cargo-vendor-config.toml
+          if [[ $(grep -c '^directory = ' "$config") -ne 1 ]]; then
+            echo "Cargo vendor configuration has no unique directory entry" >&2
+            exit 1
+          fi
+          sed -i 's|^directory = .*|directory = "__CARGO_VENDOR_DIRECTORY__"|' "$config"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: verified-toolchain-sources

@@ -1,0 +1,39 @@
+name: Build the isolated native AROS producer
+description: Build the selected aros CLI without mutating its audited checkout
+
+inputs:
+  tools-dir:
+    description: Exact checked-out aros-tools source root
+    required: true
+  target-dir:
+    description: Absent external Cargo target directory
+    required: true
+
+outputs:
+  aros:
+    description: Absolute path to the isolated native aros executable
+    value: ${{ steps.build.outputs.aros }}
+
+runs:
+  using: composite
+  steps:
+    - id: build
+      shell: bash
+      env:
+        TOOLS_DIR: ${{ inputs.tools-dir }}
+        TARGET_DIR: ${{ inputs.target-dir }}
+      run: |
+        set -euo pipefail
+        if [[ ! -f "$TOOLS_DIR/Cargo.toml" || -e "$TARGET_DIR" ]]; then
+          echo "native producer requires a checked-out tools root and an absent external target directory" >&2
+          exit 1
+        fi
+        cargo build --locked --release --package aros-cli \
+          --manifest-path "$TOOLS_DIR/Cargo.toml" \
+          --target-dir "$TARGET_DIR"
+        aros="$TARGET_DIR/release/aros"
+        if [[ ! -x "$aros" ]]; then
+          echo "native producer build did not produce the aros executable" >&2
+          exit 1
+        fi
+        printf 'aros=%s\n' "$aros" >> "$GITHUB_OUTPUT"
