@@ -84,15 +84,22 @@ jobs:
         with:
           tools-dir: ${{ github.workspace }}/dependencies/aros-tools
           target-dir: ${{ runner.temp }}/aros-tools-native
+      - name: Materialize a distinct producer checkout
+        run: |
+          set -euo pipefail
+          producer_dir="$RUNNER_TEMP/aros-toolchains-producer"
+          test ! -e "$producer_dir"
+          git worktree add --detach "$producer_dir" "$(git rev-parse HEAD)"
+          printf 'AROS_PRODUCER_DIR=%s\n' "$producer_dir" >> "$GITHUB_ENV"
       - name: Validate committed inputs and compute native recipe identity
         run: |
           set -euo pipefail
           "${{ steps.native.outputs.aros }}" toolchain producer recipe \
             --source-dir "$GITHUB_WORKSPACE/dependencies/aros" \
-            --producer-dir "$GITHUB_WORKSPACE" \
+            --producer-dir "$AROS_PRODUCER_DIR" \
             --tools-dir "$GITHUB_WORKSPACE/dependencies/aros-tools" \
-            --source-lock "$GITHUB_WORKSPACE/$SOURCE_LOCK" \
-            --profiles "$PROFILES" \
+            --source-lock "$AROS_PRODUCER_DIR/$SOURCE_LOCK" \
+            --profiles "$AROS_PRODUCER_DIR/$PROFILES" \
             --output "$GITHUB_WORKSPACE/recipe.json"
 
       - id: matrix
@@ -227,6 +234,14 @@ jobs:
           tools-dir: ${{ github.workspace }}/dependencies/aros-tools
           target-dir: ${{ runner.temp }}/aros-tools-native
 
+      - name: Materialize a distinct producer checkout
+        run: |
+          set -euo pipefail
+          producer_dir="$RUNNER_TEMP/aros-toolchains-producer"
+          test ! -e "$producer_dir"
+          git worktree add --detach "$producer_dir" "$(git rev-parse HEAD)"
+          printf 'AROS_PRODUCER_DIR=%s\n' "$producer_dir" >> "$GITHUB_ENV"
+
       - name: Install pinned-lane build prerequisites (Linux)
         if: runner.os == 'Linux'
         run: |
@@ -257,7 +272,7 @@ jobs:
             --preset "${{ matrix.profile }}" \
             --recipe "$GITHUB_WORKSPACE/producer-input/recipe.json" \
             --source-dir "$GITHUB_WORKSPACE/dependencies/aros" \
-            --producer-dir "$GITHUB_WORKSPACE" \
+            --producer-dir "$AROS_PRODUCER_DIR" \
             --tools-dir "$GITHUB_WORKSPACE/dependencies/aros-tools" \
             --work-dir "$work" \
             --output-dir "$output" \
