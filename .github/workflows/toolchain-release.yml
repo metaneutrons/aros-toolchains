@@ -24,15 +24,7 @@ on:
         required: false
         type: string
       source_tag:
-        description: Recovery only - release ID embedded in source archives
-        required: false
-        type: string
-      source_commit:
-        description: Recovery only - exact AROS source commit in the recipe
-        required: false
-        type: string
-      producer_commit:
-        description: Recovery only - exact producer commit and tag target
+        description: Recovery only - immutable source release tag in qualification evidence
         required: false
         type: string
       release_tag:
@@ -58,7 +50,7 @@ env:
   AROS_SOURCE_REPOSITORY: metaneutrons/AROS-NX
   AROS_SOURCE_COMMIT: f3cfc243a84065166a46da28b0a5b22bbd0f8869
   AROS_TOOLS_REPOSITORY: metaneutrons/aros-tools
-  AROS_TOOLS_COMMIT: ef81b022b6d001d7bd4f86f2dd475374779c582a
+  AROS_TOOLS_COMMIT: 41a9a70f913bb41600c9cab7c430b4ef97452b60
 
 jobs:
   plan:
@@ -514,6 +506,18 @@ jobs:
         with:
           name: toolchain-recipe
           path: release-input
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          pattern: native-lifecycle-*
+          path: qualification-input/lifecycle
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          pattern: comparison-*
+          path: qualification-input/comparison
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          pattern: compatibility-*
+          path: qualification-input/compatibility
       - name: Add immutable recipe inputs
         run: |
           set -euo pipefail
@@ -548,6 +552,58 @@ jobs:
             --base-url "https://github.com/$GITHUB_REPOSITORY/releases/download/$GITHUB_REF_NAME" \
             --source-lock-filename "$(basename "$SOURCE_LOCK")" \
             --stage final
+      - name: Verify attestation and record closed qualification evidence
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if [[ $(git cat-file -t "$GITHUB_REF_NAME") != tag ]]; then
+            echo "producer release tag must be annotated" >&2
+            exit 1
+          fi
+          source_tag_object=$(git rev-parse "$GITHUB_REF_NAME^{tag}")
+          source_tag_commit=$(git rev-list -n 1 "$GITHUB_REF_NAME")
+          gh attestation verify "$GITHUB_WORKSPACE/release/SHA256SUMS" \
+            --repo "$GITHUB_REPOSITORY" \
+            --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/toolchain-release.yml" \
+            --source-digest "$source_tag_commit" \
+            --source-ref "refs/tags/$GITHUB_REF_NAME" \
+            --format json > "$RUNNER_TEMP/verified-attestation.json"
+          test -s "$RUNNER_TEMP/verified-attestation.json"
+          now=$(date -u +%s)
+          expires_at=$((now + 604800))
+          mkdir -p "$RUNNER_TEMP/qualification"
+          "${{ steps.native.outputs.aros }}" toolchain producer record-qualification \
+            --release-dir "$GITHUB_WORKSPACE/release" \
+            --source-lock-filename "$(basename "$SOURCE_LOCK")" \
+            --lifecycle-reports-dir "$GITHUB_WORKSPACE/qualification-input/lifecycle" \
+            --comparison-reports-dir "$GITHUB_WORKSPACE/qualification-input/comparison" \
+            --compatibility-reports-dir "$GITHUB_WORKSPACE/qualification-input/compatibility" \
+            --source-repository "https://github.com/$GITHUB_REPOSITORY" \
+            --source-workflow ".github/workflows/toolchain-release.yml" \
+            --source-run-id "$GITHUB_RUN_ID" \
+            --source-tag "$GITHUB_REF_NAME" \
+            --source-tag-object "$source_tag_object" \
+            --source-tag-commit "$source_tag_commit" \
+            --attestation-repository "https://github.com/$GITHUB_REPOSITORY" \
+            --attestation-workflow ".github/workflows/toolchain-release.yml" \
+            --attestation-signer "github-actions" \
+            --created-at "$now" \
+            --expires-at "$expires_at" \
+            --output "$RUNNER_TEMP/qualification/qualification-evidence-v1.json"
+      - name: Preserve complete recovery inputs before the draft handoff
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: qualified-final-release
+          path: release/
+          if-no-files-found: error
+          retention-days: 14
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: qualification-evidence
+          path: ${{ runner.temp }}/qualification/qualification-evidence-v1.json
+          if-no-files-found: error
+          retention-days: 14
       - name: Create immutable draft release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -580,6 +636,4 @@ jobs:
     with:
       source_run_id: ${{ inputs.source_run_id }}
       source_tag: ${{ inputs.source_tag }}
-      source_commit: ${{ inputs.source_commit }}
-      producer_commit: ${{ inputs.producer_commit }}
       release_tag: ${{ inputs.release_tag }}
