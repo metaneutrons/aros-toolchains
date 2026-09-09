@@ -50,7 +50,7 @@ env:
   AROS_SOURCE_REPOSITORY: metaneutrons/AROS-NX
   AROS_SOURCE_COMMIT: f3cfc243a84065166a46da28b0a5b22bbd0f8869
   AROS_TOOLS_REPOSITORY: metaneutrons/aros-tools
-  AROS_TOOLS_COMMIT: a7a164356cf0cc1ac838be509214c0e651b8815b
+  AROS_TOOLS_COMMIT: dbe3fb3d3d1f9338fbc06ebda3767931a84e611c
 
 jobs:
   plan:
@@ -442,6 +442,11 @@ jobs:
             --recipe "$GITHUB_WORKSPACE/producer-input/recipe.json" \
             --output-dir "$work/engine-free-source"
           make_program="$(command -v gmake || command -v make)"
+          host_cc_program="$(command -v cc)"
+          if [[ "$host_cc_program" != /* || ! -x "$host_cc_program" ]]; then
+            echo "compatibility qualification requires an absolute executable host cc" >&2
+            exit 1
+          fi
           "$aros" toolchain producer compatibility \
             --recipe "$GITHUB_WORKSPACE/producer-input/recipe.json" \
             --source-lock "$GITHUB_WORKSPACE/$SOURCE_LOCK" \
@@ -463,6 +468,7 @@ jobs:
             --python-cache-dir "$GITHUB_WORKSPACE/source-cache" \
             --python-environment-dir "$work/python" \
             --host-tools-dir "$work/host-tools" \
+            --host-tool "cc=$host_cc_program" \
             --host-tool "make=$make_program" \
             --host-tool "python3=$(command -v python3)" \
             --cmake-build-dir "$work/cmake-build" \
