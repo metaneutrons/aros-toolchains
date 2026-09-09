@@ -1,0 +1,20 @@
+name: Disable Google Chrome APT source
+description: Remove the unrelated Chrome source before an Ubuntu package transaction.
+
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: |
+        set -euo pipefail
+        for source in \
+          /etc/apt/sources.list.d/google-chrome.list \
+          /etc/apt/sources.list.d/google-chrome.list.save; do
+          sudo rm -f -- "$source"
+        done
+        if grep -R --fixed-strings --include='*.list' --include='*.sources' \
+          'dl.google.com/linux/chrome' /etc/apt/sources.list /etc/apt/sources.list.d \
+          2>/dev/null; then
+          echo 'unexpected Google Chrome APT source remains after isolation' >&2
+          exit 1
+        fi

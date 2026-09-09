@@ -37,12 +37,16 @@ grep -Fq -- 'env ac_cv_prog_cc_c23=' "$source_root/scripts/toolchain/compatibili
 grep -Fq -- '--python-cache-dir "$GITHUB_WORKSPACE/source-cache"' "$source_root/.github/workflows/toolchain-release.yml"
 grep -Fq -- 'submodules: recursive' "$source_root/.github/workflows/toolchain-release.yml"
 python3 - "$source_root/.github/workflows/toolchain-release.yml" \
-    "$source_root/.github/workflows/toolchain-release-recovery.yml" <<'PY'
+    "$source_root/.github/workflows/toolchain-release-recovery.yml" \
+    "$source_root/.github/workflows/toolchain-compatibility-replay.yml" <<'PY'
 from pathlib import Path
 import sys
 
-workflow = Path(sys.argv[1]).read_text(encoding="utf-8")
+release_path = Path(sys.argv[1])
+source_root = release_path.parents[2]
+workflow = release_path.read_text(encoding="utf-8")
 recovery = Path(sys.argv[2]).read_text(encoding="utf-8")
+replay = Path(sys.argv[3]).read_text(encoding="utf-8")
 fetch_start = workflow.index("      - name: Fetch and verify immutable toolchain and host Python sources")
 fetch_end = workflow.index("\n      - name: Vendor locked Rust collector sources", fetch_start)
 fetch_step = workflow[fetch_start:fetch_end]
@@ -137,6 +141,31 @@ if workflow.count("netpbm") != 2:
     raise SystemExit("both producer runner families must install netpbm")
 if workflow.count("libpng-dev") != 1 or workflow.count("gnu-sed") != 1:
     raise SystemExit("producer prerequisites lost Linux libpng or macOS GNU sed")
+apt_source_action = source_root / ".github/actions/disable-google-chrome-apt-source/action.yml"
+action = apt_source_action.read_text(encoding="utf-8")
+for required in (
+    "/etc/apt/sources.list.d/google-chrome.list",
+    "/etc/apt/sources.list.d/google-chrome.list.save",
+    "dl.google.com/linux/chrome",
+    "unexpected Google Chrome APT source remains after isolation",
+):
+    if required not in action:
+        raise SystemExit("Ubuntu APT source isolation lost its fail-closed Chrome guard")
+apt_source_use = "uses: ./.github/actions/disable-google-chrome-apt-source"
+if workflow.count(apt_source_use) != 2:
+    raise SystemExit("release builds and compatibility must isolate the Chrome APT source")
+first_release_isolation = workflow.index(apt_source_use)
+second_release_isolation = workflow.index(apt_source_use, first_release_isolation + 1)
+if first_release_isolation > workflow.index(
+    "      - name: Install pinned-lane build prerequisites (Linux)"
+):
+    raise SystemExit("release build must isolate the Chrome APT source before apt-get")
+if second_release_isolation > workflow.index("      - name: Install audited consumer prerequisites"):
+    raise SystemExit("release compatibility must isolate the Chrome APT source before apt-get")
+if replay.count(apt_source_use) != 1:
+    raise SystemExit("compatibility replay must isolate the Chrome APT source")
+if replay.index(apt_source_use) > replay.index("      - name: Install audited consumer prerequisites"):
+    raise SystemExit("compatibility replay must isolate the Chrome APT source before apt-get")
 consumer_start = workflow.index("      - name: Install audited consumer prerequisites")
 consumer_end = workflow.index("      - name: Build the exact native compatibility helpers externally", consumer_start)
 consumer = workflow[consumer_start:consumer_end]
