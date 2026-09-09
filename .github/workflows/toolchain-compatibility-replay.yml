@@ -95,6 +95,8 @@ jobs:
           fetch-depth: 1
           submodules: recursive
           path: dependencies/upstream-aros
+      - uses: ./.github/actions/disable-google-chrome-apt-source
+        if: runner.os == 'Linux'
       - name: Install audited consumer prerequisites
         run: bash dependencies/aros/scripts/ci/install-build-prerequisites.sh
       - name: Build the exact native compatibility helpers externally
