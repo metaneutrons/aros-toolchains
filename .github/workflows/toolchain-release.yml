@@ -442,6 +442,11 @@ jobs:
             --recipe "$GITHUB_WORKSPACE/producer-input/recipe.json" \
             --output-dir "$work/engine-free-source"
           make_program="$(command -v gmake || command -v make)"
+          host_cc_program="$(command -v cc)"
+          if [[ "$host_cc_program" != /* || ! -x "$host_cc_program" ]]; then
+            echo "compatibility qualification requires an absolute executable host cc" >&2
+            exit 1
+          fi
           "$aros" toolchain producer compatibility \
             --recipe "$GITHUB_WORKSPACE/producer-input/recipe.json" \
             --source-lock "$GITHUB_WORKSPACE/$SOURCE_LOCK" \
@@ -463,6 +468,7 @@ jobs:
             --python-cache-dir "$GITHUB_WORKSPACE/source-cache" \
             --python-environment-dir "$work/python" \
             --host-tools-dir "$work/host-tools" \
+            --host-tool "cc=$host_cc_program" \
             --host-tool "make=$make_program" \
             --host-tool "python3=$(command -v python3)" \
             --cmake-build-dir "$work/cmake-build" \
