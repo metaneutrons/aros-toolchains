@@ -142,10 +142,14 @@ consumer_end = workflow.index("      - name: Build the exact native compatibilit
 consumer = workflow[consumer_start:consumer_end]
 if "bash dependencies/aros/scripts/ci/install-build-prerequisites.sh" not in consumer:
     raise SystemExit("toolchain consumers must use the checked-out AROS prerequisite contract")
-if workflow.count('host_cc_program="$(command -v cc)"') != 1:
-    raise SystemExit("release compatibility must select one explicit host C compiler")
-if workflow.count('--host-tool "cc=$host_cc_program"') != 1:
-    raise SystemExit("release compatibility must bind host cc into the measured closure")
+if workflow.count('toolchain producer compatibility-host-tools') != 1:
+    raise SystemExit("release compatibility must obtain its host-tool roles from the selected executor")
+if workflow.count('host_tool_args=()') != 1 or workflow.count('"${host_tool_args[@]}"') != 1:
+    raise SystemExit("release compatibility must materialize and pass one complete measured host-tool closure")
+if workflow.count('type -P gmake || type -P make || true') != 1:
+    raise SystemExit("release compatibility must map the stable make role to an explicit host executable")
+if 'host_cc_program=' in workflow or '--host-tool "cc=$host_cc_program"' in workflow:
+    raise SystemExit("release compatibility must not retain the incomplete three-tool closure")
 if "name: native-lifecycle-${{ matrix.host }}-${{ matrix.profile }}-${{ matrix.copy }}" not in workflow:
     raise SystemExit("each producer must retain native lifecycle receipts outside the release archive")
 PY
@@ -162,10 +166,14 @@ if workflow.count("profile:") != 12:
     raise SystemExit("compatibility replay must cover the complete twelve-lane matrix")
 if workflow.count("bash dependencies/aros/scripts/ci/install-build-prerequisites.sh") != 1:
     raise SystemExit("compatibility replay must use the shared host prerequisite contract")
-if workflow.count('host_cc_program="$(command -v cc)"') != 1:
-    raise SystemExit("compatibility replay must select one explicit host C compiler")
-if workflow.count('--host-tool "cc=$host_cc_program"') != 1:
-    raise SystemExit("compatibility replay must bind host cc into the measured closure")
+if workflow.count('toolchain producer compatibility-host-tools') != 1:
+    raise SystemExit("compatibility replay must obtain its host-tool roles from the selected executor")
+if workflow.count('host_tool_args=()') != 1 or workflow.count('"${host_tool_args[@]}"') != 1:
+    raise SystemExit("compatibility replay must materialize and pass one complete measured host-tool closure")
+if workflow.count('type -P gmake || type -P make || true') != 1:
+    raise SystemExit("compatibility replay must map the stable make role to an explicit host executable")
+if 'host_cc_program=' in workflow or '--host-tool "cc=$host_cc_program"' in workflow:
+    raise SystemExit("compatibility replay must not retain the incomplete three-tool closure")
 PY
 python3 - "$source_root/scripts/toolchain/build-release.sh" <<'PY'
 from pathlib import Path

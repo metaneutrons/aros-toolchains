@@ -19,7 +19,7 @@ env:
   AROS_SOURCE_REPOSITORY: metaneutrons/AROS-NX
   AROS_SOURCE_COMMIT: f3cfc243a84065166a46da28b0a5b22bbd0f8869
   AROS_TOOLS_REPOSITORY: metaneutrons/aros-tools
-  AROS_TOOLS_COMMIT: dbe3fb3d3d1f9338fbc06ebda3767931a84e611c
+  AROS_TOOLS_COMMIT: 1e84170e7e1c21285109be69cef11e6c0351d8d9
 
 jobs:
   compatibility:
@@ -125,10 +125,28 @@ jobs:
             --source-dir "$GITHUB_WORKSPACE/dependencies/aros" \
             --recipe "$GITHUB_WORKSPACE/producer-input/recipe.json" \
             --output-dir "$work/engine-free-source"
-          make_program="$(command -v gmake || command -v make)"
-          host_cc_program="$(command -v cc)"
-          if [[ "$host_cc_program" != /* || ! -x "$host_cc_program" ]]; then
-            echo "compatibility replay requires an absolute executable host cc" >&2
+          # Keep replay on the exact executor-owned command-role contract
+          # used by the release path. Every command is independently measured
+          # and the child PATH is the resulting private closure, never an
+          # ambient runner directory.
+          host_tool_args=()
+          while IFS= read -r role; do
+            [[ -n "$role" ]] || continue
+            if [[ "$role" == make ]]; then
+              program="$(type -P gmake || type -P make || true)"
+            else
+              # `command -v` returns a bare shell-builtin name for roles such
+              # as echo or test. The closure requires an executable file.
+              program="$(type -P "$role" || true)"
+            fi
+            if [[ "$program" != /* || ! -x "$program" ]]; then
+              echo "compatibility replay requires an absolute executable host tool for role '$role'" >&2
+              exit 1
+            fi
+            host_tool_args+=(--host-tool "$role=$program")
+          done < <("$aros" toolchain producer compatibility-host-tools)
+          if (( ${#host_tool_args[@]} == 0 )); then
+            echo "compatibility replay executor reported no required host-tool roles" >&2
             exit 1
           fi
           "$aros" toolchain producer compatibility \
@@ -152,9 +170,7 @@ jobs:
             --python-cache-dir "$GITHUB_WORKSPACE/source-cache" \
             --python-environment-dir "$work/python" \
             --host-tools-dir "$work/host-tools" \
-            --host-tool "cc=$host_cc_program" \
-            --host-tool "make=$make_program" \
-            --host-tool "python3=$(command -v python3)" \
+            "${host_tool_args[@]}" \
             --cmake-build-dir "$work/cmake-build" \
             --c-fixture "$GITHUB_WORKSPACE/scripts/toolchain/fixtures/smoke.c" \
             --cxx-fixture "$GITHUB_WORKSPACE/scripts/toolchain/fixtures/smoke.cpp" \
