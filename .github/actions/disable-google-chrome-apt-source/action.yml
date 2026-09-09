@@ -9,7 +9,8 @@ runs:
         set -euo pipefail
         for source in \
           /etc/apt/sources.list.d/google-chrome.list \
-          /etc/apt/sources.list.d/google-chrome.list.save; do
+          /etc/apt/sources.list.d/google-chrome.list.save \
+          /etc/apt/sources.list.d/google-chrome.sources; do
           sudo rm -f -- "$source"
         done
         if grep -R --fixed-strings --include='*.list' --include='*.sources' \

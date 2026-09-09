@@ -146,6 +146,7 @@ action = apt_source_action.read_text(encoding="utf-8")
 for required in (
     "/etc/apt/sources.list.d/google-chrome.list",
     "/etc/apt/sources.list.d/google-chrome.list.save",
+    "/etc/apt/sources.list.d/google-chrome.sources",
     "dl.google.com/linux/chrome",
     "unexpected Google Chrome APT source remains after isolation",
 ):
