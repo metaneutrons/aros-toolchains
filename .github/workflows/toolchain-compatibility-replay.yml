@@ -19,7 +19,7 @@ env:
   AROS_SOURCE_REPOSITORY: metaneutrons/AROS-NX
   AROS_SOURCE_COMMIT: f3cfc243a84065166a46da28b0a5b22bbd0f8869
   AROS_TOOLS_REPOSITORY: metaneutrons/aros-tools
-  AROS_TOOLS_COMMIT: 802acf0d471fa7a9972f970d5726fa2c2cfa8350
+  AROS_TOOLS_COMMIT: 1d81de2f6c31550456d0c53ebd3fac27568a595e
 
 jobs:
   compatibility:
@@ -146,7 +146,7 @@ jobs:
               exit 1
             fi
             host_tool_args+=(--host-tool "$role=$program")
-          done < <("$aros" toolchain producer compatibility-host-tools)
+          done < <("$aros" toolchain producer compatibility-host-tools --host "${{ matrix.host }}")
           if (( ${#host_tool_args[@]} == 0 )); then
             echo "compatibility replay executor reported no required host-tool roles" >&2
             exit 1
