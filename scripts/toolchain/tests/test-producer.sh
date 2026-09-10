@@ -231,6 +231,54 @@ if workflow.count('type -P gmake || type -P make || true') != 1:
 if 'host_cc_program=' in workflow or '--host-tool "cc=$host_cc_program"' in workflow:
     raise SystemExit("compatibility replay must not retain the incomplete three-tool closure")
 PY
+python3 - "$source_root/.github/workflows/ci.yml" \
+    "$source_root/.github/workflows/intel-macos-smoke.yml" \
+    "$source_root/.github/workflows/toolchain-release.yml" <<'PY'
+from pathlib import Path
+import sys
+
+contracts = Path(sys.argv[1]).read_text(encoding="utf-8")
+smoke = Path(sys.argv[2]).read_text(encoding="utf-8")
+release = Path(sys.argv[3]).read_text(encoding="utf-8")
+
+if "macos-15-intel" in contracts or "macos-x86_64" in contracts:
+    raise SystemExit("ordinary producer contracts must not consume Intel macOS capacity")
+if "  pull_request:\n    paths:\n" not in smoke:
+    raise SystemExit("Intel macOS smoke must be a path-gated pull-request workflow")
+if "  push:" in smoke or "  workflow_dispatch:" in smoke:
+    raise SystemExit("Intel macOS smoke must not run outside selected pull requests")
+expected_paths = (
+    ".github/actions/**",
+    ".github/workflows/**",
+    "scripts/toolchain/**",
+    "toolchains/**",
+)
+for path in expected_paths:
+    if smoke.count(f"      - '{path}'") != 1:
+        raise SystemExit(f"Intel macOS smoke path policy is missing or duplicates {path}")
+if smoke.count("runs-on: macos-15-intel") != 1:
+    raise SystemExit("Intel macOS smoke must have exactly one Intel runner job")
+for required in (
+    "name: Native package smoke (macos-x86_64, pc-x86_64)",
+    "--host macos-x86_64",
+    "--preset pc-x86_64",
+    "toolchain producer recipe",
+    "toolchain producer cache",
+    "--offline",
+    "toolchain verify",
+    "toolchain producer package",
+    "uses: ./.github/actions/checkout-pinned-recursive-source",
+):
+    if required not in smoke:
+        raise SystemExit(f"Intel macOS smoke lost required native check: {required}")
+for forbidden in ("strategy:", "copy:", "compare", "actions/upload-artifact"):
+    if forbidden in smoke:
+        raise SystemExit(f"Intel macOS smoke must remain a one-copy smoke, not a release matrix: {forbidden}")
+if release.count('{"host": "macos-x86_64", "runner": "macos-15-intel"}') != 1:
+    raise SystemExit("tag-only release must retain the Intel macOS host tier")
+if release.count('itertools.product(verify, ["a", "b"])') != 1:
+    raise SystemExit("tag-only release must retain A/B expansion for every host/profile lane")
+PY
 python3 - "$source_root/scripts/toolchain/build-release.sh" <<'PY'
 from pathlib import Path
 import sys
@@ -252,7 +300,9 @@ python3 -B "$script_dir/test-crosstools-release.py"
 python3 - "$source_root/toolchains/producer-executor-v1.toml" "$AROS_TEST_TOOLS_ROOT" \
     "$source_root/.github/workflows/toolchain-release.yml" \
     "$source_root/.github/workflows/toolchain-release-recovery.yml" \
-    "$source_root/.github/workflows/toolchain-compatibility-replay.yml" <<'PY'
+    "$source_root/.github/workflows/toolchain-compatibility-replay.yml" \
+    "$source_root/.github/workflows/ci.yml" \
+    "$source_root/.github/workflows/intel-macos-smoke.yml" <<'PY'
 import hashlib
 import re
 import subprocess

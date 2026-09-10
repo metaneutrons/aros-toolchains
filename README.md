@@ -98,6 +98,14 @@ the `linux-x86_64` or `linux` diagnostic tiers and never publish. They cannot
 select all four hosts. A complete manual A/B prequalification is therefore not
 a prerequisite for a tagged release and must not be repeated before one.
 
+Intel macOS capacity is reserved for a separate, path-gated pull-request
+smoke. Changes to producer actions or workflows, toolchain scripts, locks, or
+profiles build and package one native `macos-x86_64` / `pc-x86_64` candidate;
+they do not run a second copy, byte comparison, or publish artifacts. Ordinary
+contracts and unrelated pull requests do not consume an Intel macOS runner.
+The complete six-lane Intel A/B evidence remains exclusively part of the
+annotated release-tag matrix.
+
 Rerun the full matrix only for a release tag, or after a failed release gate
 once the narrow cause has been corrected. A scheduled reproducibility audit
 may use the same tagged-equivalent matrix, but it is separate from ordinary

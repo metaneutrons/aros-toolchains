@@ -1,0 +1,162 @@
+name: Intel macOS producer smoke
+
+on:
+  pull_request:
+    paths:
+      - '.github/actions/**'
+      - '.github/workflows/**'
+      - 'scripts/toolchain/**'
+      - 'toolchains/**'
+
+permissions:
+  contents: read
+
+# Intel macOS capacity is scarce.  This workflow is intentionally limited to
+# one high-signal native host/profile smoke on producer-affecting pull
+# requests.  The release workflow retains the complete 6-lane Intel A/B
+# qualification for immutable release tags.
+concurrency:
+  group: intel-macos-producer-smoke-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+env:
+  SOURCE_LOCK: toolchains/llvm-11.0.0.sources.json
+  PROFILES: toolchains/profiles-v1.json
+  PYTHONHASHSEED: '0'
+  AROS_SOURCE_REPOSITORY: metaneutrons/AROS-NX
+  AROS_SOURCE_COMMIT: f3cfc243a84065166a46da28b0a5b22bbd0f8869
+  AROS_TOOLS_REPOSITORY: metaneutrons/aros-tools
+  AROS_TOOLS_COMMIT: bc254de9ff13c2beabf43328109f169c4e554038
+
+jobs:
+  smoke:
+    name: Native package smoke (macos-x86_64, pc-x86_64)
+    runs-on: macos-15-intel
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/checkout-pinned-recursive-source
+        with:
+          repository: ${{ env.AROS_SOURCE_REPOSITORY }}
+          ref: ${{ env.AROS_SOURCE_COMMIT }}
+          fetch-depth: 0
+          path: dependencies/aros
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ env.AROS_TOOLS_REPOSITORY }}
+          ref: ${{ env.AROS_TOOLS_COMMIT }}
+          fetch-depth: 0
+          path: dependencies/aros-tools
+
+      - uses: ./.github/actions/setup-aros-rust
+      - id: native
+        uses: ./.github/actions/build-aros-tools-native
+        with:
+          tools-dir: ${{ github.workspace }}/dependencies/aros-tools
+          target-dir: ${{ runner.temp }}/aros-tools-native
+
+      - name: Materialize a distinct producer checkout
+        run: |
+          set -euo pipefail
+          producer_dir="$RUNNER_TEMP/aros-toolchains-producer"
+          test ! -e "$producer_dir"
+          git worktree add --detach "$producer_dir" "$(git rev-parse HEAD)"
+          printf 'AROS_PRODUCER_DIR=%s\n' "$producer_dir" >> "$GITHUB_ENV"
+
+      - name: Fetch and verify the locked offline source cache
+        run: |
+          set -euo pipefail
+          cache_dir="$GITHUB_WORKSPACE/source-cache"
+          mkdir -p "$cache_dir"
+          aros="${{ steps.native.outputs.aros }}"
+          "$aros" toolchain producer cache \
+            --source-lock "$AROS_PRODUCER_DIR/$SOURCE_LOCK" \
+            --cache-dir "$cache_dir"
+          "$aros" toolchain producer cache \
+            --source-lock "$AROS_PRODUCER_DIR/$SOURCE_LOCK" \
+            --cache-dir "$cache_dir" \
+            --offline
+
+      - name: Vendor locked Rust collector sources
+        run: |
+          set -euo pipefail
+          cache_dir="$GITHUB_WORKSPACE/source-cache"
+          cargo vendor --locked --versioned-dirs \
+            --manifest-path dependencies/aros-tools/Cargo.toml \
+            "$cache_dir/cargo-vendor" > "$cache_dir/cargo-vendor-config.toml"
+          python3 - "$cache_dir/cargo-vendor-config.toml" <<'PY'
+          from pathlib import Path
+          import re
+          import sys
+
+          path = Path(sys.argv[1])
+          text = path.read_text(encoding="utf-8")
+          if text.count("directory = ") != 1:
+              raise SystemExit("Cargo vendor configuration has no unique directory entry")
+          path.write_text(
+              re.sub(
+                  r'^directory = .*$',
+                  'directory = "__CARGO_VENDOR_DIRECTORY__"',
+                  text,
+                  flags=re.MULTILINE,
+              ),
+              encoding="utf-8",
+          )
+          PY
+
+      - name: Install pinned Intel macOS build prerequisites
+        run: |
+          set -euo pipefail
+          brew install autoconf automake bison cmake gawk gnu-sed libtool make netpbm ninja xz
+          echo "$(brew --prefix bison)/bin" >> "$GITHUB_PATH"
+
+      - name: Build, verify, and package one native Intel candidate
+        run: |
+          set -euo pipefail
+          aros="${{ steps.native.outputs.aros }}"
+          work="$RUNNER_TEMP/aros-intel-smoke"
+          output="$RUNNER_TEMP/native-output-intel-smoke"
+          environment="$RUNNER_TEMP/build-environment-intel-smoke.json"
+          release_id="intel-macos-smoke-${GITHUB_SHA:0:12}"
+          "$aros" toolchain producer recipe \
+            --source-dir "$GITHUB_WORKSPACE/dependencies/aros" \
+            --producer-dir "$AROS_PRODUCER_DIR" \
+            --tools-dir "$GITHUB_WORKSPACE/dependencies/aros-tools" \
+            --source-lock "$AROS_PRODUCER_DIR/$SOURCE_LOCK" \
+            --profiles "$AROS_PRODUCER_DIR/$PROFILES" \
+            --output "$RUNNER_TEMP/recipe.json"
+          "$aros" toolchain producer environment \
+            --host macos-x86_64 \
+            --output "$environment"
+          "$aros" toolchain build \
+            --preset pc-x86_64 \
+            --recipe "$RUNNER_TEMP/recipe.json" \
+            --source-dir "$GITHUB_WORKSPACE/dependencies/aros" \
+            --producer-dir "$AROS_PRODUCER_DIR" \
+            --tools-dir "$GITHUB_WORKSPACE/dependencies/aros-tools" \
+            --work-dir "$work" \
+            --output-dir "$output" \
+            --cache-dir "$GITHUB_WORKSPACE/source-cache" \
+            --jobs 3 \
+            --timeout-seconds 18000 \
+            --offline \
+            --release-id "$release_id" \
+            --format json
+          "$aros" toolchain verify \
+            --preset pc-x86_64 \
+            --local "$output/toolchain"
+          "$aros" toolchain producer package \
+            --recipe "$RUNNER_TEMP/recipe.json" \
+            --source-lock "$AROS_PRODUCER_DIR/$SOURCE_LOCK" \
+            --profiles "$AROS_PRODUCER_DIR/$PROFILES" \
+            --preset pc-x86_64 \
+            --release-id "$release_id" \
+            --host macos-x86_64 \
+            --build-environment "$environment" \
+            --input-dir "$output/toolchain" \
+            --output-dir "$RUNNER_TEMP/smoke-release" \
+            --forbidden-prefix "$GITHUB_WORKSPACE/source-cache" \
+            --forbidden-prefix "$GITHUB_WORKSPACE" \
+            --forbidden-prefix "$RUNNER_TEMP"
