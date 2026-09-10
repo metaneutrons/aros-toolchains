@@ -174,6 +174,8 @@ if "bash dependencies/aros/scripts/ci/install-build-prerequisites.sh" not in con
     raise SystemExit("toolchain consumers must use the checked-out AROS prerequisite contract")
 if workflow.count('toolchain producer compatibility-host-tools') != 1:
     raise SystemExit("release compatibility must obtain its host-tool roles from the selected executor")
+if workflow.count('compatibility-host-tools --host "${{ matrix.host }}"') != 1:
+    raise SystemExit("release compatibility must select the host-specific executor closure")
 if workflow.count('host_tool_args=()') != 1 or workflow.count('"${host_tool_args[@]}"') != 1:
     raise SystemExit("release compatibility must materialize and pass one complete measured host-tool closure")
 if workflow.count('type -P gmake || type -P make || true') != 1:
@@ -198,6 +200,8 @@ if workflow.count("bash dependencies/aros/scripts/ci/install-build-prerequisites
     raise SystemExit("compatibility replay must use the shared host prerequisite contract")
 if workflow.count('toolchain producer compatibility-host-tools') != 1:
     raise SystemExit("compatibility replay must obtain its host-tool roles from the selected executor")
+if workflow.count('compatibility-host-tools --host "${{ matrix.host }}"') != 1:
+    raise SystemExit("compatibility replay must select the host-specific executor closure")
 if workflow.count('host_tool_args=()') != 1 or workflow.count('"${host_tool_args[@]}"') != 1:
     raise SystemExit("compatibility replay must materialize and pass one complete measured host-tool closure")
 if workflow.count('type -P gmake || type -P make || true') != 1:
