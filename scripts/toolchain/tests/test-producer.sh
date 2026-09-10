@@ -35,7 +35,6 @@ grep -Fq -- '-ffreestanding -fno-exceptions' "$source_root/scripts/toolchain/com
 grep -Fq -- '${target_float_flag:+"$target_float_flag"}' "$source_root/scripts/toolchain/compatibility.sh"
 grep -Fq -- 'env ac_cv_prog_cc_c23=' "$source_root/scripts/toolchain/compatibility.sh"
 grep -Fq -- '--python-cache-dir "$GITHUB_WORKSPACE/source-cache"' "$source_root/.github/workflows/toolchain-release.yml"
-grep -Fq -- 'submodules: recursive' "$source_root/.github/workflows/toolchain-release.yml"
 python3 - "$source_root/.github/workflows/toolchain-release.yml" \
     "$source_root/.github/workflows/toolchain-release-recovery.yml" \
     "$source_root/.github/workflows/toolchain-compatibility-replay.yml" <<'PY'
@@ -141,6 +140,29 @@ if workflow.count("netpbm") != 2:
     raise SystemExit("both producer runner families must install netpbm")
 if workflow.count("libpng-dev") != 1 or workflow.count("gnu-sed") != 1:
     raise SystemExit("producer prerequisites lost Linux libpng or macOS GNU sed")
+recursive_checkout = source_root / ".github/actions/checkout-pinned-recursive-source/action.yml"
+if not recursive_checkout.is_file() or recursive_checkout.is_symlink():
+    raise SystemExit("recursive source checkout must use one regular local composite action")
+recursive_action = recursive_checkout.read_text(encoding="utf-8")
+for required in (
+    "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+    "submodules: false",
+    'EXPECTED_COMMIT: ${{ inputs.ref }}',
+    "^[0-9a-f]{40}$",
+    "git submodule sync --recursive",
+    "for attempt in 1 2 3 4 5; do",
+    "submodule update --init --recursive --jobs 1",
+    "git submodule status --recursive",
+    "exhausted five network attempts",
+):
+    if required not in recursive_action:
+        raise SystemExit(f"recursive source checkout lost closed retry contract: {required}")
+if workflow.count("uses: ./.github/actions/checkout-pinned-recursive-source") != 4:
+    raise SystemExit("release workflow must use the shared recursive checkout action for every source tree")
+if replay.count("uses: ./.github/actions/checkout-pinned-recursive-source") != 2:
+    raise SystemExit("compatibility replay must use the shared recursive checkout action for every source tree")
+if "submodules: recursive" in workflow or "submodules: recursive" in replay:
+    raise SystemExit("release workflows must not delegate recursive submodule retries to actions/checkout")
 apt_source_action = source_root / ".github/actions/disable-google-chrome-apt-source/action.yml"
 action = apt_source_action.read_text(encoding="utf-8")
 for required in (
