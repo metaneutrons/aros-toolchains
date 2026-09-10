@@ -28,6 +28,11 @@ SUPPORTED_HOSTS = {
     "macos-x86_64",
     "macos-aarch64",
 }
+ACTIVE_RELEASE_HOSTS = {
+    "linux-x86_64",
+    "linux-aarch64",
+    "macos-aarch64",
+}
 BUILTINS_BY_PROFILE = {
     "pc-x86_64": ("x86_64", "i386"),
     "arm-raspi": ("armhf",),
@@ -65,7 +70,7 @@ REQUIRED_CXX_HEADERS = (
 )
 COMPLETE_V1_MATRIX = {
     (host, profile)
-    for host in SUPPORTED_HOSTS
+    for host in ACTIVE_RELEASE_HOSTS
     for profile in TRIPLE_BY_PROFILE
 }
 

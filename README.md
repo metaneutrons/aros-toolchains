@@ -72,31 +72,40 @@ AROS_TEST_SOURCE_ROOT=/path/to/AROS \
 The test is offline and self-contained apart from that audited source contract.
 It exercises source-lock validation, the LLVM patch fixture, MetaMake closure,
 safe archive handling, deterministic A/B output, tree digests, relocation,
-SBOMs, manifests, recovery repackaging, checksums, and the complete four-host
+SBOMs, manifests, recovery repackaging, checksums, and the active three-host
 by three-profile publication inventory.
 
 ## Release invariants
 
-- 24 independent builds: two per four-host/three-profile lane;
-- 12 byte-identical comparisons;
+- 18 independent builds: two per active three-host/three-profile lane;
+- 9 byte-identical comparisons;
 - relocation and compatibility against both pinned AROS-NX and vanilla AROS;
-- exactly 12 archives, manifests, checksum sidecars, and SBOMs;
+- exactly 9 archives, manifests, checksum sidecars, and SBOMs;
 - complete index and `SHA256SUMS`;
 - fresh provenance for the exact repository and tag;
 - immutable annotated tags, with no retargeting or asset replacement.
 
 ## Qualification execution policy
 
-The full four-host by three-profile A/B matrix is a release gate, not routine
-CI. It runs exactly once for an annotated `toolchain-v1-*` tag: each of the
-twelve lanes produces two independent normalized archives, which must compare
-byte-for-byte before its compatibility checks and draft assembly proceed.
+The active three-host by three-profile A/B matrix is a release gate, not
+routine CI. It runs exactly once for an annotated `toolchain-v1-*` tag: each
+of the nine lanes produces two independent normalized archives, which must
+compare byte-for-byte before its compatibility checks and draft assembly
+proceed.
 
 Pull requests run the offline source, patch, MetaMake-closure, archive and
 relocation contracts. Manual producer dispatches are deliberately limited to
 the `linux-x86_64` or `linux` diagnostic tiers and never publish. They cannot
-select all four hosts. A complete manual A/B prequalification is therefore not
-a prerequisite for a tagged release and must not be repeated before one.
+select all active hosts. A complete manual A/B prequalification is therefore
+not a prerequisite for a tagged release and must not be repeated before one.
+
+Intel macOS qualification is fully suspended until the active matrix has
+produced its initial M7 release. The producer and archive schema retain
+`macos-x86_64` support, and the published historical four-host index remains
+valid, but no pull-request, manual, release, replay, or recovery workflow may
+select an Intel macOS runner. Reinstatement is explicitly tracked in
+[issue #27](https://github.com/metaneutrons/aros-toolchains/issues/27) and
+requires a separate three-profile A/B qualification.
 
 Rerun the full matrix only for a release tag, or after a failed release gate
 once the narrow cause has been corrected. A scheduled reproducibility audit

@@ -50,7 +50,7 @@ env:
   AROS_SOURCE_REPOSITORY: metaneutrons/AROS-NX
   AROS_SOURCE_COMMIT: f3cfc243a84065166a46da28b0a5b22bbd0f8869
   AROS_TOOLS_REPOSITORY: metaneutrons/aros-tools
-  AROS_TOOLS_COMMIT: bc254de9ff13c2beabf43328109f169c4e554038
+  AROS_TOOLS_COMMIT: 2ff77f475ccdbb959c6cfc537162362db96b696a
 
 jobs:
   plan:
@@ -112,7 +112,6 @@ jobs:
           hosts = [
               {"host": "linux-x86_64", "runner": "ubuntu-24.04"},
               {"host": "linux-aarch64", "runner": "ubuntu-24.04-arm"},
-              {"host": "macos-x86_64", "runner": "macos-15-intel"},
               {"host": "macos-aarch64", "runner": "macos-15"},
           ]
           if os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch":
@@ -124,7 +123,8 @@ jobs:
               else:
                   raise SystemExit(
                       "manual scope must be linux-x86_64 or linux; "
-                      "the complete four-host A/B matrix is tag-only"
+                      "the complete active three-host A/B matrix is tag-only; "
+                      "Intel macOS qualification is deferred to issue #27"
                   )
           profiles = ["pc-x86_64", "arm-raspi", "rpi-aarch64"]
           verify = [{**host, "profile": profile} for host, profile in itertools.product(hosts, profiles)]
@@ -653,8 +653,8 @@ jobs:
             exit 1
           fi
           mapfile -d '' assets < <(find release -mindepth 1 -maxdepth 1 -type f -print0 | sort -z)
-          if [[ ${#assets[@]} -ne 56 ]]; then
-            echo "release inventory must contain exactly 56 regular files, found ${#assets[@]}" >&2
+          if [[ ${#assets[@]} -ne 44 ]]; then
+            echo "active three-host release inventory must contain exactly 44 regular files, found ${#assets[@]}" >&2
             exit 1
           fi
           gh release create "$GITHUB_REF_NAME" \

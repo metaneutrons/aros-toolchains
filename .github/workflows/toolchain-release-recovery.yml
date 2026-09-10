@@ -38,7 +38,7 @@ env:
   SOURCE_LOCK: toolchains/llvm-11.0.0.sources.json
   PROFILES: toolchains/profiles-v1.json
   AROS_TOOLS_REPOSITORY: metaneutrons/aros-tools
-  AROS_TOOLS_COMMIT: bc254de9ff13c2beabf43328109f169c4e554038
+  AROS_TOOLS_COMMIT: 2ff77f475ccdbb959c6cfc537162362db96b696a
 
 jobs:
   recover:
@@ -124,9 +124,9 @@ jobs:
             ([ $jobs[] | select(.name == "plan") ] | length == 1 and all(.[]; .conclusion == "success")) and
             ([ $jobs[] | select(.name == "sources") ] | length == 1 and all(.[]; .conclusion == "success")) and
             ([ $jobs[] | select(.name == "draft-release") ] | length == 1 and all(.[]; .conclusion == "failure")) and
-            ([ $jobs[] | select(.name | startswith("build (")) ] | length == 24 and all(.[]; .conclusion == "success")) and
-            ([ $jobs[] | select(.name | startswith("compare (")) ] | length == 12 and all(.[]; .conclusion == "success")) and
-            ([ $jobs[] | select(.name | startswith("compatibility (")) ] | length == 12 and all(.[]; .conclusion == "success")) and
+            ([ $jobs[] | select(.name | startswith("build (")) ] | length == 18 and all(.[]; .conclusion == "success")) and
+            ([ $jobs[] | select(.name | startswith("compare (")) ] | length == 9 and all(.[]; .conclusion == "success")) and
+            ([ $jobs[] | select(.name | startswith("compatibility (")) ] | length == 9 and all(.[]; .conclusion == "success")) and
             ([ $jobs[] | select(.conclusion != "success" and .conclusion != "skipped") | .name ] | sort == ["draft-release"])
           ' "$RUNNER_TEMP/source-job-pages.json" >/dev/null
           git fetch --force origin "refs/tags/$SOURCE_TAG:refs/tags/$SOURCE_TAG"
@@ -194,7 +194,7 @@ jobs:
           mkdir -p "$RUNNER_TEMP/recovery-extract-a" "$RUNNER_TEMP/recovery-extract-b" "$RUNNER_TEMP/recovery-environments"
           source_lock_file=$(basename "$SOURCE_LOCK")
           profiles_file=$(basename "$PROFILES")
-          for host in linux-aarch64 linux-x86_64 macos-aarch64 macos-x86_64; do
+          for host in linux-aarch64 linux-x86_64 macos-aarch64; do
             for profile in arm-raspi pc-x86_64 rpi-aarch64; do
               lane="$host-$profile"
               source_package="$GITHUB_WORKSPACE/source-packages/verified-$lane"
@@ -272,8 +272,8 @@ jobs:
         run: |
           set -euo pipefail
           mapfile -d '' assets < <(find release -mindepth 1 -maxdepth 1 -type f -print0 | sort -z)
-          if [[ ${#assets[@]} -ne 56 ]]; then
-            echo "release inventory must contain exactly 56 regular files, found ${#assets[@]}" >&2
+          if [[ ${#assets[@]} -ne 44 ]]; then
+            echo "active three-host release inventory must contain exactly 44 regular files, found ${#assets[@]}" >&2
             exit 1
           fi
           remote_tag_object=$(git ls-remote --tags origin "refs/tags/$RELEASE_TAG" | awk 'NR == 1 {print $1}')
@@ -293,7 +293,7 @@ jobs:
           notes=$(mktemp)
           printf '%s\n' \
             "Recovered without recompilation from qualified producer run $SOURCE_RUN_ID ($SOURCE_TAG)." \
-            "The source run passed 24 builds, 12 byte comparisons, and 12 compatibility lanes." \
+            "The source run passed 18 builds, 9 byte comparisons, and 9 compatibility lanes." \
             "Each unchanged payload was repackaged twice for $RELEASE_TAG and byte-compared again." \
             "This release remains a draft for human promotion." > "$notes"
           gh release create "$RELEASE_TAG" \
