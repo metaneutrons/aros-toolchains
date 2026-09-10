@@ -28,9 +28,12 @@ placeholders.
 The source lock establishes deterministic resolution. Bit-for-bit build
 reproducibility is a separate release gate: every host/profile lane is built
 twice, normalized, and compared before compatibility tests or publication.
-This complete four-host by three-profile A/B matrix runs once for an annotated
+This active three-host by three-profile A/B matrix runs once for an annotated
 release tag. Manual dispatches are limited to diagnostic Linux tiers and cannot
-replace or precede the tag gate.
+replace or precede the tag gate. Intel macOS is fully suspended until the
+initial M7 release is published; the producer still recognizes its archive
+identity and historical four-host indexes remain valid. See
+[issue #27](https://github.com/metaneutrons/aros-toolchains/issues/27).
 Before either build starts, the producer also requires the checkout commit,
 Git tree, source lock, and profile document to match the signed-off recipe and
 rejects any tracked working-tree mutation; untracked transport caches do not
@@ -75,12 +78,12 @@ into a separate hand-maintained download lock.
 ## Review and promote a draft
 
 1. Download the complete draft and verify every entry in `SHA256SUMS`, the
-   GitHub/Sigstore provenance bundle, all twelve SBOMs, and the successful
+   GitHub/Sigstore provenance bundle, all nine active-matrix SBOMs, and the successful
    comparison, relocation, vanilla-upstream, and AROS-NX jobs for the tag. Do
    not replace an
    asset in place; rebuild under a new tag if anything differs.
 2. Inspect `toolchain-index-v1.json`: it must contain the tag as `release_id`,
-   the final GitHub release-download URL as `base_url`, and exactly twelve
+   the final GitHub release-download URL as `base_url`, and exactly nine active
    enabled host/profile artifacts. Each artifact must have its measured
    archive `sha256`, payload `tree_sha256`, `size`, `strip_components: 1`, and
    required paths. Zeroes, empty values, and provisional URLs are forbidden.
@@ -106,10 +109,10 @@ release; its artifacts or attestations were not transplanted into this one.
 
 ### Recover a packaging-only draft failure
 
-An immutable producer run does not need to rebuild four hosts merely because
+An immutable producer run does not need to rebuild three active hosts merely because
 its final draft assembly failed.  `.github/workflows/toolchain-release-recovery.yml`
-accepts such a run only when `plan`, `sources`, all 24 independent builds, all
-12 byte comparisons, and all 12 compatibility lanes succeeded and
+accepts such a run only when `plan`, `sources`, all 18 independent builds, all
+9 byte comparisons, and all 9 compatibility lanes succeeded and
 `draft-release` is the sole failed job.  The source tag and partial draft stay
 untouched.
 
@@ -120,7 +123,7 @@ recipe commit, records its tag-object ID, and refuses to create the draft if
 either the object or its peeled commit changes while the release is assembled.
 The job token therefore never creates or retargets a release tag.
 
-Recovery downloads only the twelve verified host/profile artifact families,
+Recovery downloads only the nine active host/profile artifact families,
 checks their archive sidecars, external and embedded manifests, recipe digest,
 source commit, and canonical payload tree, then packages every payload twice
 under a new release ID.  Both recovered copies must be byte-identical.  The
@@ -143,8 +146,10 @@ installation-completion markers outside the payload directory.
 it intentionally covers directories, a file, a relative symlink, and UTF-8
 paths.
 
-The v1 producer covers Linux x86_64/aarch64 and macOS x86_64/aarch64 hosts for
-`pc-x86_64`, `arm-raspi` (`raspi-armhf` upstream), and `rpi-aarch64`.
+The v1 producer recognizes Linux x86_64/aarch64 and macOS x86_64/aarch64 hosts
+for `pc-x86_64`, `arm-raspi` (`raspi-armhf` upstream), and `rpi-aarch64`.
+New releases currently qualify Linux x86_64/aarch64 and macOS aarch64 only;
+Intel macOS is deferred to [issue #27](https://github.com/metaneutrons/aros-toolchains/issues/27).
 
 ## Product qualification and CI migration
 

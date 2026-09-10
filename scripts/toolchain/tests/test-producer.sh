@@ -134,7 +134,7 @@ if '          - all' in workflow:
     raise SystemExit("manual producer dispatch must not offer the full host matrix")
 if 'manual scope must be linux-x86_64 or linux' not in workflow:
     raise SystemExit("manual producer dispatch must fail closed outside diagnostic host tiers")
-if 'the complete four-host A/B matrix is tag-only' not in workflow:
+if 'the complete active three-host A/B matrix is tag-only' not in workflow:
     raise SystemExit("complete A/B qualification must remain tag-only")
 if workflow.count("netpbm") != 2:
     raise SystemExit("both producer runner families must install netpbm")
@@ -216,8 +216,8 @@ if workflow.count("run-id: ${{ inputs.source_run_id }}") != 3:
     raise SystemExit("compatibility replay must source recipe, verified package, and locked sources from one run")
 if workflow.count("github-token: ${{ github.token }}") != 3:
     raise SystemExit("cross-run artifact downloads require the scoped GitHub token")
-if workflow.count("profile:") != 12:
-    raise SystemExit("compatibility replay must cover the complete twelve-lane matrix")
+if workflow.count("profile:") != 9:
+    raise SystemExit("compatibility replay must cover the complete active nine-lane matrix")
 if workflow.count("bash dependencies/aros/scripts/ci/install-build-prerequisites.sh") != 1:
     raise SystemExit("compatibility replay must use the shared host prerequisite contract")
 if workflow.count('toolchain producer compatibility-host-tools') != 1:
@@ -232,52 +232,29 @@ if 'host_cc_program=' in workflow or '--host-tool "cc=$host_cc_program"' in work
     raise SystemExit("compatibility replay must not retain the incomplete three-tool closure")
 PY
 python3 - "$source_root/.github/workflows/ci.yml" \
-    "$source_root/.github/workflows/intel-macos-smoke.yml" \
-    "$source_root/.github/workflows/toolchain-release.yml" <<'PY'
+    "$source_root/.github/workflows/toolchain-release.yml" \
+    "$source_root/.github/workflows/toolchain-release-recovery.yml" \
+    "$source_root/.github/workflows/toolchain-compatibility-replay.yml" <<'PY'
 from pathlib import Path
 import sys
 
 contracts = Path(sys.argv[1]).read_text(encoding="utf-8")
-smoke = Path(sys.argv[2]).read_text(encoding="utf-8")
-release = Path(sys.argv[3]).read_text(encoding="utf-8")
+release = Path(sys.argv[2]).read_text(encoding="utf-8")
+recovery = Path(sys.argv[3]).read_text(encoding="utf-8")
+replay = Path(sys.argv[4]).read_text(encoding="utf-8")
 
-if "macos-15-intel" in contracts or "macos-x86_64" in contracts:
-    raise SystemExit("ordinary producer contracts must not consume Intel macOS capacity")
-if "  pull_request:\n    paths:\n" not in smoke:
-    raise SystemExit("Intel macOS smoke must be a path-gated pull-request workflow")
-if "  push:" in smoke or "  workflow_dispatch:" in smoke:
-    raise SystemExit("Intel macOS smoke must not run outside selected pull requests")
-expected_paths = (
-    ".github/actions/**",
-    ".github/workflows/**",
-    "scripts/toolchain/**",
-    "toolchains/**",
-)
-for path in expected_paths:
-    if smoke.count(f"      - '{path}'") != 1:
-        raise SystemExit(f"Intel macOS smoke path policy is missing or duplicates {path}")
-if smoke.count("runs-on: macos-15-intel") != 1:
-    raise SystemExit("Intel macOS smoke must have exactly one Intel runner job")
-for required in (
-    "name: Native package smoke (macos-x86_64, pc-x86_64)",
-    "--host macos-x86_64",
-    "--preset pc-x86_64",
-    "toolchain producer recipe",
-    "toolchain producer cache",
-    "--offline",
-    "toolchain verify",
-    "toolchain producer package",
-    "uses: ./.github/actions/checkout-pinned-recursive-source",
-):
-    if required not in smoke:
-        raise SystemExit(f"Intel macOS smoke lost required native check: {required}")
-for forbidden in ("strategy:", "copy:", "compare", "actions/upload-artifact"):
-    if forbidden in smoke:
-        raise SystemExit(f"Intel macOS smoke must remain a one-copy smoke, not a release matrix: {forbidden}")
-if release.count('{"host": "macos-x86_64", "runner": "macos-15-intel"}') != 1:
-    raise SystemExit("tag-only release must retain the Intel macOS host tier")
+for name, workflow in {
+    "ordinary producer contracts": contracts,
+    "release qualification": release,
+    "release recovery": recovery,
+    "compatibility replay": replay,
+}.items():
+    if "macos-15-intel" in workflow or "macos-x86_64" in workflow:
+        raise SystemExit(f"{name} must not consume suspended Intel macOS capacity")
 if release.count('itertools.product(verify, ["a", "b"])') != 1:
-    raise SystemExit("tag-only release must retain A/B expansion for every host/profile lane")
+    raise SystemExit("tag-only release must retain A/B expansion for every active host/profile lane")
+if "issue #27" not in release:
+    raise SystemExit("release policy must record the explicit Intel macOS follow-up")
 PY
 python3 - "$source_root/scripts/toolchain/build-release.sh" <<'PY'
 from pathlib import Path
@@ -301,8 +278,7 @@ python3 - "$source_root/toolchains/producer-executor-v1.toml" "$AROS_TEST_TOOLS_
     "$source_root/.github/workflows/toolchain-release.yml" \
     "$source_root/.github/workflows/toolchain-release-recovery.yml" \
     "$source_root/.github/workflows/toolchain-compatibility-replay.yml" \
-    "$source_root/.github/workflows/ci.yml" \
-    "$source_root/.github/workflows/intel-macos-smoke.yml" <<'PY'
+    "$source_root/.github/workflows/ci.yml" <<'PY'
 import hashlib
 import re
 import subprocess
@@ -749,14 +725,14 @@ for name, expected_digest in checksums.items():
     assert hashlib.sha256((directory / name).read_bytes()).hexdigest() == expected_digest
 PY
 
-# Exercise the positive publish gate with the complete 4 hosts x 3 profiles
+# Exercise the positive publish gate with the active 3 hosts x 3 profiles
 # catalog before the real workflow spends hours producing it.
 printf '%s\n' 'fixture armhf builtins' \
     > "$temporary/root-a/lib/clang/11.0.0/lib/aros/libclang_rt.builtins-armhf.a"
 printf '%s\n' 'fixture aarch64 builtins' \
     > "$temporary/root-a/lib/clang/11.0.0/lib/aros/libclang_rt.builtins-aarch64.a"
 mkdir -p "$temporary/complete"
-for host in linux-x86_64 linux-aarch64 macos-x86_64 macos-aarch64; do
+for host in linux-x86_64 linux-aarch64 macos-aarch64; do
     for profile in pc-x86_64 arm-raspi rpi-aarch64; do
         complete_asset="aros-toolchain-v1-llvm11.0.0-${host}-${profile}.tar.xz"
         python3 "$producer" package \
@@ -821,10 +797,10 @@ import sys
 path = Path(sys.argv[1])
 index = json.load(path.open(encoding="utf-8"))
 assert index["schema"] == 1
-assert len(index["artifacts"]) == 12
+assert len(index["artifacts"]) == 9
 assert all(artifact["enabled"] is True for artifact in index["artifacts"])
 checksums = (path.parent / "SHA256SUMS").read_text(encoding="utf-8").splitlines()
-assert len(checksums) == 55
+assert len(checksums) == 43
 assert any(line.endswith("  toolchain-provenance.sigstore.json") for line in checksums)
 PY
 

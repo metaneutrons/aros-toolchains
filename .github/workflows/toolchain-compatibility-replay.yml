@@ -19,7 +19,7 @@ env:
   AROS_SOURCE_REPOSITORY: metaneutrons/AROS-NX
   AROS_SOURCE_COMMIT: f3cfc243a84065166a46da28b0a5b22bbd0f8869
   AROS_TOOLS_REPOSITORY: metaneutrons/aros-tools
-  AROS_TOOLS_COMMIT: bc254de9ff13c2beabf43328109f169c4e554038
+  AROS_TOOLS_COMMIT: 286d7205c8c283e05549b64e60cffb022d40e0ad
 
 jobs:
   compatibility:
@@ -33,9 +33,6 @@ jobs:
           - { host: linux-aarch64, runner: ubuntu-24.04-arm, profile: pc-x86_64 }
           - { host: linux-aarch64, runner: ubuntu-24.04-arm, profile: arm-raspi }
           - { host: linux-aarch64, runner: ubuntu-24.04-arm, profile: rpi-aarch64 }
-          - { host: macos-x86_64, runner: macos-15-intel, profile: pc-x86_64 }
-          - { host: macos-x86_64, runner: macos-15-intel, profile: arm-raspi }
-          - { host: macos-x86_64, runner: macos-15-intel, profile: rpi-aarch64 }
           - { host: macos-aarch64, runner: macos-15, profile: pc-x86_64 }
           - { host: macos-aarch64, runner: macos-15, profile: arm-raspi }
           - { host: macos-aarch64, runner: macos-15, profile: rpi-aarch64 }
