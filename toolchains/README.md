@@ -50,21 +50,21 @@ refuses a source/profile mismatch, a changed input, undeclared files, network
 access, or a source root that has been modified after materialization.
 
 The lock is derived from the selected revision's `includes` and `linklibs`
-Make graphs. `pc-x86_64` additionally requires the pinned Unicode data files;
-the two Raspberry Pi profiles use the declared port archives only. The cache
-may hold the complete reviewed union, but each compatibility lane receives
-only its selected profile closure. Consequently, an upstream dependency change
-must update the reviewed lock rather than being satisfied by an ambient
-download or a hidden pin.
+Make graphs. Every active profile requires the pinned Unicode data files:
+`includes` builds the common `genctbl` host tool before it reaches the
+profile-specific port graph. The cache may hold the complete reviewed union,
+but each compatibility lane receives only its selected profile closure.
+Consequently, an upstream dependency change must update the reviewed lock
+rather than being satisfied by an ambient download or a hidden pin.
 
 Materialized payloads are read-only and their root is owner-private. The root
 remains writable solely for upstream `fetch.sh` to create and remove its
 transient lock and for the upstream Make rules to record explicitly declared
 empty `.fetched` markers. The executor removes those declared final markers
 before revalidation; any other residue or unexpected entry fails the lane. The
-measured host-tool closure includes `tar` for the selected upstream archive
-unpacking path and `gsed` on macOS, where upstream configure explicitly
-requires GNU sed.
+measured host-tool closure includes `tar` with its `gzip` and `xz`
+decompressors for the selected upstream archive-unpacking path, and `gsed`
+on macOS, where upstream configure explicitly requires GNU sed.
 
 ## Native executor declaration
 
