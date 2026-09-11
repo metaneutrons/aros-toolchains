@@ -1,0 +1,91 @@
+{
+  "schema": "aros-toolchain-compatibility-ports-v2",
+  "upstream_commit": "6722a0ae9e03fe5d26e32703360bd2059e0864cc",
+  "inputs": [
+    {
+      "id": "unicode-data-16-0-0",
+      "cache_filename": "UnicodeData.txt",
+      "relative_path": "UnicodeData.txt",
+      "fetch_marker": "",
+      "url": "https://www.unicode.org/Public/16.0.0/ucd/UnicodeData.txt",
+      "sha256": "ff58e5823bd095166564a006e47d111130813dcf8bf234ef79fa51a870edb48f",
+      "size": 2175362
+    },
+    {
+      "id": "unicode-special-casing-16-0-0",
+      "cache_filename": "SpecialCasing.txt",
+      "relative_path": "SpecialCasing.txt",
+      "fetch_marker": "",
+      "url": "https://www.unicode.org/Public/16.0.0/ucd/SpecialCasing.txt",
+      "sha256": "8d5de354eef79f2395a54c9c7dcebbaf3d30fc962d0f85611ea97aa973a0c451",
+      "size": 16809
+    },
+    {
+      "id": "acpica-unix-20260408",
+      "cache_filename": "acpica-unix-20260408.tar.gz",
+      "relative_path": "acpica-unix-20260408.tar.gz",
+      "fetch_marker": ".acpica-unix-20260408-fetched",
+      "url": "https://downloadmirror.intel.com/917611/acpica-unix-20260408.tar.gz",
+      "sha256": "e66ceb26d6d514ce164fe22f5a4f7ca165cc38349d7a97f41a21f19b364647a2",
+      "size": 2044403
+    },
+    {
+      "id": "boost-1-89-0",
+      "cache_filename": "boost_1_89_0.tar.gz",
+      "relative_path": "boost_1_89_0.tar.gz",
+      "fetch_marker": ".boost_1_89_0-fetched",
+      "url": "https://archives.boost.io/release/1.89.0/source/boost_1_89_0.tar.gz",
+      "sha256": "9de758db755e8330a01d995b0a24d09798048400ac25c03fc5ea9be364b13c93",
+      "size": 190099283
+    },
+    {
+      "id": "bzip2-1-0-8",
+      "cache_filename": "bzip2-1.0.8.tar.gz",
+      "relative_path": "bzip2-1.0.8.tar.gz",
+      "fetch_marker": ".bzip2-1.0.8-fetched",
+      "url": "https://sourceware.org/pub/bzip2/bzip2-1.0.8.tar.gz",
+      "sha256": "ab5a03176ee106d3f0fa90e381da478ddae405918153cca248e682cd0c4a2269",
+      "size": 810029
+    },
+    {
+      "id": "mesa-20-0-8",
+      "cache_filename": "mesa-20.0.8.tar.xz",
+      "relative_path": "mesa-20.0.8.tar.xz",
+      "fetch_marker": ".mesa-20.0.8-fetched",
+      "url": "https://archive.mesa3d.org/older-versions/20.x/mesa-20.0.8.tar.xz",
+      "sha256": "6cf0c010df89680f9b2bc6432ff01400031795e39bceda7535fa00af06740b6c",
+      "size": 12360736
+    }
+  ],
+  "profiles": [
+    {
+      "name": "pc-x86_64",
+      "inputs": [
+        "unicode-data-16-0-0",
+        "unicode-special-casing-16-0-0",
+        "acpica-unix-20260408",
+        "boost-1-89-0",
+        "bzip2-1-0-8",
+        "mesa-20-0-8"
+      ]
+    },
+    {
+      "name": "arm-raspi",
+      "inputs": [
+        "acpica-unix-20260408",
+        "boost-1-89-0",
+        "bzip2-1-0-8",
+        "mesa-20-0-8"
+      ]
+    },
+    {
+      "name": "rpi-aarch64",
+      "inputs": [
+        "acpica-unix-20260408",
+        "boost-1-89-0",
+        "bzip2-1-0-8",
+        "mesa-20-0-8"
+      ]
+    }
+  ]
+}

@@ -48,35 +48,79 @@ workflow = release_path.read_text(encoding="utf-8")
 recovery = Path(sys.argv[2]).read_text(encoding="utf-8")
 replay = Path(sys.argv[3]).read_text(encoding="utf-8")
 ports_lock = json.loads(
-    (source_root / "toolchains" / "compatibility-ports-v1.json").read_text(encoding="utf-8")
+    (source_root / "toolchains" / "compatibility-ports-v2.json").read_text(encoding="utf-8")
 )
 expected_ports_inputs = {
-    "UnicodeData.txt": (
+    "unicode-data-16-0-0": (
+        "UnicodeData.txt",
+        "UnicodeData.txt",
+        "",
         "https://www.unicode.org/Public/16.0.0/ucd/UnicodeData.txt",
         "ff58e5823bd095166564a006e47d111130813dcf8bf234ef79fa51a870edb48f",
         2175362,
     ),
-    "SpecialCasing.txt": (
+    "unicode-special-casing-16-0-0": (
+        "SpecialCasing.txt",
+        "SpecialCasing.txt",
+        "",
         "https://www.unicode.org/Public/16.0.0/ucd/SpecialCasing.txt",
         "8d5de354eef79f2395a54c9c7dcebbaf3d30fc962d0f85611ea97aa973a0c451",
         16809,
     ),
-    "bzip2-1.0.8.tar.gz": (
+    "acpica-unix-20260408": (
+        "acpica-unix-20260408.tar.gz",
+        "acpica-unix-20260408.tar.gz",
+        ".acpica-unix-20260408-fetched",
+        "https://downloadmirror.intel.com/917611/acpica-unix-20260408.tar.gz",
+        "e66ceb26d6d514ce164fe22f5a4f7ca165cc38349d7a97f41a21f19b364647a2",
+        2044403,
+    ),
+    "boost-1-89-0": (
+        "boost_1_89_0.tar.gz",
+        "boost_1_89_0.tar.gz",
+        ".boost_1_89_0-fetched",
+        "https://archives.boost.io/release/1.89.0/source/boost_1_89_0.tar.gz",
+        "9de758db755e8330a01d995b0a24d09798048400ac25c03fc5ea9be364b13c93",
+        190099283,
+    ),
+    "bzip2-1-0-8": (
+        "bzip2-1.0.8.tar.gz",
+        "bzip2-1.0.8.tar.gz",
+        ".bzip2-1.0.8-fetched",
         "https://sourceware.org/pub/bzip2/bzip2-1.0.8.tar.gz",
         "ab5a03176ee106d3f0fa90e381da478ddae405918153cca248e682cd0c4a2269",
         810029,
     ),
+    "mesa-20-0-8": (
+        "mesa-20.0.8.tar.xz",
+        "mesa-20.0.8.tar.xz",
+        ".mesa-20.0.8-fetched",
+        "https://archive.mesa3d.org/older-versions/20.x/mesa-20.0.8.tar.xz",
+        "6cf0c010df89680f9b2bc6432ff01400031795e39bceda7535fa00af06740b6c",
+        12360736,
+    ),
 }
-if ports_lock.get("schema") != "aros-toolchain-compatibility-ports-v1":
+if ports_lock.get("schema") != "aros-toolchain-compatibility-ports-v2":
     raise SystemExit("compatibility source-input lock has an unsupported schema")
-if ports_lock.get("unicode_version") != "16.0.0":
-    raise SystemExit("compatibility source-input lock lost its explicit Unicode version")
+if ports_lock.get("upstream_commit") != "6722a0ae9e03fe5d26e32703360bd2059e0864cc":
+    raise SystemExit("compatibility source-input lock lost its pinned upstream revision")
 observed_ports_inputs = {
-    input.get("filename"): (input.get("url"), input.get("sha256"), input.get("size"))
+    input.get("id"): (
+        input.get("cache_filename"), input.get("relative_path"), input.get("fetch_marker"), input.get("url"),
+        input.get("sha256"), input.get("size"),
+    )
     for input in ports_lock.get("inputs", [])
 }
 if observed_ports_inputs != expected_ports_inputs:
     raise SystemExit("compatibility source-input lock differs from the measured upstream closure")
+expected_profile_inputs = {
+    "pc-x86_64": set(expected_ports_inputs),
+    "arm-raspi": {"acpica-unix-20260408", "boost-1-89-0", "bzip2-1-0-8", "mesa-20-0-8"},
+    "rpi-aarch64": {"acpica-unix-20260408", "boost-1-89-0", "bzip2-1-0-8", "mesa-20-0-8"},
+}
+observed_profiles = {entry.get("name"): set(entry.get("inputs", [])) for entry in ports_lock.get("profiles", [])}
+if observed_profiles != expected_profile_inputs:
+    raise SystemExit("compatibility source-input lock must declare the exact measured closure for every active profile")
 fetch_start = workflow.index("      - name: Fetch and verify immutable toolchain and host Python sources")
 fetch_end = workflow.index("\n      - name: Vendor locked Rust collector sources", fetch_start)
 fetch_step = workflow[fetch_start:fetch_end]

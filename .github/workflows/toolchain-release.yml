@@ -44,14 +44,14 @@ concurrency:
 
 env:
   SOURCE_LOCK: toolchains/llvm-11.0.0.sources.json
-  COMPATIBILITY_PORTS_LOCK: toolchains/compatibility-ports-v1.json
+  COMPATIBILITY_PORTS_LOCK: toolchains/compatibility-ports-v2.json
   PROFILES: toolchains/profiles-v1.json
   LLVM_VERSION: 11.0.0
   PYTHONHASHSEED: "0"
   AROS_SOURCE_REPOSITORY: metaneutrons/AROS-NX
   AROS_SOURCE_COMMIT: f3cfc243a84065166a46da28b0a5b22bbd0f8869
   AROS_TOOLS_REPOSITORY: metaneutrons/aros-tools
-  AROS_TOOLS_COMMIT: ccd27667542f25f9f9f18f9620e38386f4318ce0
+  AROS_TOOLS_COMMIT: 41438862dfdf3ac4f3e02dbc26cc0dfbfd8d4da5
 
 jobs:
   plan:
