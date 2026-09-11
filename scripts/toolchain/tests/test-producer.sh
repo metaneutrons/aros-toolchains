@@ -159,7 +159,7 @@ expected_ports_inputs = {
         "libpng-1.6.58.tar.gz",
         "libpng-1.6.58.tar.gz",
         ".libpng-1.6.58-fetched",
-        "https://download.sourceforge.net/libpng/libpng-1.6.58.tar.gz",
+        "https://sourceforge.net/projects/libpng/files/libpng16/1.6.58/libpng-1.6.58.tar.gz/download",
         "8c9b05b675ca7301a458df2c2e46f26e1d41ff36b8863f8c33530bc58c2e6225",
         1582074,
     ),
@@ -184,8 +184,8 @@ expected_ports_inputs = {
         "chromium-da752eb2a3660cf1bf8dac620f6380b89dd953a7/zlib.tar.gz",
         "chromium-da752eb2a3660cf1bf8dac620f6380b89dd953a7/.zlib-fetched",
         "https://chromium.googlesource.com/chromium/src/+archive/da752eb2a3660cf1bf8dac620f6380b89dd953a7/third_party/zlib.tar.gz",
-        "e38dc3344f96d660b0613b052ba8c31783e8d9a14a22d01b899021894e07800a",
-        620418,
+        "883d22e0b9aefc31a383c462adacdbd7941e6862559c5b27e59599db8114e783",
+        2337668,
     ),
     "zstd-1-5-7": (
         "zstd-1.5.7.tar.gz",
@@ -209,6 +209,16 @@ observed_ports_inputs = {
 }
 if observed_ports_inputs != expected_ports_inputs:
     raise SystemExit("compatibility source-input lock differs from the measured upstream closure")
+expected_normalization = {
+    "chromium-zlib-da752eb2": "canonical-tar-gzip-v1",
+}
+observed_normalization = {
+    input.get("id"): input.get("normalization")
+    for input in ports_lock.get("inputs", [])
+    if "normalization" in input
+}
+if observed_normalization != expected_normalization:
+    raise SystemExit("compatibility source-input lock has an unexpected payload normalization policy")
 expected_profile_inputs = {
     "pc-x86_64": set(expected_ports_inputs),
     "arm-raspi": set(expected_ports_inputs),
