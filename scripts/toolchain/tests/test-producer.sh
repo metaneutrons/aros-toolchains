@@ -115,8 +115,8 @@ if observed_ports_inputs != expected_ports_inputs:
     raise SystemExit("compatibility source-input lock differs from the measured upstream closure")
 expected_profile_inputs = {
     "pc-x86_64": set(expected_ports_inputs),
-    "arm-raspi": {"acpica-unix-20260408", "boost-1-89-0", "bzip2-1-0-8", "mesa-20-0-8"},
-    "rpi-aarch64": {"acpica-unix-20260408", "boost-1-89-0", "bzip2-1-0-8", "mesa-20-0-8"},
+    "arm-raspi": set(expected_ports_inputs),
+    "rpi-aarch64": set(expected_ports_inputs),
 }
 observed_profiles = {entry.get("name"): set(entry.get("inputs", [])) for entry in ports_lock.get("profiles", [])}
 if observed_profiles != expected_profile_inputs:
