@@ -181,8 +181,8 @@ expected_ports_inputs = {
     ),
     "chromium-zlib-da752eb2": (
         "zlib.tar.gz",
-        "chromium-da752eb2a3660cf1bf8dac620f6380b89dd953a7/zlib.tar.gz",
-        "chromium-da752eb2a3660cf1bf8dac620f6380b89dd953a7/.zlib-fetched",
+        "zlib.tar.gz",
+        ".zlib-fetched",
         "https://chromium.googlesource.com/chromium/src/+archive/da752eb2a3660cf1bf8dac620f6380b89dd953a7/third_party/zlib.tar.gz",
         "883d22e0b9aefc31a383c462adacdbd7941e6862559c5b27e59599db8114e783",
         2337668,
