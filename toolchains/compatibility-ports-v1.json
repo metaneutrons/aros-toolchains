@@ -13,6 +13,12 @@
       "url": "https://www.unicode.org/Public/16.0.0/ucd/SpecialCasing.txt",
       "sha256": "8d5de354eef79f2395a54c9c7dcebbaf3d30fc962d0f85611ea97aa973a0c451",
       "size": 16809
+    },
+    {
+      "filename": "bzip2-1.0.8.tar.gz",
+      "url": "https://sourceware.org/pub/bzip2/bzip2-1.0.8.tar.gz",
+      "sha256": "ab5a03176ee106d3f0fa90e381da478ddae405918153cca248e682cd0c4a2269",
+      "size": 810029
     }
   ]
 }

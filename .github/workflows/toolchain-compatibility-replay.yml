@@ -75,7 +75,7 @@ jobs:
         with:
           tools-dir: ${{ github.workspace }}/dependencies/aros-tools
           target-dir: ${{ runner.temp }}/aros-tools-native
-      - name: Fetch and verify exact upstream Unicode inputs
+      - name: Fetch and verify exact upstream compatibility source inputs
         run: |
           set -euo pipefail
           "${{ steps.native.outputs.aros }}" toolchain producer compatibility-ports \
@@ -145,13 +145,22 @@ jobs:
             make)
               program="$(type -P gmake || type -P make || true)"
               ;;
-            # See the release workflow: these are sealed aliases for the
-            # upstream Darwin configure spelling, not ambient PATH access.
+            # Darwin's /usr/bin/{ar,ranlib} are xcrun shims. Resolve the real,
+            # measured Xcode tool first: a closure alias to the shim would
+            # preserve llvm-arcc/llvm-ranlibcc as argv[0] and fail again.
             llvm-arcc)
-              program="$(type -P ar || true)"
+              xcrun_program="$(type -P xcrun || true)"
+              program=""
+              if [[ "$xcrun_program" == /* && -x "$xcrun_program" ]]; then
+                program="$("$xcrun_program" --find ar 2>/dev/null || true)"
+              fi
               ;;
             llvm-ranlibcc)
-              program="$(type -P ranlib || true)"
+              xcrun_program="$(type -P xcrun || true)"
+              program=""
+              if [[ "$xcrun_program" == /* && -x "$xcrun_program" ]]; then
+                program="$("$xcrun_program" --find ranlib 2>/dev/null || true)"
+              fi
               ;;
             *)
               # `command -v` returns a bare shell-builtin name for roles such

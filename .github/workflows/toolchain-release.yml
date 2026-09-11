@@ -462,15 +462,22 @@ jobs:
             make)
               program="$(type -P gmake || type -P make || true)"
               ;;
-            # Upstream's Darwin configure logic derives these historical LLVM
-            # spellings from Apple Clang's `cc` suffix.  Bind both aliases to
-            # the same independently measured real binutils entries instead
-            # of reopening ambient PATH lookup inside the sealed child.
+            # Darwin's /usr/bin/{ar,ranlib} are xcrun shims. Resolve the real,
+            # measured Xcode tool first: a closure alias to the shim would
+            # preserve llvm-arcc/llvm-ranlibcc as argv[0] and fail again.
             llvm-arcc)
-              program="$(type -P ar || true)"
+              xcrun_program="$(type -P xcrun || true)"
+              program=""
+              if [[ "$xcrun_program" == /* && -x "$xcrun_program" ]]; then
+                program="$("$xcrun_program" --find ar 2>/dev/null || true)"
+              fi
               ;;
             llvm-ranlibcc)
-              program="$(type -P ranlib || true)"
+              xcrun_program="$(type -P xcrun || true)"
+              program=""
+              if [[ "$xcrun_program" == /* && -x "$xcrun_program" ]]; then
+                program="$("$xcrun_program" --find ranlib 2>/dev/null || true)"
+              fi
               ;;
             *)
               # `command -v` returns a bare shell-builtin name for roles such
