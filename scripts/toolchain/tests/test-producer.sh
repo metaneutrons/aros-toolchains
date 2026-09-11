@@ -38,6 +38,7 @@ grep -Fq -- '--python-cache-dir "$GITHUB_WORKSPACE/source-cache"' "$source_root/
 python3 - "$source_root/.github/workflows/toolchain-release.yml" \
     "$source_root/.github/workflows/toolchain-release-recovery.yml" \
     "$source_root/.github/workflows/toolchain-compatibility-replay.yml" <<'PY'
+import json
 from pathlib import Path
 import sys
 
@@ -46,6 +47,36 @@ source_root = release_path.parents[2]
 workflow = release_path.read_text(encoding="utf-8")
 recovery = Path(sys.argv[2]).read_text(encoding="utf-8")
 replay = Path(sys.argv[3]).read_text(encoding="utf-8")
+ports_lock = json.loads(
+    (source_root / "toolchains" / "compatibility-ports-v1.json").read_text(encoding="utf-8")
+)
+expected_ports_inputs = {
+    "UnicodeData.txt": (
+        "https://www.unicode.org/Public/16.0.0/ucd/UnicodeData.txt",
+        "ff58e5823bd095166564a006e47d111130813dcf8bf234ef79fa51a870edb48f",
+        2175362,
+    ),
+    "SpecialCasing.txt": (
+        "https://www.unicode.org/Public/16.0.0/ucd/SpecialCasing.txt",
+        "8d5de354eef79f2395a54c9c7dcebbaf3d30fc962d0f85611ea97aa973a0c451",
+        16809,
+    ),
+    "bzip2-1.0.8.tar.gz": (
+        "https://sourceware.org/pub/bzip2/bzip2-1.0.8.tar.gz",
+        "ab5a03176ee106d3f0fa90e381da478ddae405918153cca248e682cd0c4a2269",
+        810029,
+    ),
+}
+if ports_lock.get("schema") != "aros-toolchain-compatibility-ports-v1":
+    raise SystemExit("compatibility source-input lock has an unsupported schema")
+if ports_lock.get("unicode_version") != "16.0.0":
+    raise SystemExit("compatibility source-input lock lost its explicit Unicode version")
+observed_ports_inputs = {
+    input.get("filename"): (input.get("url"), input.get("sha256"), input.get("size"))
+    for input in ports_lock.get("inputs", [])
+}
+if observed_ports_inputs != expected_ports_inputs:
+    raise SystemExit("compatibility source-input lock differs from the measured upstream closure")
 fetch_start = workflow.index("      - name: Fetch and verify immutable toolchain and host Python sources")
 fetch_end = workflow.index("\n      - name: Vendor locked Rust collector sources", fetch_start)
 fetch_step = workflow[fetch_start:fetch_end]
@@ -203,15 +234,17 @@ if workflow.count('host_tool_args=()') != 1 or workflow.count('"${host_tool_args
 if workflow.count('type -P gmake || type -P make || true') != 1:
     raise SystemExit("release compatibility must map the stable make role to an explicit host executable")
 if workflow.count('toolchain producer compatibility-ports') != 2:
-    raise SystemExit("release must acquire and offline-verify the closed Unicode compatibility inputs")
+    raise SystemExit("release must acquire and offline-verify the closed compatibility source inputs")
 if workflow.count('--ports-lock "$GITHUB_WORKSPACE/$COMPATIBILITY_PORTS_LOCK"') != 3:
-    raise SystemExit("release compatibility must bind the same declared Unicode input lock at every stage")
+    raise SystemExit("release compatibility must bind the same declared source-input lock at every stage")
 if workflow.count('--ports-cache-dir "$GITHUB_WORKSPACE/source-cache"') != 1:
-    raise SystemExit("release compatibility must materialize Unicode inputs only from the verified cache")
+    raise SystemExit("release compatibility must materialize source inputs only from the verified cache")
 if workflow.count('--ports-sources-dir "$work/ports-sources"') != 1:
-    raise SystemExit("release compatibility must pass one owned Unicode source directory to upstream")
-if workflow.count('type -P ar || true') != 1 or workflow.count('type -P ranlib || true') != 1:
-    raise SystemExit("release compatibility must seal Darwin ar and ranlib aliases from measured executables")
+    raise SystemExit("release compatibility must pass one owned source-input directory to upstream")
+if workflow.count('xcrun_program="$(type -P xcrun || true)"') != 2:
+    raise SystemExit("release compatibility must measure xcrun before resolving Darwin aliases")
+if workflow.count('"$xcrun_program" --find ar') != 1 or workflow.count('"$xcrun_program" --find ranlib') != 1:
+    raise SystemExit("release compatibility must seal Darwin aliases to real Xcode binutils, not xcrun shims")
 if 'host_cc_program=' in workflow or '--host-tool "cc=$host_cc_program"' in workflow:
     raise SystemExit("release compatibility must not retain the incomplete three-tool closure")
 if "name: native-lifecycle-${{ matrix.host }}-${{ matrix.profile }}-${{ matrix.copy }}" not in workflow:
@@ -239,15 +272,17 @@ if workflow.count('host_tool_args=()') != 1 or workflow.count('"${host_tool_args
 if workflow.count('type -P gmake || type -P make || true') != 1:
     raise SystemExit("compatibility replay must map the stable make role to an explicit host executable")
 if workflow.count('toolchain producer compatibility-ports') != 2:
-    raise SystemExit("compatibility replay must acquire and offline-verify the closed Unicode inputs")
+    raise SystemExit("compatibility replay must acquire and offline-verify the closed source inputs")
 if workflow.count('--ports-lock "$GITHUB_WORKSPACE/$COMPATIBILITY_PORTS_LOCK"') != 3:
-    raise SystemExit("compatibility replay must bind the same declared Unicode input lock at every stage")
+    raise SystemExit("compatibility replay must bind the same declared source-input lock at every stage")
 if workflow.count('--ports-cache-dir "$GITHUB_WORKSPACE/source-cache"') != 1:
-    raise SystemExit("compatibility replay must materialize Unicode inputs only from the verified cache")
+    raise SystemExit("compatibility replay must materialize source inputs only from the verified cache")
 if workflow.count('--ports-sources-dir "$work/ports-sources"') != 1:
-    raise SystemExit("compatibility replay must pass one owned Unicode source directory to upstream")
-if workflow.count('type -P ar || true') != 1 or workflow.count('type -P ranlib || true') != 1:
-    raise SystemExit("compatibility replay must seal Darwin ar and ranlib aliases from measured executables")
+    raise SystemExit("compatibility replay must pass one owned source-input directory to upstream")
+if workflow.count('xcrun_program="$(type -P xcrun || true)"') != 2:
+    raise SystemExit("compatibility replay must measure xcrun before resolving Darwin aliases")
+if workflow.count('"$xcrun_program" --find ar') != 1 or workflow.count('"$xcrun_program" --find ranlib') != 1:
+    raise SystemExit("compatibility replay must seal Darwin aliases to real Xcode binutils, not xcrun shims")
 if 'host_cc_program=' in workflow or '--host-tool "cc=$host_cc_program"' in workflow:
     raise SystemExit("compatibility replay must not retain the incomplete three-tool closure")
 PY

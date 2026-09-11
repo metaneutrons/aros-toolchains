@@ -51,7 +51,7 @@ env:
   AROS_SOURCE_REPOSITORY: metaneutrons/AROS-NX
   AROS_SOURCE_COMMIT: f3cfc243a84065166a46da28b0a5b22bbd0f8869
   AROS_TOOLS_REPOSITORY: metaneutrons/aros-tools
-  AROS_TOOLS_COMMIT: 28c79af6a22400b677e64ac804847432d0f870ad
+  AROS_TOOLS_COMMIT: ccd27667542f25f9f9f18f9620e38386f4318ce0
 
 jobs:
   plan:
@@ -462,15 +462,22 @@ jobs:
             make)
               program="$(type -P gmake || type -P make || true)"
               ;;
-            # Upstream's Darwin configure logic derives these historical LLVM
-            # spellings from Apple Clang's `cc` suffix.  Bind both aliases to
-            # the same independently measured real binutils entries instead
-            # of reopening ambient PATH lookup inside the sealed child.
+            # Darwin's /usr/bin/{ar,ranlib} are xcrun shims. Resolve the real,
+            # measured Xcode tool first: a closure alias to the shim would
+            # preserve llvm-arcc/llvm-ranlibcc as argv[0] and fail again.
             llvm-arcc)
-              program="$(type -P ar || true)"
+              xcrun_program="$(type -P xcrun || true)"
+              program=""
+              if [[ "$xcrun_program" == /* && -x "$xcrun_program" ]]; then
+                program="$("$xcrun_program" --find ar 2>/dev/null || true)"
+              fi
               ;;
             llvm-ranlibcc)
-              program="$(type -P ranlib || true)"
+              xcrun_program="$(type -P xcrun || true)"
+              program=""
+              if [[ "$xcrun_program" == /* && -x "$xcrun_program" ]]; then
+                program="$("$xcrun_program" --find ranlib 2>/dev/null || true)"
+              fi
               ;;
             *)
               # `command -v` returns a bare shell-builtin name for roles such
