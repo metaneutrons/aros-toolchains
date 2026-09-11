@@ -1,116 +1,151 @@
 # AROS toolchains
 
-Deterministic producer, verification, and release infrastructure for AROS
-cross-toolchains. GitHub Releases in this repository are the canonical
-distribution channel for new immutable toolchain archives.
+[![Producer contracts](https://github.com/metaneutrons/aros-toolchains/actions/workflows/ci.yml/badge.svg)](https://github.com/metaneutrons/aros-toolchains/actions/workflows/ci.yml)
+[![Releases](https://img.shields.io/github/v/release/metaneutrons/aros-toolchains?display_name=tag&include_prereleases&sort=semver)](https://github.com/metaneutrons/aros-toolchains/releases)
+[![License: GPL-3.0-or-later](https://img.shields.io/badge/license-GPL--3.0--or--later-blue.svg)](LICENSE)
 
-The first standalone prerelease,
-[`toolchain-v1-20260831-rc3`](https://github.com/metaneutrons/aros-toolchains/releases/tag/toolchain-v1-20260831-rc3),
-was published on 31 August 2026. It provides twelve LLVM 11 archives for Linux
-and macOS on x86-64 and ARM64, each covering `pc-x86_64`, `arm-raspi` and
-`rpi-aarch64`. The release includes a measured index, checksums, manifests,
-SPDX SBOMs and fresh GitHub provenance. RISC-V is not part of this release.
+**The immutable AROS cross-toolchain release backend for
+[`aros-tools`](https://github.com/metaneutrons/aros-tools).**
 
-The older AROS-NG release remains historical evidence, not a required download
-source for these archives. See [standalone release evidence](docs/migration-provenance.md#standalone-release).
+This repository produces, qualifies, and publishes the Clang/LLVM toolchain
+archives that `aros-tools` installs and verifies. It is deliberately not a
+second end-user CLI and not a fork of AROS. Keeping release engineering here
+lets `aros-tools` remain a small, credential-free developer tool while this
+repository owns the reviewed build recipe, supply-chain inputs, qualification
+evidence, and immutable release assets.
 
-## Three-repository build identity
+> **Status:** release engineering is under active qualification. GitHub
+> Releases contain immutable prerelease assets; a checkout may use an asset
+> only when its reviewed `aros-toolchains.lock.toml` selects that exact
+> release. Branch builds, workflow artifacts, and draft assets are never
+> consumer channels.
 
-Every new recipe binds three clean Git checkouts independently:
+## Start with `aros-tools`
 
-| Identity | Contents |
-| --- | --- |
-| producer | this repository's scripts, locks, schemas, and workflows |
-| AROS source | `configure`, MetaMake sources, LLVM patches, and target runtime |
-| aros-tools | the Rust collector and compatibility-test build tools |
+For nearly every developer, `aros-tools` is the right entry point. It reads the
+selected AROS checkout's lock, resolves the host and target profile, downloads
+only the locked archive, and verifies the archive, manifest, payload tree, and
+required executable layout before use.
 
-The recipe records each checkout's full commit and tree. Toolchain manifests
-retain `source_commit` for the AROS source and add mandatory
-`producer_commit` and `tools_commit` fields. The archive epoch is the greatest
-of the three commit timestamps. Release builds reject tracked changes or an
-identity mismatch before compilation.
-
-The current published standalone release records:
-
-- AROS source: `metaneutrons/AROS-NX` at
-  `f3cfc243a84065166a46da28b0a5b22bbd0f8869`;
-- aros-tools: `metaneutrons/aros-tools` at
-  `707037be4f8ff37300a1a89166c35f661c28bafe`;
-- producer: `metaneutrons/aros-toolchains` at
-  `c8039cf2b7291097ad62c6750bd7367e91a068f4`.
-
-These identities are not moving branch aliases. A newer AROS-NX or tools
-commit does not change the published release's provenance. Future releases
-must qualify their own explicit source/tools/producer recipe; CI rejects
-missing identities rather than falling back to branch names.
-
-## Repository layout
-
-- `scripts/toolchain/producer.py`: package, verify, compare, repackage, and
-  release-index engine;
-- `scripts/toolchain/build-release.sh`: isolated compiler/runtime producer;
-- `scripts/toolchain/compatibility.sh`: relocation, AROS-NX CMake, and pinned
-  vanilla-upstream consumer probes;
-- `toolchains/`: immutable source locks, profiles, schemas, and known-answer
-  vectors;
-- `.github/workflows/`: full producer, compatibility replay, and packaging-only
-  recovery workflows.
-
-Consumer locks do not live here. AROS-NX and other consumers promote measured
-values from a published `toolchain-index-v1.json` into their own locks only
-after final release URLs verify.
-
-## Local contract tests
-
-Select an AROS checkout that contains the locked crosstools patch series:
+After installing `aros-tools` and opening an AROS or AROS-NX checkout with a
+reviewed toolchain lock:
 
 ```console
-AROS_TEST_SOURCE_ROOT=/path/to/AROS \
+aros toolchain list
+aros toolchain install --preset pc-x86_64
+aros toolchain verify --preset pc-x86_64
+aros toolchain path --preset pc-x86_64
+```
+
+Replace `pc-x86_64` with `arm-raspi` or `rpi-aarch64` as appropriate. The
+commands fail closed when the checkout has no enabled artifact for the running
+host and selected profile; they do not fall back to a host compiler or build a
+compiler from source. See the [`aros-tools` installation guide](https://aros.metaneutrons.cc/aros-tools/getting-started/installation/)
+and [toolchain command reference](https://aros.metaneutrons.cc/aros-tools/reference/cli/).
+
+Direct archive consumption remains possible for downstream integrators, but it
+is an advanced path: verify the release's `SHA256SUMS`, archive sidecar,
+manifest, SBOM, provenance, and index before extracting anything. Do not use
+unverified Actions artifacts or copy provisional data into a consumer lock.
+
+## What is supported
+
+The release schema has three target profiles:
+
+| Profile | Target triple | Intended target | Notable capability |
+| --- | --- | --- | --- |
+| `pc-x86_64` | `x86_64-unknown-aros` | 64-bit PC AROS | C, C++, Objective-C, LLVM runtimes, and the matching i386 collector/runtime contract |
+| `arm-raspi` | `arm-unknown-aros` | 32-bit Raspberry Pi AROS | hard-float C, C++, Objective-C, LLVM runtimes, and the collector |
+| `rpi-aarch64` | `aarch64-unknown-aros` | 64-bit Raspberry Pi AROS | C, C++, Objective-C, LLVM runtimes, and the collector |
+
+Current release qualification runs natively on the following build hosts:
+
+| Build host | Status |
+| --- | --- |
+| Linux x86-64 | active |
+| Linux ARM64 | active |
+| macOS ARM64 | active |
+| macOS x86-64 | deliberately suspended pending [issue #27](https://github.com/metaneutrons/aros-toolchains/issues/27) |
+
+The schema retains macOS x86-64 identity so historical releases remain
+describable, but it is not evidence for a current release. RISC-V is not a
+released profile. The release index and a consumer's lock—not this table—are
+authoritative for whether a specific host/profile archive is available.
+
+## What a release proves
+
+Each immutable release is a set of host-native compiler archives, not a full
+AROS SDK or a bootable operating-system image. A release asset includes:
+
+- Clang, Clang++, LLD, LLVM support tools, libc++, libc++abi, libunwind, and
+  the AROS collector aliases required by its profile;
+- a machine-readable `toolchain-manifest.json` and canonical payload-tree
+  digest;
+- an archive SHA-256 sidecar, release-wide `SHA256SUMS`, SPDX SBOMs, and a
+  measured `toolchain-index-v1.json`; and
+- GitHub/Sigstore provenance for the exact release workflow and tag.
+
+The compiler prefix deliberately does **not** contain a target Developer
+sysroot. Application and AROS builds supply a matching AROS Developer tree as
+their sysroot. This separation lets the same host compiler work with reviewed
+AROS-NX and upstream-compatible SDK contracts without conflating the two.
+
+A release is published only after the active host/profile matrix has passed
+independent normalized builds, byte-for-byte comparisons, relocation checks,
+and AROS-NX plus upstream-AROS compatibility probes. If any gate fails, the
+candidate remains unpublished and a later attempt uses a new immutable tag.
+
+## Repository roles
+
+| Repository | Owns | Does not own |
+| --- | --- | --- |
+| [`AROS-NX`](https://github.com/metaneutrons/AROS-NX) | AROS source, upstream-compatible patches, Configure/MetaMake rules, target runtime, and Developer sysroot | CLI distribution or release credentials |
+| [`aros-tools`](https://github.com/metaneutrons/aros-tools) | the `aros` CLI, installation, verification, build workflows, diagnostics, and local toolchain candidates | release recipes, release publication, or toolchain-builder credentials |
+| **`aros-toolchains`** | source locks, profiles, release workflows, deterministic producer inputs, qualification evidence, and immutable archives | a competing user-facing CLI or AROS source changes |
+
+The dependency direction is intentional: `aros-tools` consumes a selected,
+measured release; `aros-toolchains` builds it from exact AROS-NX and
+`aros-tools` source identities. Neither repository silently substitutes a
+branch name for an immutable identity.
+
+## For contributors and release maintainers
+
+Use this repository to change reviewed release inputs and policies—not to add
+ordinary `aros` commands or modify AROS build semantics.
+
+The offline contract suite needs the exact AROS source and `aros-tools`
+checkouts selected by `toolchains/producer-executor-v1.toml`:
+
+```console
+AROS_TEST_SOURCE_ROOT=/path/to/AROS-NX \
+AROS_TEST_TOOLS_ROOT=/path/to/aros-tools \
   scripts/toolchain/tests/test-producer.sh
 ```
 
-The test is offline and self-contained apart from that audited source contract.
-It exercises source-lock validation, the LLVM patch fixture, MetaMake closure,
-safe archive handling, deterministic A/B output, tree digests, relocation,
-SBOMs, manifests, recovery repackaging, checksums, and the active three-host
-by three-profile publication inventory.
+This validates recipe, source-lock, patch, archive, deterministic-packaging,
+relocation, and executor-identity contracts. It does not build a compiler.
+The expensive active matrix is intentionally limited to an annotated
+`toolchain-v1-*` release tag. Pull requests and ordinary merges never publish
+assets; manual diagnostic producer runs are Linux-only and cannot stand in for
+release qualification.
 
-## Release invariants
+Before changing a lock, profile, workflow, or release schema, read the
+[release contract](toolchains/README.md). It defines the fail-closed rules for
+source acquisition, compatibility inputs, recovery, draft review, provenance,
+and consumer promotion. [Migration provenance](docs/migration-provenance.md)
+records the historical standalone-release boundary.
 
-- 18 independent builds: two per active three-host/three-profile lane;
-- 9 byte-identical comparisons;
-- relocation and compatibility against both pinned AROS-NX and vanilla AROS;
-- exactly 9 archives, manifests, checksum sidecars, and SBOMs;
-- complete index and `SHA256SUMS`;
-- fresh provenance for the exact repository and tag;
-- immutable annotated tags, with no retargeting or asset replacement.
+## Related resources
 
-## Qualification execution policy
+- [`aros-tools`](https://github.com/metaneutrons/aros-tools): user and
+  developer CLI, including installation and command documentation.
+- [AROS tools documentation](https://aros.metaneutrons.cc/aros-tools/):
+  workflows for upstream AROS and AROS-NX.
+- [GitHub Releases](https://github.com/metaneutrons/aros-toolchains/releases):
+  the only canonical distribution channel for these archives.
+- [`toolchains/README.md`](toolchains/README.md): complete release and
+  recovery contract.
 
-The active three-host by three-profile A/B matrix is a release gate, not
-routine CI. It runs exactly once for an annotated `toolchain-v1-*` tag: each
-of the nine lanes produces two independent normalized archives, which must
-compare byte-for-byte before its compatibility checks and draft assembly
-proceed.
+## License
 
-Pull requests run the offline source, patch, MetaMake-closure, archive and
-relocation contracts. Manual producer dispatches are deliberately limited to
-the `linux-x86_64` or `linux` diagnostic tiers and never publish. They cannot
-select all active hosts. A complete manual A/B prequalification is therefore
-not a prerequisite for a tagged release and must not be repeated before one.
-
-Intel macOS qualification is fully suspended until the active matrix has
-produced its initial M7 release. The producer and archive schema retain
-`macos-x86_64` support, and the published historical four-host index remains
-valid, but no pull-request, manual, release, replay, or recovery workflow may
-select an Intel macOS runner. Reinstatement is explicitly tracked in
-[issue #27](https://github.com/metaneutrons/aros-toolchains/issues/27) and
-requires a separate three-profile A/B qualification.
-
-Rerun the full matrix only for a release tag, or after a failed release gate
-once the narrow cause has been corrected. A scheduled reproducibility audit
-may use the same tagged-equivalent matrix, but it is separate from ordinary
-changes and releases.
-
-See [the detailed release contract](toolchains/README.md) and
-[migration provenance](docs/migration-provenance.md).
+GPL-3.0-or-later. See [LICENSE](LICENSE).
