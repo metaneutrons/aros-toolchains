@@ -43,26 +43,28 @@ alter that identity.
 
 `compatibility-ports-v2.json` is the single source of truth for the separate
 upstream source closure exercised by native compatibility. It binds the exact
-AROS revision, each measured HTTPS input, and a minimal input selection for
-each target profile. An input records an identifier, cache filename, safe
-materialized path, URL, SHA-256 and byte size. The compatibility executor
+AROS revision and every measured external input reachable from the upstream
+`includes` and `linklibs` graphs for each active target profile. An input
+records an identifier, cache filename, safe materialized path, safe relative
+fetch-marker path, URL, SHA-256 and byte size. The compatibility executor
 refuses a source/profile mismatch, a changed input, undeclared files, network
 access, or a source root that has been modified after materialization.
 
 The lock is derived from the selected revision's `includes` and `linklibs`
 Make graphs. Every active profile requires the pinned Unicode data files:
-`includes` builds the common `genctbl` host tool before it reaches the
-profile-specific port graph. The cache may hold the complete reviewed union,
-but each compatibility lane receives only its selected profile closure.
-Consequently, an upstream dependency change must update the reviewed lock
-rather than being satisfied by an ambient download or a hidden pin.
+`includes` builds the common `genctbl` host tool before it reaches the port
+graph. The current revision reaches the sixteen reviewed Port archives in
+addition to those two Unicode files. Each lane receives exactly this explicit
+closure. Consequently, an upstream dependency change must update the reviewed
+lock rather than being satisfied by an ambient download or a hidden pin.
 
 Materialized payloads are read-only and their root is owner-private. The root
 remains writable solely for upstream `fetch.sh` to create and remove its
 transient lock and for the upstream Make rules to record explicitly declared
-empty `.fetched` markers. The executor removes those declared final markers
-before revalidation; any other residue or unexpected entry fails the lane. The
-measured host-tool closure includes `tar` with its `gzip` and `xz`
+empty `.fetched` markers, including the few markers below nested cache paths.
+The executor removes those declared final markers before revalidation; any
+other residue or unexpected entry fails the lane. The measured host-tool
+closure includes `tar` with its `gzip` and `xz`
 decompressors for the selected upstream archive-unpacking path, and `gsed`
 on macOS, where upstream configure explicitly requires GNU sed.
 
