@@ -48,6 +48,69 @@
       "size": 810029
     },
     {
+      "id": "codesets-6-22",
+      "cache_filename": "codesets-6.22.tar.gz",
+      "relative_path": "codesets/6.22.tar.gz",
+      "fetch_marker": "codesets/.6.22-fetched",
+      "url": "https://github.com/jens-maus/libcodesets/archive/refs/tags/6.22.tar.gz",
+      "sha256": "c4b11066b9c51c5670f69122efbdb1c58ddd69c4dbe1dcd480aac74577250cc1",
+      "size": 206125
+    },
+    {
+      "id": "expat-2-8-2",
+      "cache_filename": "expat-2.8.2.tar.bz2",
+      "relative_path": "expat-2.8.2.tar.bz2",
+      "fetch_marker": ".expat-2.8.2-fetched",
+      "url": "https://github.com/libexpat/libexpat/releases/download/R_2_8_2/expat-2.8.2.tar.bz2",
+      "sha256": "69e7f52417d85b1c2b7fe855e176eec55d0b2d7d92d691372d833a1c7df7923b",
+      "size": 660292
+    },
+    {
+      "id": "freetype-2-14-3",
+      "cache_filename": "freetype-2.14.3.tar.xz",
+      "relative_path": "freetype-2.14.3.tar.xz",
+      "fetch_marker": ".freetype-2.14.3-fetched",
+      "url": "https://download.savannah.gnu.org/releases/freetype/freetype-2.14.3.tar.xz",
+      "sha256": "36bc4f1cc413335368ee656c42afca65c5a3987e8768cc28cf11ba775e785a5f",
+      "size": 2670220
+    },
+    {
+      "id": "glu-9-0-2",
+      "cache_filename": "glu-9.0.2.tar.xz",
+      "relative_path": "glu-9.0.2.tar.xz",
+      "fetch_marker": ".glu-9.0.2-fetched",
+      "url": "https://archive.mesa3d.org/glu/glu-9.0.2.tar.xz",
+      "sha256": "6e7280ff585c6a1d9dfcdf2fca489251634b3377bfc33c29e4002466a38d02d4",
+      "size": 436176
+    },
+    {
+      "id": "jpeg-9f",
+      "cache_filename": "jpegsrc.v9f.tar.gz",
+      "relative_path": "jpegsrc.v9f.tar.gz",
+      "fetch_marker": ".jpegsrc.v9f-fetched",
+      "url": "https://ijg.org/files/jpegsrc.v9f.tar.gz",
+      "sha256": "04705c110cb2469caa79fb71fba3d7bf834914706e9641a4589485c1f832565b",
+      "size": 1081470
+    },
+    {
+      "id": "xz-5-8-3",
+      "cache_filename": "xz-5.8.3.tar.gz",
+      "relative_path": "xz-5.8.3.tar.gz",
+      "fetch_marker": ".xz-5.8.3-fetched",
+      "url": "https://tukaani.org/xz/xz-5.8.3.tar.gz",
+      "sha256": "3d3a1b973af218114f4f889bbaa2f4c037deaae0c8e815eec381c3d546b974a0",
+      "size": 2771455
+    },
+    {
+      "id": "mbedtls-3-6-7",
+      "cache_filename": "mbedtls-3.6.7.tar.bz2",
+      "relative_path": "mbedtls-3.6.7.tar.bz2",
+      "fetch_marker": ".mbedtls-3.6.7-fetched",
+      "url": "https://github.com/Mbed-TLS/mbedtls/releases/download/mbedtls-3.6.7/mbedtls-3.6.7.tar.bz2",
+      "sha256": "a7e8bcbec0e6f761b4af24f25677626b35f762f68eef79c08677a363212d11f6",
+      "size": 5473689
+    },
+    {
       "id": "mesa-20-0-8",
       "cache_filename": "mesa-20.0.8.tar.xz",
       "relative_path": "mesa-20.0.8.tar.xz",
@@ -55,6 +118,51 @@
       "url": "https://archive.mesa3d.org/older-versions/20.x/mesa-20.0.8.tar.xz",
       "sha256": "6cf0c010df89680f9b2bc6432ff01400031795e39bceda7535fa00af06740b6c",
       "size": 12360736
+    },
+    {
+      "id": "libpng-1-6-58",
+      "cache_filename": "libpng-1.6.58.tar.gz",
+      "relative_path": "libpng-1.6.58.tar.gz",
+      "fetch_marker": ".libpng-1.6.58-fetched",
+      "url": "https://download.sourceforge.net/libpng/libpng-1.6.58.tar.gz",
+      "sha256": "8c9b05b675ca7301a458df2c2e46f26e1d41ff36b8863f8c33530bc58c2e6225",
+      "size": 1582074
+    },
+    {
+      "id": "tiff-4-7-2",
+      "cache_filename": "tiff-4.7.2.tar.xz",
+      "relative_path": "tiff-4.7.2.tar.xz",
+      "fetch_marker": ".tiff-4.7.2-fetched",
+      "url": "https://download.osgeo.org/libtiff/tiff-4.7.2.tar.xz",
+      "sha256": "4996f0c4f93094719b1ca5c6279b20e588773ba8a247533e486416fb662ddb88",
+      "size": 2409652
+    },
+    {
+      "id": "utf8proc-2-11-3",
+      "cache_filename": "utf8proc-v2.11.3.tar.gz",
+      "relative_path": "utf8proc/v2.11.3.tar.gz",
+      "fetch_marker": "utf8proc/.v2.11.3-fetched",
+      "url": "https://github.com/JuliaStrings/utf8proc/archive/refs/tags/v2.11.3.tar.gz",
+      "sha256": "abfed50b6d4da51345713661370290f4f4747263ee73dc90356299dfc7990c78",
+      "size": 202535
+    },
+    {
+      "id": "chromium-zlib-da752eb2",
+      "cache_filename": "zlib.tar.gz",
+      "relative_path": "chromium-da752eb2a3660cf1bf8dac620f6380b89dd953a7/zlib.tar.gz",
+      "fetch_marker": "chromium-da752eb2a3660cf1bf8dac620f6380b89dd953a7/.zlib-fetched",
+      "url": "https://chromium.googlesource.com/chromium/src/+archive/da752eb2a3660cf1bf8dac620f6380b89dd953a7/third_party/zlib.tar.gz",
+      "sha256": "e38dc3344f96d660b0613b052ba8c31783e8d9a14a22d01b899021894e07800a",
+      "size": 620418
+    },
+    {
+      "id": "zstd-1-5-7",
+      "cache_filename": "zstd-1.5.7.tar.gz",
+      "relative_path": "zstd-1.5.7.tar.gz",
+      "fetch_marker": ".zstd-1.5.7-fetched",
+      "url": "https://github.com/facebook/zstd/releases/download/v1.5.7/zstd-1.5.7.tar.gz",
+      "sha256": "eb33e51f49a15e023950cd7825ca74a4a2b43db8354825ac24fc1b7ee09e6fa3",
+      "size": 2434947
     }
   ],
   "profiles": [
@@ -66,7 +174,19 @@
         "acpica-unix-20260408",
         "boost-1-89-0",
         "bzip2-1-0-8",
-        "mesa-20-0-8"
+        "codesets-6-22",
+        "expat-2-8-2",
+        "freetype-2-14-3",
+        "glu-9-0-2",
+        "jpeg-9f",
+        "xz-5-8-3",
+        "mbedtls-3-6-7",
+        "mesa-20-0-8",
+        "libpng-1-6-58",
+        "tiff-4-7-2",
+        "utf8proc-2-11-3",
+        "chromium-zlib-da752eb2",
+        "zstd-1-5-7"
       ]
     },
     {
@@ -77,7 +197,19 @@
         "acpica-unix-20260408",
         "boost-1-89-0",
         "bzip2-1-0-8",
-        "mesa-20-0-8"
+        "codesets-6-22",
+        "expat-2-8-2",
+        "freetype-2-14-3",
+        "glu-9-0-2",
+        "jpeg-9f",
+        "xz-5-8-3",
+        "mbedtls-3-6-7",
+        "mesa-20-0-8",
+        "libpng-1-6-58",
+        "tiff-4-7-2",
+        "utf8proc-2-11-3",
+        "chromium-zlib-da752eb2",
+        "zstd-1-5-7"
       ]
     },
     {
@@ -88,7 +220,19 @@
         "acpica-unix-20260408",
         "boost-1-89-0",
         "bzip2-1-0-8",
-        "mesa-20-0-8"
+        "codesets-6-22",
+        "expat-2-8-2",
+        "freetype-2-14-3",
+        "glu-9-0-2",
+        "jpeg-9f",
+        "xz-5-8-3",
+        "mbedtls-3-6-7",
+        "mesa-20-0-8",
+        "libpng-1-6-58",
+        "tiff-4-7-2",
+        "utf8proc-2-11-3",
+        "chromium-zlib-da752eb2",
+        "zstd-1-5-7"
       ]
     }
   ]
