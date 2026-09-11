@@ -50,6 +50,15 @@ fetch-marker path, URL, SHA-256 and byte size. The compatibility executor
 refuses a source/profile mismatch, a changed input, undeclared files, network
 access, or a source root that has been modified after materialization.
 
+Inputs use exact downloaded bytes unless their reviewed `normalization` field
+says otherwise. Chromium Gitiles documents that its archive metadata is not
+byte-stable even for an immutable commit. The one affected zlib input therefore
+uses `canonical-tar-gzip-v1`: the executor rejects unsafe archive entries,
+recreates a sorted gzip/tar tree with zeroed ownership and timestamps, and pins
+the measured canonical bytes. This is an explicit representation rule, not a
+hidden replacement pin; all other source locks continue to identify their
+direct HTTPS response bytes.
+
 The lock is derived from the selected revision's `includes` and `linklibs`
 Make graphs. Every active profile requires the pinned Unicode data files:
 `includes` builds the common `genctbl` host tool before it reaches the port
