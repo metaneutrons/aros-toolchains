@@ -44,13 +44,14 @@ concurrency:
 
 env:
   SOURCE_LOCK: toolchains/llvm-11.0.0.sources.json
+  COMPATIBILITY_PORTS_LOCK: toolchains/compatibility-ports-v1.json
   PROFILES: toolchains/profiles-v1.json
   LLVM_VERSION: 11.0.0
   PYTHONHASHSEED: "0"
   AROS_SOURCE_REPOSITORY: metaneutrons/AROS-NX
   AROS_SOURCE_COMMIT: f3cfc243a84065166a46da28b0a5b22bbd0f8869
   AROS_TOOLS_REPOSITORY: metaneutrons/aros-tools
-  AROS_TOOLS_COMMIT: 935adf11a4313110c0177ea8d153030c4b221deb
+  AROS_TOOLS_COMMIT: 28c79af6a22400b677e64ac804847432d0f870ad
 
 jobs:
   plan:
@@ -171,6 +172,14 @@ jobs:
             --source-lock "$GITHUB_WORKSPACE/$SOURCE_LOCK" \
             --cache-dir "$GITHUB_WORKSPACE/source-cache" \
             --offline
+          "${{ steps.native.outputs.aros }}" toolchain producer compatibility-ports \
+            --ports-lock "$GITHUB_WORKSPACE/$COMPATIBILITY_PORTS_LOCK" \
+            --cache-dir "$GITHUB_WORKSPACE/source-cache"
+          "${{ steps.native.outputs.aros }}" toolchain producer compatibility-ports \
+            --ports-lock "$GITHUB_WORKSPACE/$COMPATIBILITY_PORTS_LOCK" \
+            --cache-dir "$GITHUB_WORKSPACE/source-cache" \
+            --offline \
+            --verify-only
       - name: Vendor locked Rust collector sources
         run: |
           set -euo pipefail
@@ -449,13 +458,26 @@ jobs:
           host_tool_args=()
           while IFS= read -r role; do
             [[ -n "$role" ]] || continue
-            if [[ "$role" == make ]]; then
+            case "$role" in
+            make)
               program="$(type -P gmake || type -P make || true)"
-            else
+              ;;
+            # Upstream's Darwin configure logic derives these historical LLVM
+            # spellings from Apple Clang's `cc` suffix.  Bind both aliases to
+            # the same independently measured real binutils entries instead
+            # of reopening ambient PATH lookup inside the sealed child.
+            llvm-arcc)
+              program="$(type -P ar || true)"
+              ;;
+            llvm-ranlibcc)
+              program="$(type -P ranlib || true)"
+              ;;
+            *)
               # `command -v` returns a bare shell-builtin name for roles such
               # as echo or test. The closure requires an executable file.
               program="$(type -P "$role" || true)"
-            fi
+              ;;
+            esac
             if [[ "$program" != /* || ! -x "$program" ]]; then
               echo "compatibility qualification requires an absolute executable host tool for role '$role'" >&2
               exit 1
@@ -485,6 +507,9 @@ jobs:
             --upstream-source-dir "$GITHUB_WORKSPACE/dependencies/upstream-aros" \
             --upstream-build-dir "$work/upstream-build" \
             --python-cache-dir "$GITHUB_WORKSPACE/source-cache" \
+            --ports-lock "$GITHUB_WORKSPACE/$COMPATIBILITY_PORTS_LOCK" \
+            --ports-cache-dir "$GITHUB_WORKSPACE/source-cache" \
+            --ports-sources-dir "$work/ports-sources" \
             --python-environment-dir "$work/python" \
             --host-tools-dir "$work/host-tools" \
             "${host_tool_args[@]}" \
