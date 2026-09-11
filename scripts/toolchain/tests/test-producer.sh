@@ -409,6 +409,16 @@ if workflow.count("run-id: ${{ inputs.source_run_id }}") != 3:
     raise SystemExit("compatibility replay must source recipe, verified package, and locked sources from one run")
 if workflow.count("github-token: ${{ github.token }}") != 3:
     raise SystemExit("cross-run artifact downloads require the scoped GitHub token")
+if "  source-closure:\n" not in workflow:
+    raise SystemExit("compatibility replay must prepare one shared verified source closure before its matrix")
+if "    needs: source-closure\n" not in workflow:
+    raise SystemExit("every compatibility lane must wait for the shared verified source closure")
+if workflow.count("name: replay-verified-source-closure") != 2:
+    raise SystemExit("compatibility replay must publish and consume one uniquely named verified source closure")
+if "name: verified-toolchain-sources\n          path: source-cache\n          github-token: ${{ github.token }}\n          run-id: ${{ inputs.source_run_id }}" not in workflow:
+    raise SystemExit("the shared replay source closure must start from the named producer source artifact")
+if "name: replay-verified-source-closure\n          path: source-cache\n      - uses: ./.github/actions/setup-aros-rust" not in workflow:
+    raise SystemExit("compatibility lanes must consume the shared closure instead of fetching sources independently")
 if workflow.count("profile:") != 9:
     raise SystemExit("compatibility replay must cover the complete active nine-lane matrix")
 if workflow.count("bash dependencies/aros/scripts/ci/install-build-prerequisites.sh") != 1:
@@ -421,9 +431,9 @@ if workflow.count('host_tool_args=()') != 1 or workflow.count('"${host_tool_args
     raise SystemExit("compatibility replay must materialize and pass one complete measured host-tool closure")
 if workflow.count('type -P gmake || type -P make || true') != 1:
     raise SystemExit("compatibility replay must map the stable make role to an explicit host executable")
-if workflow.count('toolchain producer compatibility-ports') != 2:
-    raise SystemExit("compatibility replay must acquire and offline-verify the closed source inputs")
-if workflow.count('--ports-lock "$GITHUB_WORKSPACE/$COMPATIBILITY_PORTS_LOCK"') != 3:
+if workflow.count('toolchain producer compatibility-ports') != 3:
+    raise SystemExit("compatibility replay must acquire once and offline-verify its shared source closure before every lane")
+if workflow.count('--ports-lock "$GITHUB_WORKSPACE/$COMPATIBILITY_PORTS_LOCK"') != 4:
     raise SystemExit("compatibility replay must bind the same declared source-input lock at every stage")
 if workflow.count('--ports-cache-dir "$GITHUB_WORKSPACE/source-cache"') != 1:
     raise SystemExit("compatibility replay must materialize source inputs only from the verified cache")

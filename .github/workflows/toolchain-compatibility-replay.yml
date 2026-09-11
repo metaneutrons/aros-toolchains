@@ -23,7 +23,51 @@ env:
   AROS_TOOLS_COMMIT: 13d53059a4a809c1b7d23c8e9e580fbb3858704e
 
 jobs:
+  source-closure:
+    name: Verify one replay source closure
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ env.AROS_TOOLS_REPOSITORY }}
+          ref: ${{ env.AROS_TOOLS_COMMIT }}
+          path: dependencies/aros-tools
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: verified-toolchain-sources
+          path: source-cache
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.source_run_id }}
+      - uses: ./.github/actions/setup-aros-rust
+      - id: native
+        uses: ./.github/actions/build-aros-tools-native
+        with:
+          tools-dir: ${{ github.workspace }}/dependencies/aros-tools
+          target-dir: ${{ runner.temp }}/aros-tools-native
+      - name: Fetch and offline-verify the complete replay source closure
+        run: |
+          set -euo pipefail
+          "${{ steps.native.outputs.aros }}" toolchain producer compatibility-ports \
+            --ports-lock "$GITHUB_WORKSPACE/$COMPATIBILITY_PORTS_LOCK" \
+            --cache-dir "$GITHUB_WORKSPACE/source-cache"
+          "${{ steps.native.outputs.aros }}" toolchain producer compatibility-ports \
+            --ports-lock "$GITHUB_WORKSPACE/$COMPATIBILITY_PORTS_LOCK" \
+            --cache-dir "$GITHUB_WORKSPACE/source-cache" \
+            --offline \
+            --verify-only
+      - name: Preserve the verified replay source closure
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: replay-verified-source-closure
+          path: source-cache/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 7
+
   compatibility:
+    needs: source-closure
     strategy:
       fail-fast: false
       matrix:
@@ -65,22 +109,17 @@ jobs:
           run-id: ${{ inputs.source_run_id }}
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: verified-toolchain-sources
+          name: replay-verified-source-closure
           path: source-cache
-          github-token: ${{ github.token }}
-          run-id: ${{ inputs.source_run_id }}
       - uses: ./.github/actions/setup-aros-rust
       - id: native
         uses: ./.github/actions/build-aros-tools-native
         with:
           tools-dir: ${{ github.workspace }}/dependencies/aros-tools
           target-dir: ${{ runner.temp }}/aros-tools-native
-      - name: Fetch and verify exact upstream compatibility source inputs
+      - name: Offline-verify the replay source closure
         run: |
           set -euo pipefail
-          "${{ steps.native.outputs.aros }}" toolchain producer compatibility-ports \
-            --ports-lock "$GITHUB_WORKSPACE/$COMPATIBILITY_PORTS_LOCK" \
-            --cache-dir "$GITHUB_WORKSPACE/source-cache"
           "${{ steps.native.outputs.aros }}" toolchain producer compatibility-ports \
             --ports-lock "$GITHUB_WORKSPACE/$COMPATIBILITY_PORTS_LOCK" \
             --cache-dir "$GITHUB_WORKSPACE/source-cache" \
