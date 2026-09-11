@@ -202,6 +202,16 @@ if workflow.count('host_tool_args=()') != 1 or workflow.count('"${host_tool_args
     raise SystemExit("release compatibility must materialize and pass one complete measured host-tool closure")
 if workflow.count('type -P gmake || type -P make || true') != 1:
     raise SystemExit("release compatibility must map the stable make role to an explicit host executable")
+if workflow.count('toolchain producer compatibility-ports') != 2:
+    raise SystemExit("release must acquire and offline-verify the closed Unicode compatibility inputs")
+if workflow.count('--ports-lock "$GITHUB_WORKSPACE/$COMPATIBILITY_PORTS_LOCK"') != 3:
+    raise SystemExit("release compatibility must bind the same declared Unicode input lock at every stage")
+if workflow.count('--ports-cache-dir "$GITHUB_WORKSPACE/source-cache"') != 1:
+    raise SystemExit("release compatibility must materialize Unicode inputs only from the verified cache")
+if workflow.count('--ports-sources-dir "$work/ports-sources"') != 1:
+    raise SystemExit("release compatibility must pass one owned Unicode source directory to upstream")
+if workflow.count('type -P ar || true') != 1 or workflow.count('type -P ranlib || true') != 1:
+    raise SystemExit("release compatibility must seal Darwin ar and ranlib aliases from measured executables")
 if 'host_cc_program=' in workflow or '--host-tool "cc=$host_cc_program"' in workflow:
     raise SystemExit("release compatibility must not retain the incomplete three-tool closure")
 if "name: native-lifecycle-${{ matrix.host }}-${{ matrix.profile }}-${{ matrix.copy }}" not in workflow:
@@ -228,6 +238,16 @@ if workflow.count('host_tool_args=()') != 1 or workflow.count('"${host_tool_args
     raise SystemExit("compatibility replay must materialize and pass one complete measured host-tool closure")
 if workflow.count('type -P gmake || type -P make || true') != 1:
     raise SystemExit("compatibility replay must map the stable make role to an explicit host executable")
+if workflow.count('toolchain producer compatibility-ports') != 2:
+    raise SystemExit("compatibility replay must acquire and offline-verify the closed Unicode inputs")
+if workflow.count('--ports-lock "$GITHUB_WORKSPACE/$COMPATIBILITY_PORTS_LOCK"') != 3:
+    raise SystemExit("compatibility replay must bind the same declared Unicode input lock at every stage")
+if workflow.count('--ports-cache-dir "$GITHUB_WORKSPACE/source-cache"') != 1:
+    raise SystemExit("compatibility replay must materialize Unicode inputs only from the verified cache")
+if workflow.count('--ports-sources-dir "$work/ports-sources"') != 1:
+    raise SystemExit("compatibility replay must pass one owned Unicode source directory to upstream")
+if workflow.count('type -P ar || true') != 1 or workflow.count('type -P ranlib || true') != 1:
+    raise SystemExit("compatibility replay must seal Darwin ar and ranlib aliases from measured executables")
 if 'host_cc_program=' in workflow or '--host-tool "cc=$host_cc_program"' in workflow:
     raise SystemExit("compatibility replay must not retain the incomplete three-tool closure")
 PY

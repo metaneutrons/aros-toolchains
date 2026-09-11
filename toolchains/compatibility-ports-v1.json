@@ -1,0 +1,18 @@
+{
+  "schema": "aros-toolchain-compatibility-ports-v1",
+  "unicode_version": "16.0.0",
+  "inputs": [
+    {
+      "filename": "UnicodeData.txt",
+      "url": "https://www.unicode.org/Public/16.0.0/ucd/UnicodeData.txt",
+      "sha256": "ff58e5823bd095166564a006e47d111130813dcf8bf234ef79fa51a870edb48f",
+      "size": 2175362
+    },
+    {
+      "filename": "SpecialCasing.txt",
+      "url": "https://www.unicode.org/Public/16.0.0/ucd/SpecialCasing.txt",
+      "sha256": "8d5de354eef79f2395a54c9c7dcebbaf3d30fc962d0f85611ea97aa973a0c451",
+      "size": 16809
+    }
+  ]
+}
