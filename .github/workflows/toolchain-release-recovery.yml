@@ -38,7 +38,7 @@ env:
   SOURCE_LOCK: toolchains/llvm-11.0.0.sources.json
   PROFILES: toolchains/profiles-v1.json
   AROS_TOOLS_REPOSITORY: metaneutrons/aros-tools
-  AROS_TOOLS_COMMIT: d1d7be127425ddb16e6881243aaf28f0090b3e48
+  AROS_TOOLS_COMMIT: 253c11a52af6c4eff8d0e3db2ea2d33b740bef79
 
 jobs:
   recover:
