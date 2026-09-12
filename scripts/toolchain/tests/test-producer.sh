@@ -114,7 +114,7 @@ expected_ports_inputs = {
         "freetype-2.14.3.tar.xz",
         "freetype-2.14.3.tar.xz",
         ".freetype-2.14.3-fetched",
-        "https://download.savannah.gnu.org/releases/freetype/freetype-2.14.3.tar.xz",
+        "https://download-mirror.savannah.gnu.org/releases/freetype/freetype-2.14.3.tar.xz",
         "36bc4f1cc413335368ee656c42afca65c5a3987e8768cc28cf11ba775e785a5f",
         2670220,
     ),
@@ -413,6 +413,51 @@ if 'host_cc_program=' in workflow or '--host-tool "cc=$host_cc_program"' in work
     raise SystemExit("release compatibility must not retain the incomplete three-tool closure")
 if "name: native-lifecycle-${{ matrix.host }}-${{ matrix.profile }}-${{ matrix.copy }}" not in workflow:
     raise SystemExit("each producer must retain native lifecycle receipts outside the release archive")
+PY
+python3 - "$AROS_TEST_SOURCE_ROOT" \
+    "$source_root/toolchains/compatibility-ports-v2.json" \
+    "$source_root/.github/workflows/ci.yml" \
+    "$source_root/.github/workflows/toolchain-release.yml" \
+    "$source_root/.github/workflows/toolchain-compatibility-replay.yml" <<'PY'
+import json
+from pathlib import Path
+import re
+import subprocess
+import sys
+
+aros_source = Path(sys.argv[1]).resolve()
+ports_lock = Path(sys.argv[2])
+workflows = [Path(item) for item in sys.argv[3:]]
+if not aros_source.is_dir() or aros_source.is_symlink():
+    raise SystemExit("AROS source contract checkout must be a regular directory")
+source_commit = subprocess.check_output(
+    ["git", "-C", str(aros_source), "rev-parse", "HEAD"], text=True
+).strip()
+if re.fullmatch(r"[0-9a-f]{40}", source_commit) is None:
+    raise SystemExit("AROS source contract checkout must resolve to a full Git commit")
+
+freetype_recipe = aros_source / "workbench/libs/freetype2/mmakefile.src"
+if not freetype_recipe.is_file() or freetype_recipe.is_symlink():
+    raise SystemExit("AROS source contract must provide the regular Freetype recipe")
+expected_origin = "https://download-mirror.savannah.gnu.org/releases/freetype"
+recipe_origins = re.findall(
+    r"^\s*(https://[^\s]+)\s*$", freetype_recipe.read_text(encoding="utf-8"), re.MULTILINE
+)
+if recipe_origins != [expected_origin]:
+    raise SystemExit("AROS Freetype recipe must declare exactly the verified Savannah mirror")
+
+lock = json.loads(ports_lock.read_text(encoding="utf-8"))
+freetype = next((item for item in lock.get("inputs", []) if item.get("id") == "freetype-2-14-3"), None)
+if freetype is None:
+    raise SystemExit("compatibility source-input lock must retain the Freetype input")
+if freetype.get("url") != f"{expected_origin}/freetype-2.14.3.tar.xz":
+    raise SystemExit("Freetype lock URL must derive from the pinned AROS source recipe")
+
+for workflow_path in workflows:
+    workflow = workflow_path.read_text(encoding="utf-8")
+    match = re.search(r"^  AROS_SOURCE_COMMIT: ([0-9a-f]{40})$", workflow, re.MULTILINE)
+    if match is None or match.group(1) != source_commit:
+        raise SystemExit(f"{workflow_path.name} must pin the checked-out AROS source contract")
 PY
 python3 - "$source_root/.github/workflows/toolchain-compatibility-replay.yml" <<'PY'
 from pathlib import Path
