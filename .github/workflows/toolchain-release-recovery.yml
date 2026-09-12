@@ -155,13 +155,15 @@ jobs:
             echo "recovery release already exists; refusing to replace assets" >&2
             exit 1
           fi
-          gh attestation verify "$GITHUB_WORKSPACE/source-release/SHA256SUMS" \
-            --repo "$GITHUB_REPOSITORY" \
+          "$GITHUB_WORKSPACE/scripts/toolchain/verify-provenance-attestation.sh" \
+            --checksums "$GITHUB_WORKSPACE/source-release/SHA256SUMS" \
+            --bundle "$GITHUB_WORKSPACE/source-release/toolchain-provenance.sigstore.json" \
+            --exclude-subject toolchain-provenance.sigstore.json \
+            --repository "$GITHUB_REPOSITORY" \
             --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/toolchain-release.yml" \
             --source-digest "$source_tag_commit" \
             --source-ref "refs/tags/$SOURCE_TAG" \
-            --format json > "$RUNNER_TEMP/verified-source-attestation.json"
-          test -s "$RUNNER_TEMP/verified-source-attestation.json"
+            --output "$RUNNER_TEMP/verified-source-attestation.json"
           now=$(date -u +%s)
           mkdir -p "$RUNNER_TEMP/recovery"
           "${{ steps.native.outputs.aros }}" toolchain producer prepare-recovery \
@@ -249,6 +251,21 @@ jobs:
         with:
           subject-checksums: release/SHA256SUMS
 
+      - name: Verify signed recovered pre-attestation inventory
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PROVENANCE_BUNDLE: ${{ steps.provenance.outputs.bundle-path }}
+        run: |
+          set -euo pipefail
+          "$GITHUB_WORKSPACE/scripts/toolchain/verify-provenance-attestation.sh" \
+            --checksums "$GITHUB_WORKSPACE/release/SHA256SUMS" \
+            --bundle "$PROVENANCE_BUNDLE" \
+            --repository "$GITHUB_REPOSITORY" \
+            --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/toolchain-release-recovery.yml" \
+            --source-digest "$GITHUB_SHA" \
+            --source-ref "$GITHUB_REF" \
+            --output "$RUNNER_TEMP/verified-recovery-attestation.json"
+
       - name: Include provenance and enforce the final native inventory
         env:
           PROVENANCE_BUNDLE: ${{ steps.provenance.outputs.bundle-path }}
@@ -271,6 +288,7 @@ jobs:
           RELEASE_TAG: ${{ inputs.release_tag }}
         run: |
           set -euo pipefail
+          test -s "$RUNNER_TEMP/verified-recovery-attestation.json"
           mapfile -d '' assets < <(find release -mindepth 1 -maxdepth 1 -type f -print0 | sort -z)
           if [[ ${#assets[@]} -ne 44 ]]; then
             echo "active three-host release inventory must contain exactly 44 regular files, found ${#assets[@]}" >&2

@@ -611,6 +611,27 @@ jobs:
         uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373
         with:
           subject-checksums: release/SHA256SUMS
+
+      - name: Verify signed pre-attestation inventory
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PROVENANCE_BUNDLE: ${{ steps.provenance.outputs.bundle-path }}
+        run: |
+          set -euo pipefail
+          if [[ $(git cat-file -t "$GITHUB_REF_NAME") != tag ]]; then
+            echo "producer release tag must be annotated" >&2
+            exit 1
+          fi
+          source_tag_commit=$(git rev-list -n 1 "$GITHUB_REF_NAME")
+          "$GITHUB_WORKSPACE/scripts/toolchain/verify-provenance-attestation.sh" \
+            --checksums "$GITHUB_WORKSPACE/release/SHA256SUMS" \
+            --bundle "$PROVENANCE_BUNDLE" \
+            --repository "$GITHUB_REPOSITORY" \
+            --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/toolchain-release.yml" \
+            --source-digest "$source_tag_commit" \
+            --source-ref "refs/tags/$GITHUB_REF_NAME" \
+            --output "$RUNNER_TEMP/verified-pre-attestation.json"
+
       - name: Include provenance bundle and refresh checksums
         env:
           PROVENANCE_BUNDLE: ${{ steps.provenance.outputs.bundle-path }}
@@ -623,9 +644,7 @@ jobs:
             --base-url "https://github.com/$GITHUB_REPOSITORY/releases/download/$GITHUB_REF_NAME" \
             --source-lock-filename "$(basename "$SOURCE_LOCK")" \
             --stage final
-      - name: Verify attestation and record closed qualification evidence
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: Record closed qualification evidence
         run: |
           set -euo pipefail
           if [[ $(git cat-file -t "$GITHUB_REF_NAME") != tag ]]; then
@@ -634,13 +653,7 @@ jobs:
           fi
           source_tag_object=$(git rev-parse "$GITHUB_REF_NAME^{tag}")
           source_tag_commit=$(git rev-list -n 1 "$GITHUB_REF_NAME")
-          gh attestation verify "$GITHUB_WORKSPACE/release/SHA256SUMS" \
-            --repo "$GITHUB_REPOSITORY" \
-            --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/toolchain-release.yml" \
-            --source-digest "$source_tag_commit" \
-            --source-ref "refs/tags/$GITHUB_REF_NAME" \
-            --format json > "$RUNNER_TEMP/verified-attestation.json"
-          test -s "$RUNNER_TEMP/verified-attestation.json"
+          test -s "$RUNNER_TEMP/verified-pre-attestation.json"
           now=$(date -u +%s)
           expires_at=$((now + 604800))
           mkdir -p "$RUNNER_TEMP/qualification"
