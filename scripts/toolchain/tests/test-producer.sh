@@ -35,6 +35,9 @@ grep -Fq -- '-ffreestanding -fno-exceptions' "$source_root/scripts/toolchain/com
 grep -Fq -- '${target_float_flag:+"$target_float_flag"}' "$source_root/scripts/toolchain/compatibility.sh"
 grep -Fq -- 'env ac_cv_prog_cc_c23=' "$source_root/scripts/toolchain/compatibility.sh"
 grep -Fq -- '--python-cache-dir "$GITHUB_WORKSPACE/source-cache"' "$source_root/.github/workflows/toolchain-release.yml"
+provenance_verifier="$source_root/scripts/toolchain/verify-provenance-attestation.sh"
+[[ -f "$provenance_verifier" && ! -L "$provenance_verifier" ]]
+bash -n "$provenance_verifier"
 python3 - "$source_root/.github/workflows/toolchain-release.yml" \
     "$source_root/.github/workflows/toolchain-release-recovery.yml" \
     "$source_root/.github/workflows/toolchain-compatibility-replay.yml" <<'PY'
@@ -274,7 +277,7 @@ if workflow.count('"${assets[@]}"') != 1 or recovery.count('"${assets[@]}"') != 
 for required in (
     "qualified-final-release",
     "qualification-evidence",
-    "gh attestation verify",
+    "verify-provenance-attestation.sh",
     "prepare-recovery",
     "validate-recovery",
     "toolchain producer repackage",
@@ -287,6 +290,17 @@ for required in (
 ):
     if required not in recovery:
         raise SystemExit(f"recovery workflow lost fail-closed contract: {required}")
+if workflow.count("verify-provenance-attestation.sh") != 1:
+    raise SystemExit("producer draft must verify the complete signed pre-attestation inventory once")
+if recovery.count("verify-provenance-attestation.sh") != 2:
+    raise SystemExit("recovery must verify both source and recovered signed inventories")
+if "--exclude-subject toolchain-provenance.sigstore.json" not in recovery:
+    raise SystemExit("recovery must exclude only the self-referential provenance bundle from signed subjects")
+if "gh attestation verify" in workflow or "gh attestation verify" in recovery:
+    raise SystemExit("workflows must verify the retained provenance bundle offline, not an unrelated final checksum document")
+for candidate in (workflow, recovery):
+    if candidate.count("subject-checksums: release/SHA256SUMS") != 1:
+        raise SystemExit("each release assembly must attest exactly its pre-attestation checksum inventory")
 for forbidden in (
     "producer.py", "build-release.sh", "compatibility.sh", "offline-fetch.py", "host-python-env.py",
     'git push origin "refs/tags/$RELEASE_TAG"',
@@ -547,6 +561,56 @@ case "$temporary" in
     *) echo "refusing unsafe temporary directory: $temporary" >&2; exit 1 ;;
 esac
 trap 'rm -rf "$temporary"' EXIT
+
+mkdir -p "$temporary/provenance-inventory" "$temporary/provenance-bin"
+printf '%s\n' 'first attested payload' > "$temporary/provenance-inventory/first.bin"
+printf '%s\n' 'second attested payload' > "$temporary/provenance-inventory/second.json"
+printf '%s\n' 'retained provenance bundle' > "$temporary/provenance-inventory/toolchain-provenance.sigstore.json"
+first_digest=$(shasum -a 256 "$temporary/provenance-inventory/first.bin" | awk '{print $1}')
+second_digest=$(shasum -a 256 "$temporary/provenance-inventory/second.json" | awk '{print $1}')
+bundle_digest=$(shasum -a 256 "$temporary/provenance-inventory/toolchain-provenance.sigstore.json" | awk '{print $1}')
+printf '%s  %s\n' "$first_digest" first.bin > "$temporary/provenance-inventory/SHA256SUMS"
+printf '%s  %s\n' "$second_digest" second.json >> "$temporary/provenance-inventory/SHA256SUMS"
+printf '%s  %s\n' "$bundle_digest" toolchain-provenance.sigstore.json >> "$temporary/provenance-inventory/SHA256SUMS"
+jq -n --arg first "$first_digest" --arg second "$second_digest" '
+    [{verificationResult: {statement: {subject: [
+        {name: "first.bin", digest: {sha256: $first}},
+        {name: "second.json", digest: {sha256: $second}}
+    ]}}}]
+' > "$temporary/provenance-response.json"
+printf '%s\n' '{}' > "$temporary/provenance-bundle.json"
+cat > "$temporary/provenance-bin/gh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+[[ "$1" == attestation && "$2" == verify ]]
+cat "$FAKE_GH_ATTESTATION_RESPONSE"
+EOF
+chmod +x "$temporary/provenance-bin/gh"
+FAKE_GH_ATTESTATION_RESPONSE="$temporary/provenance-response.json" \
+PATH="$temporary/provenance-bin:$PATH" \
+"$provenance_verifier" \
+    --checksums "$temporary/provenance-inventory/SHA256SUMS" \
+    --bundle "$temporary/provenance-bundle.json" \
+    --exclude-subject toolchain-provenance.sigstore.json \
+    --repository metaneutrons/aros-toolchains \
+    --signer-workflow metaneutrons/aros-toolchains/.github/workflows/toolchain-release.yml \
+    --source-digest 0123456789abcdef0123456789abcdef01234567 \
+    --source-ref refs/tags/toolchain-v1-fixture \
+    --output "$temporary/verified-provenance.json" >/dev/null
+jq -e 'type == "array" and length == 1' "$temporary/verified-provenance.json" >/dev/null
+if FAKE_GH_ATTESTATION_RESPONSE="$temporary/provenance-response.json" \
+    PATH="$temporary/provenance-bin:$PATH" \
+    "$provenance_verifier" \
+        --checksums "$temporary/provenance-inventory/SHA256SUMS" \
+        --bundle "$temporary/provenance-bundle.json" \
+        --repository metaneutrons/aros-toolchains \
+        --signer-workflow metaneutrons/aros-toolchains/.github/workflows/toolchain-release.yml \
+        --source-digest 0123456789abcdef0123456789abcdef01234567 \
+        --source-ref refs/tags/toolchain-v1-fixture \
+        --output "$temporary/unexpected-provenance.json" >/dev/null 2>&1; then
+    echo "provenance verifier accepted a final checksum inventory without excluding its bundle" >&2
+    exit 1
+fi
 
 mkdir -p "$temporary/checkout"
 git -C "$temporary/checkout" init -q

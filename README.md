@@ -82,7 +82,9 @@ by three-profile publication inventory.
 - relocation and compatibility against both pinned AROS-NX and vanilla AROS;
 - exactly 9 archives, manifests, checksum sidecars, and SBOMs;
 - complete index and `SHA256SUMS`;
-- fresh provenance for the exact repository and tag;
+- fresh provenance for the exact repository and tag, with the signed
+  pre-attestation inventory verified offline and the retained bundle bound by
+  the final checksum inventory;
 - immutable annotated tags, with no retargeting or asset replacement.
 
 ## Qualification execution policy

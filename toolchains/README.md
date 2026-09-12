@@ -113,6 +113,18 @@ archive and tree digests, extraction depth, capabilities expressed as required
 paths, and host/profile/triple identity are publish-gated rather than copied
 into a separate hand-maintained download lock.
 
+### Provenance boundary
+
+The pre-attestation `SHA256SUMS` inventory lists the 42 payload, manifest,
+SBOM, support, and index subjects signed by GitHub/Sigstore. The final inventory
+then adds `toolchain-provenance.sigstore.json` and checksums that retained bundle
+as its 43rd subject. A signature cannot safely include its own bundle without a
+recursive hash dependency. The producer and recovery workflows therefore verify
+the signed pre-attestation inventory offline with
+`scripts/toolchain/verify-provenance-attestation.sh`; the final inventory binds
+the bundle itself. Reviewers use the same two-layer check rather than treating
+the final `SHA256SUMS` file as an attestation subject.
+
 ## Review and promote a draft
 
 1. Download the complete draft and verify every entry in `SHA256SUMS`, the
