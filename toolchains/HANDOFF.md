@@ -37,17 +37,15 @@ retarget, publish, or reuse them.
 
 ## Consumer promotion
 
-AROS-NX [PR #30](https://github.com/metaneutrons/AROS-NX/pull/30) contains the
-measured RC8 lock promotion. It activates only the nine qualified artifacts,
-suspends the three Intel macOS profiles pending
+AROS-NX [PR #30](https://github.com/metaneutrons/AROS-NX/pull/30) merged as
+`c6bbff066c31171d8ba7320a72060b7e5c5f1318` and contains the measured RC8 lock
+promotion. It activates only the nine qualified artifacts, suspends the three
+Intel macOS profiles pending
 [aros-toolchains#27](https://github.com/metaneutrons/aros-toolchains/issues/27),
 and preserves the four disabled RISC-V declarations. A fresh macOS AArch64
 store passed `aros toolchain list`, online install, verification, and offline
 re-install for all three active profiles. The exact lock commit is
 `f5f968973d`.
-
-Merge that narrow consumer-lock change normally. Do not alter the RC8 release
-or replace its measured values while doing so.
 
 ## Resume safely
 
