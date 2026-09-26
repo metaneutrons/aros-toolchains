@@ -17,6 +17,7 @@ from pathlib import Path
 import json
 import re
 import sys
+import tomllib
 
 workflow_path = Path(sys.argv[1])
 source_root = workflow_path.parents[2]
@@ -30,6 +31,27 @@ def fail(message: str) -> None:
 executor = source_root / "toolchains/producer-executor-v1.toml"
 if not executor.is_file() or executor.is_symlink():
     fail("native toolchain plan requires one regular producer executor contract")
+runtime_lock = json.loads(
+    (source_root / "toolchains/aros-tools-runtime-v1.json").read_text(encoding="utf-8")
+)
+executor_record = tomllib.loads(executor.read_text(encoding="utf-8"))
+
+
+def require_runtime_binding(declaration: dict, runtime: dict) -> None:
+    if declaration.get("tools_commit") != runtime.get("source_commit"):
+        fail("native executor tools commit must match the released runtime source commit")
+
+
+require_runtime_binding(executor_record, runtime_lock)
+bad_executor = dict(executor_record)
+bad_executor["tools_commit"] = "0" * 40
+try:
+    require_runtime_binding(bad_executor, runtime_lock)
+except SystemExit as error:
+    if str(error) != "native executor tools commit must match the released runtime source commit":
+        raise
+else:
+    fail("native executor runtime binding accepted a mismatched tools commit")
 
 release_please = (source_root / ".github/workflows/release-please.yml").read_text(
     encoding="utf-8"
