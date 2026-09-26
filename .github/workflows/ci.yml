@@ -20,6 +20,31 @@ env:
   PYTHONHASHSEED: '0'
 
 jobs:
+  source-diagnostic:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - id: runtime
+        uses: ./.github/actions/materialize-aros-tools-runtime
+        with:
+          host: linux-x86_64
+          destination: ${{ runner.temp }}/aros-tools-runtime
+      - name: Identify the first missing compatibility source after fetch
+        run: |
+          set -euo pipefail
+          cache="$RUNNER_TEMP/source-diagnostic"
+          mkdir -p "$cache"
+          aros="${{ steps.runtime.outputs.root }}/bin/aros"
+          selector="$GITHUB_WORKSPACE/toolchains/compatibility-ports-v2.json"
+          if "$aros" cache sources fetch --compatibility-ports-lock "$selector" --dir "$cache"; then
+            result=0
+          else
+            result=$?
+          fi
+          "$aros" cache sources list --compatibility-ports-lock "$selector" --dir "$cache" --format json |
+            jq -r '.entries[] | [.role, .state, .filename] | @tsv'
+          exit "$result"
   contracts:
     runs-on: ubuntu-24.04
     steps:
