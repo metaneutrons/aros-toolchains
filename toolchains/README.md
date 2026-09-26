@@ -51,7 +51,7 @@ only that closure. The lock is committed source material and therefore covered
 by the producer tag provenance; its source commit and tree are recorded in the
 recipe as `tools_commit` and `tools_tree`.
 
-The release lock selects `aros-tools` v0.3.9. The workflow materialises the
+The release lock selects `aros-tools` v0.3.12. The workflow materialises the
 host-matched signed binary for CLI execution and separately checks out the exact
 locked source commit and Git tree. That source checkout supplies the native
 source/collector code and Cargo metadata; it is verified clean and is never
