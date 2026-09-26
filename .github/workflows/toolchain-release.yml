@@ -228,9 +228,24 @@ jobs:
           "${{ steps.runtime.outputs.root }}/bin/aros" cache sources verify \
             --source-lock "$GITHUB_WORKSPACE/$SOURCE_LOCK" \
             --dir "$GITHUB_WORKSPACE/source-cache"
-          "${{ steps.runtime.outputs.root }}/bin/aros" cache sources fetch \
-            --compatibility-ports-lock "$GITHUB_WORKSPACE/$COMPATIBILITY_PORTS_LOCK" \
-            --dir "$GITHUB_WORKSPACE/source-cache"
+          for attempt in 1 2 3; do
+            if "${{ steps.runtime.outputs.root }}/bin/aros" cache sources fetch \
+              --compatibility-ports-lock "$GITHUB_WORKSPACE/$COMPATIBILITY_PORTS_LOCK" \
+              --dir "$GITHUB_WORKSPACE/source-cache"; then
+              break
+            fi
+            echo "compatibility source fetch attempt $attempt/3 failed; incomplete cache entries (metadata only):" >&2
+            "${{ steps.runtime.outputs.root }}/bin/aros" cache sources list \
+              --compatibility-ports-lock "$GITHUB_WORKSPACE/$COMPATIBILITY_PORTS_LOCK" \
+              --dir "$GITHUB_WORKSPACE/source-cache" \
+              --format json |
+              jq -r '.entries[] | select(.state != "present_unverified") | [.role, .state, .filename] | @tsv' >&2
+            if [[ "$attempt" -eq 3 ]]; then
+              echo 'compatibility source fetch exhausted three bounded attempts' >&2
+              exit 1
+            fi
+            sleep "$((attempt * 10))"
+          done
           "${{ steps.runtime.outputs.root }}/bin/aros" cache sources fetch \
             --compatibility-ports-lock "$GITHUB_WORKSPACE/$COMPATIBILITY_PORTS_LOCK" \
             --dir "$GITHUB_WORKSPACE/source-cache" \
