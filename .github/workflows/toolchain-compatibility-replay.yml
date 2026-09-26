@@ -1,0 +1,244 @@
+name: AROS Toolchain Compatibility Replay
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_run_id:
+        description: Completed producer run containing verified native package artifacts
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+  attestations: read
+
+env:
+  LLVM_VERSION: 11.0.0
+  PROFILES: toolchains/profiles-v1.json
+  SOURCE_LOCK: toolchains/llvm-11.0.0.sources.json
+  COMPATIBILITY_PORTS_LOCK: toolchains/compatibility-ports-v2.json
+  AROS_SOURCE_REPOSITORY: metaneutrons/AROS-NX
+  AROS_SOURCE_COMMIT: 9369cc8f8ba4f7d320945c78788c6e2a6d0d1eab
+  TOOLS_RUNTIME_LOCK: toolchains/aros-tools-runtime-v1.json
+
+jobs:
+  source-closure:
+    name: Verify one replay source closure
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: verified-toolchain-sources
+          path: source-cache
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.source_run_id }}
+      - id: runtime
+        uses: ./.github/actions/materialize-aros-tools-runtime
+        with:
+          host: linux-x86_64
+          destination: ${{ runner.temp }}/aros-tools-runtime
+      - name: Fetch and offline-verify the complete replay source closure
+        run: |
+          set -euo pipefail
+          "${{ steps.runtime.outputs.root }}/bin/aros" cache sources fetch \
+            --source-lock "$GITHUB_WORKSPACE/$SOURCE_LOCK" \
+            --dir "$GITHUB_WORKSPACE/source-cache" \
+            --offline
+          "${{ steps.runtime.outputs.root }}/bin/aros" cache sources verify \
+            --source-lock "$GITHUB_WORKSPACE/$SOURCE_LOCK" \
+            --dir "$GITHUB_WORKSPACE/source-cache"
+          "${{ steps.runtime.outputs.root }}/bin/aros" cache sources fetch \
+            --compatibility-ports-lock "$GITHUB_WORKSPACE/$COMPATIBILITY_PORTS_LOCK" \
+            --dir "$GITHUB_WORKSPACE/source-cache" \
+            --offline
+          "${{ steps.runtime.outputs.root }}/bin/aros" cache sources verify \
+            --compatibility-ports-lock "$GITHUB_WORKSPACE/$COMPATIBILITY_PORTS_LOCK" \
+            --dir "$GITHUB_WORKSPACE/source-cache"
+      - name: Preserve the verified replay source closure
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: replay-verified-source-closure
+          path: source-cache/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 7
+
+  compatibility:
+    needs: source-closure
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { host: linux-x86_64, runner: ubuntu-24.04, profile: pc-x86_64 }
+          - { host: linux-x86_64, runner: ubuntu-24.04, profile: arm-raspi }
+          - { host: linux-x86_64, runner: ubuntu-24.04, profile: rpi-aarch64 }
+          - { host: linux-aarch64, runner: ubuntu-24.04-arm, profile: pc-x86_64 }
+          - { host: linux-aarch64, runner: ubuntu-24.04-arm, profile: arm-raspi }
+          - { host: linux-aarch64, runner: ubuntu-24.04-arm, profile: rpi-aarch64 }
+          - { host: macos-aarch64, runner: macos-15, profile: pc-x86_64 }
+          - { host: macos-aarch64, runner: macos-15, profile: arm-raspi }
+          - { host: macos-aarch64, runner: macos-15, profile: rpi-aarch64 }
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/checkout-pinned-recursive-source
+        with:
+          repository: ${{ env.AROS_SOURCE_REPOSITORY }}
+          ref: ${{ env.AROS_SOURCE_COMMIT }}
+          path: dependencies/aros
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: toolchain-recipe
+          path: producer-input
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.source_run_id }}
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: verified-${{ matrix.host }}-${{ matrix.profile }}
+          path: verified
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.source_run_id }}
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: replay-verified-source-closure
+          path: source-cache
+      - id: runtime
+        uses: ./.github/actions/materialize-aros-tools-runtime
+        with:
+          host: ${{ matrix.host }}
+          destination: ${{ runner.temp }}/aros-tools-runtime
+      - name: Offline-verify the replay source closure
+        run: |
+          set -euo pipefail
+          "${{ steps.runtime.outputs.root }}/bin/aros" cache sources verify \
+            --source-lock "$GITHUB_WORKSPACE/$SOURCE_LOCK" \
+            --dir "$GITHUB_WORKSPACE/source-cache"
+          "${{ steps.runtime.outputs.root }}/bin/aros" cache sources verify \
+            --compatibility-ports-lock "$GITHUB_WORKSPACE/$COMPATIBILITY_PORTS_LOCK" \
+            --dir "$GITHUB_WORKSPACE/source-cache"
+      - id: profile
+        name: Select the recipe-bound upstream source
+        run: |
+          set -euo pipefail
+          profile="$("${{ steps.runtime.outputs.root }}/bin/aros" toolchain producer profile \
+            --recipe "$GITHUB_WORKSPACE/producer-input/recipe.json" \
+            --profiles "$GITHUB_WORKSPACE/$PROFILES" \
+            --preset "${{ matrix.profile }}" \
+            --format json)"
+          printf 'upstream_commit=%s\n' "$(jq -er '.upstream_commit' <<< "$profile")" >> "$GITHUB_OUTPUT"
+      - uses: ./.github/actions/checkout-pinned-recursive-source
+        with:
+          repository: aros-development-team/AROS
+          ref: ${{ steps.profile.outputs.upstream_commit }}
+          fetch-depth: 1
+          path: dependencies/upstream-aros
+      - uses: ./.github/actions/disable-google-chrome-apt-source
+        if: runner.os == 'Linux'
+      - name: Install audited consumer prerequisites
+        run: bash dependencies/aros/scripts/ci/install-build-prerequisites.sh
+      - name: Execute the six-phase native compatibility replay
+        run: |
+          set -euo pipefail
+          asset="aros-toolchain-v1-llvm${LLVM_VERSION}-${{ matrix.host }}-${{ matrix.profile }}.tar.xz"
+          manifest="$GITHUB_WORKSPACE/verified/$asset.manifest.json"
+          release_id="$(jq -er '.release_id' "$manifest")"
+          work="$RUNNER_TEMP/native-compatibility-${{ matrix.host }}-${{ matrix.profile }}"
+          environment="$RUNNER_TEMP/compatibility-environment-${{ matrix.host }}-${{ matrix.profile }}.json"
+          mkdir -p "$work/engine-work"
+          aros="${{ steps.runtime.outputs.root }}/bin/aros"
+          "$aros" toolchain producer environment \
+            --host "${{ matrix.host }}" \
+            --output "$environment"
+          "$aros" toolchain producer materialize-engine-free-source \
+            --source-dir "$GITHUB_WORKSPACE/dependencies/aros" \
+            --recipe "$GITHUB_WORKSPACE/producer-input/recipe.json" \
+            --output-dir "$work/engine-free-source"
+          # Keep replay on the exact executor-owned command-role contract
+          # used by the release path. Every command is independently measured
+          # and the child PATH is the resulting private closure, never an
+          # ambient runner directory.
+          host_tool_args=()
+          while IFS= read -r role; do
+            [[ -n "$role" ]] || continue
+            case "$role" in
+            make)
+              program="$(type -P gmake || type -P make || true)"
+              ;;
+            # Darwin's /usr/bin/{ar,ranlib} are xcrun shims. Resolve the real,
+            # measured Xcode tool first: a closure alias to the shim would
+            # preserve llvm-arcc/llvm-ranlibcc as argv[0] and fail again.
+            llvm-arcc)
+              xcrun_program="$(type -P xcrun || true)"
+              program=""
+              if [[ "$xcrun_program" == /* && -x "$xcrun_program" ]]; then
+                program="$("$xcrun_program" --find ar 2>/dev/null || true)"
+              fi
+              ;;
+            llvm-ranlibcc)
+              xcrun_program="$(type -P xcrun || true)"
+              program=""
+              if [[ "$xcrun_program" == /* && -x "$xcrun_program" ]]; then
+                program="$("$xcrun_program" --find ranlib 2>/dev/null || true)"
+              fi
+              ;;
+            *)
+              # `command -v` returns a bare shell-builtin name for roles such
+              # as echo or test. The closure requires an executable file.
+              program="$(type -P "$role" || true)"
+              ;;
+            esac
+            if [[ "$program" != /* || ! -x "$program" ]]; then
+              echo "compatibility replay requires an absolute executable host tool for role '$role'" >&2
+              exit 1
+            fi
+            host_tool_args+=(--host-tool "$role=$program")
+          done < <("$aros" toolchain producer compatibility-host-tools --host "${{ matrix.host }}")
+          if (( ${#host_tool_args[@]} == 0 )); then
+            echo "compatibility replay executor reported no required host-tool roles" >&2
+            exit 1
+          fi
+          "$aros" toolchain producer compatibility \
+            --recipe "$GITHUB_WORKSPACE/producer-input/recipe.json" \
+            --source-lock "$GITHUB_WORKSPACE/$SOURCE_LOCK" \
+            --profiles "$GITHUB_WORKSPACE/$PROFILES" \
+            --preset "${{ matrix.profile }}" \
+            --release-id "$release_id" \
+            --host "${{ matrix.host }}" \
+            --build-environment "$environment" \
+            --package-dir "$GITHUB_WORKSPACE/verified" \
+            --first-root "$work/package-cmake" \
+            --second-root "$work/package-upstream" \
+            --source-dir "$work/engine-free-source" \
+            --engine-work-dir "$work/engine-work" \
+            --helpers-dir "${{ steps.runtime.outputs.root }}/bin" \
+            --cmake-program "$(command -v cmake)" \
+            --ninja-program "$(command -v ninja)" \
+            --upstream-source-dir "$GITHUB_WORKSPACE/dependencies/upstream-aros" \
+            --upstream-build-dir "$work/upstream-build" \
+            --python-cache-dir "$GITHUB_WORKSPACE/source-cache" \
+            --ports-lock "$GITHUB_WORKSPACE/$COMPATIBILITY_PORTS_LOCK" \
+            --ports-cache-dir "$GITHUB_WORKSPACE/source-cache" \
+            --ports-sources-dir "$work/ports-sources" \
+            --python-environment-dir "$work/python" \
+            --host-tools-dir "$work/host-tools" \
+            "${host_tool_args[@]}" \
+            --cmake-build-dir "$work/cmake-build" \
+            --c-fixture "$GITHUB_WORKSPACE/scripts/toolchain/fixtures/smoke.c" \
+            --cxx-fixture "$GITHUB_WORKSPACE/scripts/toolchain/fixtures/smoke.cpp" \
+            --standalone-output-dir "$work/standalone" \
+            --reports-dir "$work/reports" \
+            --jobs 3 \
+            --timeout-seconds 3600 \
+            --format json
+      - name: Preserve native replay evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: compatibility-replay-${{ matrix.host }}-${{ matrix.profile }}
+          path: ${{ runner.temp }}/native-compatibility-${{ matrix.host }}-${{ matrix.profile }}/reports/
+          if-no-files-found: warn
+          retention-days: 7

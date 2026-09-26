@@ -1,0 +1,49 @@
+name: Select native producer Rust toolchain
+description: Install and select the exact committed Cargo and rustc binaries used by the native producer
+
+inputs:
+  producer-dir:
+    description: Exact producer checkout containing toolchains/rust-toolchain.toml
+    required: true
+
+outputs:
+  cargo:
+    description: Absolute pinned Cargo executable selected for vendor generation
+    value: ${{ steps.select.outputs.cargo }}
+  channel:
+    description: Exact stable Rust channel from the producer declaration
+    value: ${{ steps.select.outputs.channel }}
+
+runs:
+  using: composite
+  steps:
+    - id: select
+      shell: bash
+      env:
+        PRODUCER_DIR: ${{ inputs.producer-dir }}
+      run: |
+        set -euo pipefail
+        pin="$PRODUCER_DIR/toolchains/rust-toolchain.toml"
+        test -f "$pin" && test ! -L "$pin"
+        channel=$(sed -nE 's/^channel = "([0-9]+\.[0-9]+\.[0-9]+)"$/\1/p' "$pin")
+        if [[ ! "$channel" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+          echo "native producer has no exact stable Rust channel" >&2
+          exit 1
+        fi
+        command -v rustup >/dev/null
+        rustup toolchain install "$channel" --profile minimal
+        cargo=$(rustup which --toolchain "$channel" cargo)
+        rustc=$(rustup which --toolchain "$channel" rustc)
+        rust_bin=$(dirname "$cargo")
+        if [[ "$cargo" != /* || "$rustc" != "$rust_bin/rustc" ||
+              ! -x "$cargo" || ! -x "$rustc" ]]; then
+          echo "Rustup did not select one complete pinned native toolchain" >&2
+          exit 1
+        fi
+        if [[ "$("$cargo" --version)" != "cargo $channel "* ||
+              "$("$rustc" --version)" != "rustc $channel "* ]]; then
+          echo "selected Cargo or rustc version differs from the producer pin" >&2
+          exit 1
+        fi
+        printf '%s\n' "$rust_bin" >> "$GITHUB_PATH"
+        printf 'cargo=%s\nchannel=%s\n' "$cargo" "$channel" >> "$GITHUB_OUTPUT"

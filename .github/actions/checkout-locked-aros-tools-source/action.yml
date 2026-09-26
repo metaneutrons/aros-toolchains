@@ -1,0 +1,68 @@
+name: Checkout locked aros-tools source
+description: Materialize the exact clean source tree behind the verified released runtime
+
+inputs:
+  path:
+    description: Relative workspace destination for the separate tools Git checkout
+    required: true
+  lock:
+    description: Repository-relative released-runtime lock
+    required: false
+    default: toolchains/aros-tools-runtime-v1.json
+
+outputs:
+  commit:
+    description: Exact selected aros-tools source commit
+    value: ${{ steps.identity.outputs.commit }}
+  tree:
+    description: Exact selected aros-tools source tree
+    value: ${{ steps.identity.outputs.tree }}
+
+runs:
+  using: composite
+  steps:
+    - id: identity
+      name: Read closed source identity from the release lock
+      shell: bash
+      env:
+        LOCK_PATH: ${{ inputs.lock }}
+      run: |
+        set -euo pipefail
+        lock="$GITHUB_WORKSPACE/$LOCK_PATH"
+        test -f "$lock" && test ! -L "$lock"
+        repository=$(jq -er '.repository' "$lock")
+        commit=$(jq -er '.source_commit' "$lock")
+        tree=$(jq -er '.source_tree' "$lock")
+        if [[ "$repository" != metaneutrons/aros-tools ||
+              ! "$commit" =~ ^[0-9a-f]{40}$ ||
+              ! "$tree" =~ ^[0-9a-f]{40}$ ]]; then
+          echo "released runtime lock has an invalid source identity" >&2
+          exit 1
+        fi
+        printf 'commit=%s\ntree=%s\n' "$commit" "$tree" >> "$GITHUB_OUTPUT"
+    - name: Checkout the exact aros-tools Git source
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        repository: metaneutrons/aros-tools
+        ref: ${{ steps.identity.outputs.commit }}
+        fetch-depth: 1
+        submodules: false
+        persist-credentials: false
+        path: ${{ inputs.path }}
+    - name: Verify the checked-out source commit and tree
+      shell: bash
+      working-directory: ${{ inputs.path }}
+      env:
+        EXPECTED_COMMIT: ${{ steps.identity.outputs.commit }}
+        EXPECTED_TREE: ${{ steps.identity.outputs.tree }}
+      run: |
+        set -euo pipefail
+        if [[ "$(git rev-parse HEAD)" != "$EXPECTED_COMMIT" ||
+              "$(git show -s --format=%T HEAD)" != "$EXPECTED_TREE" ]]; then
+          echo "aros-tools checkout differs from the locked source identity" >&2
+          exit 1
+        fi
+        if [[ -n "$(git status --porcelain --untracked-files=all)" ]]; then
+          echo "aros-tools checkout is not clean" >&2
+          exit 1
+        fi

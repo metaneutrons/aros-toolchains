@@ -1,0 +1,859 @@
+name: Deterministic AROS Toolchain Producer
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Produce a host tier or recover a packaging-only failed run
+        required: true
+        default: produce
+        type: choice
+        options:
+          - produce
+          - recover
+      scope:
+        description: Diagnostic host tier (manual runs never publish or exercise all hosts)
+        required: true
+        default: linux-x86_64
+        type: choice
+        options:
+          - linux-x86_64
+          - linux
+      source_run_id:
+        description: Recovery only - qualified producer run ID
+        required: false
+        type: string
+      source_tag:
+        description: Recovery only - immutable source release tag in qualification evidence
+        required: false
+        type: string
+      release_tag:
+        description: Recovery only - new immutable release ID and tag
+        required: false
+        type: string
+  push:
+    tags:
+      - v*
+
+permissions:
+  contents: read
+  attestations: read
+
+concurrency:
+  group: toolchain-producer-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  SOURCE_LOCK: toolchains/llvm-11.0.0.sources.json
+  COMPATIBILITY_PORTS_LOCK: toolchains/compatibility-ports-v2.json
+  PROFILES: toolchains/profiles-v1.json
+  LLVM_VERSION: 11.0.0
+  PYTHONHASHSEED: "0"
+  AROS_SOURCE_REPOSITORY: metaneutrons/AROS-NX
+  AROS_SOURCE_COMMIT: 9369cc8f8ba4f7d320945c78788c6e2a6d0d1eab
+  TOOLS_RUNTIME_LOCK: toolchains/aros-tools-runtime-v1.json
+
+jobs:
+  plan:
+    if: github.event_name != 'workflow_dispatch' || inputs.mode != 'recover'
+    runs-on: ubuntu-24.04
+    outputs:
+      host_matrix: ${{ steps.matrix.outputs.host_matrix }}
+      build_matrix: ${{ steps.matrix.outputs.build_matrix }}
+      verify_matrix: ${{ steps.matrix.outputs.verify_matrix }}
+      release_id: ${{ steps.matrix.outputs.release_id }}
+      prerelease: ${{ steps.release_tag.outputs.prerelease || 'false' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - id: release_tag
+        name: Validate immutable release tag and channel before preparation
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python3 scripts/toolchain/validate-release-tag.py \
+            "$GITHUB_REF_NAME" "$GITHUB_OUTPUT"
+          if ! git check-ref-format "refs/tags/$GITHUB_REF_NAME" >/dev/null 2>&1 ||
+             [[ "$(git cat-file -t "$GITHUB_REF_NAME")" != tag ||
+                "$(git rev-list -n 1 "$GITHUB_REF_NAME")" != "$GITHUB_SHA" ]]; then
+            echo "release requires an annotated tag on this exact producer commit" >&2
+            exit 1
+          fi
+          local_object=$(git rev-parse "$GITHUB_REF_NAME^{tag}")
+          remote_object=$(git ls-remote --tags origin "refs/tags/$GITHUB_REF_NAME" | awk 'NR == 1 {print $1}')
+          remote_commit=$(git ls-remote --tags origin "refs/tags/$GITHUB_REF_NAME^{}" | awk 'NR == 1 {print $1}')
+          if [[ -z "$remote_object" || "$remote_object" != "$local_object" ||
+                -z "$remote_commit" || "$remote_commit" != "$GITHUB_SHA" ]]; then
+            echo "remote release tag identity differs from the triggering annotated tag" >&2
+            exit 1
+          fi
+          if response=$(gh api -i "repos/$GITHUB_REPOSITORY/releases/tags/$GITHUB_REF_NAME" 2>&1); then
+            echo "release already exists for immutable tag; refusing another production run" >&2
+            exit 1
+          fi
+          status_line=${response%%$'\n'*}
+          if [[ ! "$status_line" =~ ^HTTP/[0-9.]+[[:space:]]404([[:space:]]|$) ]]; then
+            echo "cannot prove that the release is absent: $status_line" >&2
+            exit 1
+          fi
+      - uses: ./.github/actions/checkout-pinned-recursive-source
+        with:
+          repository: ${{ env.AROS_SOURCE_REPOSITORY }}
+          ref: ${{ env.AROS_SOURCE_COMMIT }}
+          fetch-depth: 0
+          path: dependencies/aros
+      - id: runtime
+        uses: ./.github/actions/materialize-aros-tools-runtime
+        with:
+          host: linux-x86_64
+          destination: ${{ runner.temp }}/aros-tools-runtime
+      - uses: ./.github/actions/checkout-locked-aros-tools-source
+        with:
+          path: dependencies/aros-tools
+      - name: Probe the released source-cache command contract
+        run: |
+          set -euo pipefail
+          cache_dir="$RUNNER_TEMP/aros-tools-source-cache-contract"
+          mkdir -p "$cache_dir"
+          aros="${{ steps.runtime.outputs.root }}/bin/aros"
+          "$aros" cache sources list \
+            --source-lock "$GITHUB_WORKSPACE/$SOURCE_LOCK" \
+            --dir "$cache_dir" \
+            --format json >/dev/null
+          "$aros" cache sources list \
+            --compatibility-ports-lock "$GITHUB_WORKSPACE/$COMPATIBILITY_PORTS_LOCK" \
+            --dir "$cache_dir" \
+            --format json >/dev/null
+      - name: Materialize a distinct producer checkout
+        run: |
+          set -euo pipefail
+          producer_dir="$RUNNER_TEMP/aros-toolchains-producer"
+          test ! -e "$producer_dir"
+          git worktree add --detach "$producer_dir" "$(git rev-parse HEAD)"
+          printf 'AROS_PRODUCER_DIR=%s\n' "$producer_dir" >> "$GITHUB_ENV"
+      - name: Bind three clean Git trees to the native producer recipe and plan
+        run: |
+          set -euo pipefail
+          aros="${{ steps.runtime.outputs.root }}/bin/aros"
+          "$aros" toolchain producer recipe \
+            --source-dir "$GITHUB_WORKSPACE/dependencies/aros" \
+            --producer-dir "$AROS_PRODUCER_DIR" \
+            --tools-dir "$GITHUB_WORKSPACE/dependencies/aros-tools" \
+            --source-lock "$AROS_PRODUCER_DIR/$SOURCE_LOCK" \
+            --profiles "$AROS_PRODUCER_DIR/$PROFILES" \
+            --output "$GITHUB_WORKSPACE/recipe.json"
+          for profile in pc-x86_64 arm-raspi rpi-aarch64; do
+            "$aros" toolchain plan \
+              --preset "$profile" \
+              --recipe "$GITHUB_WORKSPACE/recipe.json" \
+              --source-dir "$GITHUB_WORKSPACE/dependencies/aros" \
+              --producer-dir "$AROS_PRODUCER_DIR" \
+              --tools-dir "$GITHUB_WORKSPACE/dependencies/aros-tools" \
+              --work-dir "$RUNNER_TEMP/plan-work-$profile" \
+              --output-dir "$RUNNER_TEMP/plan-output-$profile" \
+              --cache-dir "$RUNNER_TEMP/aros-tools-source-cache-contract" \
+              --jobs 3 \
+              --timeout-seconds 20000 \
+              --format json | jq -e '.schema == "aros-toolchain-plan-v2" and .readiness == "ready"' >/dev/null
+          done
+
+      - id: matrix
+        name: Select staged host matrix
+        env:
+          REQUESTED_SCOPE: ${{ inputs.scope }}
+        run: |
+          set -euo pipefail
+          python3 - "$GITHUB_OUTPUT" <<'PY'
+          import itertools, json, os, sys
+          hosts = [
+              {"host": "linux-x86_64", "runner": "ubuntu-24.04"},
+              {"host": "linux-aarch64", "runner": "ubuntu-24.04-arm"},
+              {"host": "macos-aarch64", "runner": "macos-15"},
+          ]
+          if os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch":
+              scope = os.environ.get("REQUESTED_SCOPE") or "linux-x86_64"
+              if scope == "linux-x86_64":
+                  hosts = [item for item in hosts if item["host"] == scope]
+              elif scope == "linux":
+                  hosts = [item for item in hosts if item["host"].startswith("linux-")]
+              else:
+                  raise SystemExit(
+                      "manual scope must be linux-x86_64 or linux; "
+                      "the complete active three-host A/B matrix is tag-only; "
+                      "macOS Intel is not a release target"
+                  )
+          profiles = ["pc-x86_64", "arm-raspi", "rpi-aarch64"]
+          verify = [{**host, "profile": profile} for host, profile in itertools.product(hosts, profiles)]
+          build = [{**item, "copy": copy} for item, copy in itertools.product(verify, ["a", "b"])]
+          tag = os.environ.get("GITHUB_REF_NAME", "")
+          release_id = tag if os.environ.get("GITHUB_REF_TYPE") == "tag" else "toolchain-dev-" + os.environ["GITHUB_SHA"][:12]
+          with open(sys.argv[1], "a", encoding="utf-8") as output:
+              output.write("host_matrix=" + json.dumps({"include": hosts}, separators=(",", ":")) + "\n")
+              output.write("build_matrix=" + json.dumps({"include": build}, separators=(",", ":")) + "\n")
+              output.write("verify_matrix=" + json.dumps({"include": verify}, separators=(",", ":")) + "\n")
+              output.write("release_id=" + release_id + "\n")
+          PY
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: toolchain-recipe
+          path: recipe.json
+          if-no-files-found: error
+          retention-days: 7
+
+  sources:
+    needs: plan
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - id: runtime
+        uses: ./.github/actions/materialize-aros-tools-runtime
+        with:
+          host: linux-x86_64
+          destination: ${{ runner.temp }}/aros-tools-runtime
+      - name: Fetch and verify immutable toolchain and host Python sources
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/source-cache"
+          "${{ steps.runtime.outputs.root }}/bin/aros" cache sources fetch \
+            --source-lock "$GITHUB_WORKSPACE/$SOURCE_LOCK" \
+            --dir "$GITHUB_WORKSPACE/source-cache"
+          "${{ steps.runtime.outputs.root }}/bin/aros" cache sources fetch \
+            --source-lock "$GITHUB_WORKSPACE/$SOURCE_LOCK" \
+            --dir "$GITHUB_WORKSPACE/source-cache" \
+            --offline
+          "${{ steps.runtime.outputs.root }}/bin/aros" cache sources verify \
+            --source-lock "$GITHUB_WORKSPACE/$SOURCE_LOCK" \
+            --dir "$GITHUB_WORKSPACE/source-cache"
+          "${{ steps.runtime.outputs.root }}/bin/aros" cache sources fetch \
+            --compatibility-ports-lock "$GITHUB_WORKSPACE/$COMPATIBILITY_PORTS_LOCK" \
+            --dir "$GITHUB_WORKSPACE/source-cache"
+          "${{ steps.runtime.outputs.root }}/bin/aros" cache sources fetch \
+            --compatibility-ports-lock "$GITHUB_WORKSPACE/$COMPATIBILITY_PORTS_LOCK" \
+            --dir "$GITHUB_WORKSPACE/source-cache" \
+            --offline
+          "${{ steps.runtime.outputs.root }}/bin/aros" cache sources verify \
+            --compatibility-ports-lock "$GITHUB_WORKSPACE/$COMPATIBILITY_PORTS_LOCK" \
+            --dir "$GITHUB_WORKSPACE/source-cache"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: verified-toolchain-sources
+          path: source-cache/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 7
+
+  cargo:
+    needs: plan
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.host_matrix) }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/checkout-locked-aros-tools-source
+        with:
+          path: dependencies/aros-tools
+      - id: runtime
+        uses: ./.github/actions/materialize-aros-tools-runtime
+        with:
+          host: ${{ matrix.host }}
+          destination: ${{ runner.temp }}/aros-tools-runtime
+      - name: Materialize a distinct producer checkout
+        run: |
+          set -euo pipefail
+          producer_dir="$RUNNER_TEMP/aros-toolchains-producer"
+          test ! -e "$producer_dir"
+          git worktree add --detach "$producer_dir" "$(git rev-parse HEAD)"
+          printf 'AROS_PRODUCER_DIR=%s\n' "$producer_dir" >> "$GITHUB_ENV"
+      - id: rust
+        uses: ./.github/actions/select-native-rust-toolchain
+        with:
+          producer-dir: ${{ runner.temp }}/aros-toolchains-producer
+      - name: Fetch and verify the exact host Cargo vendor generation
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/source-cache"
+          aros="${{ steps.runtime.outputs.root }}/bin/aros"
+          selector=(
+            --producer-dir "$AROS_PRODUCER_DIR"
+            --tools-dir "$GITHUB_WORKSPACE/dependencies/aros-tools"
+            --dir "$GITHUB_WORKSPACE/source-cache"
+            --cargo "${{ steps.rust.outputs.cargo }}"
+          )
+          "$aros" cache cargo fetch "${selector[@]}"
+          "$aros" cache cargo fetch "${selector[@]}" --offline
+          "$aros" cache cargo verify "${selector[@]}"
+          test -d "$GITHUB_WORKSPACE/source-cache/cargo"
+          tar -C "$GITHUB_WORKSPACE/source-cache" -czf "$GITHUB_WORKSPACE/cargo-vendor.tar.gz" cargo
+          (cd "$GITHUB_WORKSPACE" && shasum -a 256 cargo-vendor.tar.gz > cargo-vendor.tar.gz.sha256)
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: verified-cargo-${{ matrix.host }}
+          path: |
+            cargo-vendor.tar.gz
+            cargo-vendor.tar.gz.sha256
+          if-no-files-found: error
+          retention-days: 7
+
+  build:
+    needs: [plan, sources, cargo]
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.build_matrix) }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/checkout-pinned-recursive-source
+        with:
+          repository: ${{ env.AROS_SOURCE_REPOSITORY }}
+          ref: ${{ env.AROS_SOURCE_COMMIT }}
+          fetch-depth: 0
+          path: dependencies/aros
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: toolchain-recipe
+          path: producer-input
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: verified-toolchain-sources
+          path: source-cache
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: verified-cargo-${{ matrix.host }}
+          path: cargo-cache-input
+
+      - id: runtime
+        uses: ./.github/actions/materialize-aros-tools-runtime
+        with:
+          host: ${{ matrix.host }}
+          destination: ${{ runner.temp }}/aros-tools-runtime
+      - uses: ./.github/actions/checkout-locked-aros-tools-source
+        with:
+          path: dependencies/aros-tools
+
+      - name: Materialize a distinct producer checkout
+        run: |
+          set -euo pipefail
+          producer_dir="$RUNNER_TEMP/aros-toolchains-producer"
+          test ! -e "$producer_dir"
+          git worktree add --detach "$producer_dir" "$(git rev-parse HEAD)"
+          printf 'AROS_PRODUCER_DIR=%s\n' "$producer_dir" >> "$GITHUB_ENV"
+      - id: rust
+        uses: ./.github/actions/select-native-rust-toolchain
+        with:
+          producer-dir: ${{ runner.temp }}/aros-toolchains-producer
+
+      - uses: ./.github/actions/disable-google-chrome-apt-source
+        if: runner.os == 'Linux'
+      - name: Install pinned-lane build prerequisites (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            autoconf automake bison build-essential cmake flex gawk libpng-dev libtool \
+            netpbm ninja-build patch python3 xz-utils
+
+      - name: Install build prerequisites (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          set -euo pipefail
+          brew install autoconf automake bison cmake gawk gnu-sed libtool make netpbm ninja xz
+          echo "$(brew --prefix bison)/bin" >> "$GITHUB_PATH"
+
+      - name: Restore and verify the exact host Cargo vendor generation
+        run: |
+          set -euo pipefail
+          (cd "$GITHUB_WORKSPACE/cargo-cache-input" && shasum -a 256 -c cargo-vendor.tar.gz.sha256)
+          test ! -e "$GITHUB_WORKSPACE/source-cache/cargo"
+          tar -C "$GITHUB_WORKSPACE/source-cache" -xzpf "$GITHUB_WORKSPACE/cargo-cache-input/cargo-vendor.tar.gz"
+          "${{ steps.runtime.outputs.root }}/bin/aros" cache cargo verify \
+            --producer-dir "$AROS_PRODUCER_DIR" \
+            --tools-dir "$GITHUB_WORKSPACE/dependencies/aros-tools" \
+            --dir "$GITHUB_WORKSPACE/source-cache" \
+            --cargo "${{ steps.rust.outputs.cargo }}"
+
+      - name: Build, package and read back one native candidate
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/aros-${{ matrix.copy }}-${{ matrix.profile }}"
+          candidate="$RUNNER_TEMP/candidate-${{ matrix.copy }}-${{ matrix.profile }}"
+          environment="$RUNNER_TEMP/build-environment-${{ matrix.copy }}-${{ matrix.profile }}.json"
+          aros="${{ steps.runtime.outputs.root }}/bin/aros"
+          "$aros" toolchain build \
+            --preset "${{ matrix.profile }}" \
+            --recipe "$GITHUB_WORKSPACE/producer-input/recipe.json" \
+            --source-dir "$GITHUB_WORKSPACE/dependencies/aros" \
+            --producer-dir "$AROS_PRODUCER_DIR" \
+            --tools-dir "$GITHUB_WORKSPACE/dependencies/aros-tools" \
+            --work-dir "$work" \
+            --output-dir "$candidate" \
+            --cache-dir "$GITHUB_WORKSPACE/source-cache" \
+            --jobs 3 \
+            --timeout-seconds 20000 \
+            --release-id "${{ needs.plan.outputs.release_id }}"
+          receipt="$work/native-lifecycle/receipts/publish.json"
+          test -s "$receipt"
+          jq -e '.schema == "aros-toolchain-receipt-v1" and .phase == "publish" and (.receipt_sha256 | test("^[0-9a-f]{64}$"))' "$receipt" >/dev/null
+          "$aros" toolchain producer environment \
+            --host "${{ matrix.host }}" \
+            --output "$environment"
+          "$aros" toolchain producer package \
+            --recipe "$GITHUB_WORKSPACE/producer-input/recipe.json" \
+            --source-lock "$GITHUB_WORKSPACE/$SOURCE_LOCK" \
+            --profiles "$GITHUB_WORKSPACE/$PROFILES" \
+            --preset "${{ matrix.profile }}" \
+            --release-id "${{ needs.plan.outputs.release_id }}" \
+            --host "${{ matrix.host }}" \
+            --build-environment "$environment" \
+            --forbidden-prefix "$GITHUB_WORKSPACE" \
+            --forbidden-prefix "$RUNNER_TEMP" \
+            --input-dir "$candidate/toolchain" \
+            --output-dir "$GITHUB_WORKSPACE/release-output"
+          "$aros" toolchain producer verify-package \
+            --recipe "$GITHUB_WORKSPACE/producer-input/recipe.json" \
+            --source-lock "$GITHUB_WORKSPACE/$SOURCE_LOCK" \
+            --profiles "$GITHUB_WORKSPACE/$PROFILES" \
+            --preset "${{ matrix.profile }}" \
+            --release-id "${{ needs.plan.outputs.release_id }}" \
+            --host "${{ matrix.host }}" \
+            --build-environment "$environment" \
+            --forbidden-prefix "$GITHUB_WORKSPACE" \
+            --forbidden-prefix "$RUNNER_TEMP" \
+            --input-dir "$GITHUB_WORKSPACE/release-output"
+
+      - name: Preserve native lifecycle receipts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: native-lifecycle-${{ matrix.host }}-${{ matrix.profile }}-${{ matrix.copy }}
+          path: ${{ runner.temp }}/aros-${{ matrix.copy }}-${{ matrix.profile }}/native-lifecycle/receipts/
+          if-no-files-found: error
+          retention-days: 7
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: candidate-${{ matrix.host }}-${{ matrix.profile }}-${{ matrix.copy }}
+          path: release-output/
+          if-no-files-found: error
+          retention-days: 7
+
+  compare:
+    needs: [plan, build]
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.verify_matrix) }}
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - id: runtime
+        uses: ./.github/actions/materialize-aros-tools-runtime
+        with:
+          host: linux-x86_64
+          destination: ${{ runner.temp }}/aros-tools-runtime
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: candidate-${{ matrix.host }}-${{ matrix.profile }}-a
+          path: candidate-a
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: candidate-${{ matrix.host }}-${{ matrix.profile }}-b
+          path: candidate-b
+      - name: Require byte-identical complete native package sets
+        run: |
+          set -euo pipefail
+          "${{ steps.runtime.outputs.root }}/bin/aros" toolchain producer compare \
+            --left "$GITHUB_WORKSPACE/candidate-a" \
+            --right "$GITHUB_WORKSPACE/candidate-b" \
+            --output "$RUNNER_TEMP/comparison-${{ matrix.host }}-${{ matrix.profile }}.json"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: verified-${{ matrix.host }}-${{ matrix.profile }}
+          path: candidate-a/
+          if-no-files-found: error
+          retention-days: 7
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: comparison-${{ matrix.host }}-${{ matrix.profile }}
+          path: ${{ runner.temp }}/comparison-${{ matrix.host }}-${{ matrix.profile }}.json
+          if-no-files-found: error
+          retention-days: 7
+
+  compatibility:
+    needs: [plan, compare]
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.verify_matrix) }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/checkout-pinned-recursive-source
+        with:
+          repository: ${{ env.AROS_SOURCE_REPOSITORY }}
+          ref: ${{ env.AROS_SOURCE_COMMIT }}
+          path: dependencies/aros
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: toolchain-recipe
+          path: producer-input
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: verified-${{ matrix.host }}-${{ matrix.profile }}
+          path: verified
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: verified-toolchain-sources
+          path: source-cache
+      - id: runtime
+        uses: ./.github/actions/materialize-aros-tools-runtime
+        with:
+          host: ${{ matrix.host }}
+          destination: ${{ runner.temp }}/aros-tools-runtime
+      - id: profile
+        name: Select the recipe-bound upstream source
+        run: |
+          set -euo pipefail
+          profile="$("${{ steps.runtime.outputs.root }}/bin/aros" toolchain producer profile \
+            --recipe "$GITHUB_WORKSPACE/producer-input/recipe.json" \
+            --profiles "$GITHUB_WORKSPACE/$PROFILES" \
+            --preset "${{ matrix.profile }}" \
+            --format json)"
+          printf 'upstream_commit=%s\n' "$(jq -er '.upstream_commit' <<< "$profile")" >> "$GITHUB_OUTPUT"
+      - uses: ./.github/actions/checkout-pinned-recursive-source
+        with:
+          repository: aros-development-team/AROS
+          ref: ${{ steps.profile.outputs.upstream_commit }}
+          fetch-depth: 1
+          path: dependencies/upstream-aros
+      - uses: ./.github/actions/disable-google-chrome-apt-source
+        if: runner.os == 'Linux'
+      - name: Install audited consumer prerequisites
+        run: bash dependencies/aros/scripts/ci/install-build-prerequisites.sh
+      - name: Execute two-root native compatibility qualification
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/native-compatibility-${{ matrix.host }}-${{ matrix.profile }}"
+          environment="$RUNNER_TEMP/compatibility-environment-${{ matrix.host }}-${{ matrix.profile }}.json"
+          mkdir -p "$work/engine-work"
+          aros="${{ steps.runtime.outputs.root }}/bin/aros"
+          "$aros" toolchain producer environment \
+            --host "${{ matrix.host }}" \
+            --output "$environment"
+          "$aros" toolchain producer materialize-engine-free-source \
+            --source-dir "$GITHUB_WORKSPACE/dependencies/aros" \
+            --recipe "$GITHUB_WORKSPACE/producer-input/recipe.json" \
+            --output-dir "$work/engine-free-source"
+          # The executor owns this explicit command-role contract. Measure one
+          # absolute executable per role and expose only those symlinks to the
+          # sealed CMake/configure/Make children; do not reconstruct PATH from
+          # runner directories. `make` is a stable child role, even where the
+          # selected macOS implementation is Homebrew gmake.
+          host_tool_args=()
+          while IFS= read -r role; do
+            [[ -n "$role" ]] || continue
+            case "$role" in
+            make)
+              program="$(type -P gmake || type -P make || true)"
+              ;;
+            # Darwin's /usr/bin/{ar,ranlib} are xcrun shims. Resolve the real,
+            # measured Xcode tool first: a closure alias to the shim would
+            # preserve llvm-arcc/llvm-ranlibcc as argv[0] and fail again.
+            llvm-arcc)
+              xcrun_program="$(type -P xcrun || true)"
+              program=""
+              if [[ "$xcrun_program" == /* && -x "$xcrun_program" ]]; then
+                program="$("$xcrun_program" --find ar 2>/dev/null || true)"
+              fi
+              ;;
+            llvm-ranlibcc)
+              xcrun_program="$(type -P xcrun || true)"
+              program=""
+              if [[ "$xcrun_program" == /* && -x "$xcrun_program" ]]; then
+                program="$("$xcrun_program" --find ranlib 2>/dev/null || true)"
+              fi
+              ;;
+            *)
+              # `command -v` returns a bare shell-builtin name for roles such
+              # as echo or test. The closure requires an executable file.
+              program="$(type -P "$role" || true)"
+              ;;
+            esac
+            if [[ "$program" != /* || ! -x "$program" ]]; then
+              echo "compatibility qualification requires an absolute executable host tool for role '$role'" >&2
+              exit 1
+            fi
+            host_tool_args+=(--host-tool "$role=$program")
+          done < <("$aros" toolchain producer compatibility-host-tools --host "${{ matrix.host }}")
+          if (( ${#host_tool_args[@]} == 0 )); then
+            echo "compatibility qualification executor reported no required host-tool roles" >&2
+            exit 1
+          fi
+          "$aros" toolchain producer compatibility \
+            --recipe "$GITHUB_WORKSPACE/producer-input/recipe.json" \
+            --source-lock "$GITHUB_WORKSPACE/$SOURCE_LOCK" \
+            --profiles "$GITHUB_WORKSPACE/$PROFILES" \
+            --preset "${{ matrix.profile }}" \
+            --release-id "${{ needs.plan.outputs.release_id }}" \
+            --host "${{ matrix.host }}" \
+            --build-environment "$environment" \
+            --package-dir "$GITHUB_WORKSPACE/verified" \
+            --first-root "$work/package-cmake" \
+            --second-root "$work/package-upstream" \
+            --source-dir "$work/engine-free-source" \
+            --engine-work-dir "$work/engine-work" \
+            --helpers-dir "${{ steps.runtime.outputs.root }}/bin" \
+            --cmake-program "$(command -v cmake)" \
+            --ninja-program "$(command -v ninja)" \
+            --upstream-source-dir "$GITHUB_WORKSPACE/dependencies/upstream-aros" \
+            --upstream-build-dir "$work/upstream-build" \
+            --python-cache-dir "$GITHUB_WORKSPACE/source-cache" \
+            --ports-lock "$GITHUB_WORKSPACE/$COMPATIBILITY_PORTS_LOCK" \
+            --ports-cache-dir "$GITHUB_WORKSPACE/source-cache" \
+            --ports-sources-dir "$work/ports-sources" \
+            --python-environment-dir "$work/python" \
+            --host-tools-dir "$work/host-tools" \
+            "${host_tool_args[@]}" \
+            --cmake-build-dir "$work/cmake-build" \
+            --c-fixture "$GITHUB_WORKSPACE/scripts/toolchain/fixtures/smoke.c" \
+            --cxx-fixture "$GITHUB_WORKSPACE/scripts/toolchain/fixtures/smoke.cpp" \
+            --standalone-output-dir "$work/standalone" \
+            --reports-dir "$work/reports" \
+            --jobs 3 \
+            --timeout-seconds 3600 \
+            --format json
+      - name: Preserve native compatibility evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: compatibility-${{ matrix.host }}-${{ matrix.profile }}
+          path: ${{ runner.temp }}/native-compatibility-${{ matrix.host }}-${{ matrix.profile }}/reports/
+          if-no-files-found: error
+          retention-days: 7
+
+  draft-release:
+    needs: [plan, compatibility]
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - id: runtime
+        uses: ./.github/actions/materialize-aros-tools-runtime
+        with:
+          host: linux-x86_64
+          destination: ${{ runner.temp }}/aros-tools-runtime
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          pattern: verified-*-pc-x86_64
+          path: release
+          merge-multiple: true
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          pattern: verified-*-arm-raspi
+          path: release
+          merge-multiple: true
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          pattern: verified-*-rpi-aarch64
+          path: release
+          merge-multiple: true
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: toolchain-recipe
+          path: release-input
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          pattern: native-lifecycle-*
+          path: qualification-input/lifecycle
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          pattern: comparison-*
+          path: qualification-input/comparison
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          pattern: compatibility-*
+          path: qualification-input/compatibility
+      - name: Require the complete native qualification handoff before attestation
+        run: |
+          set -euo pipefail
+          for host in linux-x86_64 linux-aarch64 macos-aarch64; do
+            for profile in pc-x86_64 arm-raspi rpi-aarch64; do
+              for copy in a b; do
+                receipt="qualification-input/lifecycle/native-lifecycle-$host-$profile-$copy/publish.json"
+                test -s "$receipt" || {
+                  echo "missing native publish receipt: $receipt" >&2
+                  exit 1
+                }
+              done
+              test -s "qualification-input/comparison/comparison-$host-$profile/comparison-$host-$profile.json"
+              test -s "qualification-input/compatibility/compatibility-$host-$profile/native-compatibility.receipt.json"
+            done
+          done
+      - name: Add immutable recipe inputs
+        run: |
+          set -euo pipefail
+          cp release-input/recipe.json release/toolchain-recipe-v2.json
+          cp "$SOURCE_LOCK" release/
+          cp "$PROFILES" release/
+          cp toolchains/toolchain-manifest-v1.schema.json release/
+          cp toolchains/tree-digest-v1.fixture.json release/
+      - name: Generate release index and checksums
+        run: |
+          set -euo pipefail
+          "${{ steps.runtime.outputs.root }}/bin/aros" toolchain producer index \
+            --directory "$GITHUB_WORKSPACE/release" \
+            --release-id "$GITHUB_REF_NAME" \
+            --base-url "https://github.com/$GITHUB_REPOSITORY/releases/download/$GITHUB_REF_NAME" \
+            --source-lock-filename "$(basename "$SOURCE_LOCK")" \
+            --stage pre-attestation
+      - name: Attest checksummed release files
+        id: provenance
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373
+        with:
+          subject-checksums: release/SHA256SUMS
+
+      - name: Verify signed pre-attestation inventory
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PROVENANCE_BUNDLE: ${{ steps.provenance.outputs.bundle-path }}
+        run: |
+          set -euo pipefail
+          if [[ $(git cat-file -t "$GITHUB_REF_NAME") != tag ]]; then
+            echo "producer release tag must be annotated" >&2
+            exit 1
+          fi
+          source_tag_commit=$(git rev-list -n 1 "$GITHUB_REF_NAME")
+          "$GITHUB_WORKSPACE/scripts/toolchain/verify-provenance-attestation.sh" \
+            --checksums "$GITHUB_WORKSPACE/release/SHA256SUMS" \
+            --bundle "$PROVENANCE_BUNDLE" \
+            --repository "$GITHUB_REPOSITORY" \
+            --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/toolchain-release.yml" \
+            --source-digest "$source_tag_commit" \
+            --source-ref "refs/tags/$GITHUB_REF_NAME" \
+            --output "$RUNNER_TEMP/verified-pre-attestation.json"
+
+      - name: Include provenance bundle and refresh checksums
+        env:
+          PROVENANCE_BUNDLE: ${{ steps.provenance.outputs.bundle-path }}
+        run: |
+          set -euo pipefail
+          cp "$PROVENANCE_BUNDLE" release/toolchain-provenance.sigstore.json
+          "${{ steps.runtime.outputs.root }}/bin/aros" toolchain producer index \
+            --directory "$GITHUB_WORKSPACE/release" \
+            --release-id "$GITHUB_REF_NAME" \
+            --base-url "https://github.com/$GITHUB_REPOSITORY/releases/download/$GITHUB_REF_NAME" \
+            --source-lock-filename "$(basename "$SOURCE_LOCK")" \
+            --stage final
+      - name: Record closed qualification evidence
+        run: |
+          set -euo pipefail
+          if [[ $(git cat-file -t "$GITHUB_REF_NAME") != tag ]]; then
+            echo "producer release tag must be annotated" >&2
+            exit 1
+          fi
+          source_tag_object=$(git rev-parse "$GITHUB_REF_NAME^{tag}")
+          source_tag_commit=$(git rev-list -n 1 "$GITHUB_REF_NAME")
+          test -s "$RUNNER_TEMP/verified-pre-attestation.json"
+          now=$(date -u +%s)
+          expires_at=$((now + 604800))
+          mkdir -p "$RUNNER_TEMP/qualification"
+          "${{ steps.runtime.outputs.root }}/bin/aros" toolchain producer record-qualification \
+            --release-dir "$GITHUB_WORKSPACE/release" \
+            --source-lock-filename "$(basename "$SOURCE_LOCK")" \
+            --lifecycle-reports-dir "$GITHUB_WORKSPACE/qualification-input/lifecycle" \
+            --comparison-reports-dir "$GITHUB_WORKSPACE/qualification-input/comparison" \
+            --compatibility-reports-dir "$GITHUB_WORKSPACE/qualification-input/compatibility" \
+            --source-repository "https://github.com/$GITHUB_REPOSITORY" \
+            --source-workflow ".github/workflows/toolchain-release.yml" \
+            --source-run-id "$GITHUB_RUN_ID" \
+            --source-tag "$GITHUB_REF_NAME" \
+            --source-tag-object "$source_tag_object" \
+            --source-tag-commit "$source_tag_commit" \
+            --attestation-repository "https://github.com/$GITHUB_REPOSITORY" \
+            --attestation-workflow ".github/workflows/toolchain-release.yml" \
+            --attestation-signer "github-actions" \
+            --created-at "$now" \
+            --expires-at "$expires_at" \
+            --output "$RUNNER_TEMP/qualification/qualification-evidence-v1.json"
+      - name: Preserve complete recovery inputs before the draft handoff
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: qualified-final-release
+          path: release/
+          if-no-files-found: error
+          retention-days: 14
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: qualification-evidence
+          path: ${{ runner.temp }}/qualification/qualification-evidence-v1.json
+          if-no-files-found: error
+          retention-days: 14
+      - name: Create immutable draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_PRERELEASE: ${{ needs.plan.outputs.prerelease }}
+        run: |
+          set -euo pipefail
+          local_object=$(git rev-parse "$GITHUB_REF_NAME^{tag}")
+          local_commit=$(git rev-list -n 1 "$GITHUB_REF_NAME")
+          remote_object=$(git ls-remote --tags origin "refs/tags/$GITHUB_REF_NAME" | awk 'NR == 1 {print $1}')
+          remote_commit=$(git ls-remote --tags origin "refs/tags/$GITHUB_REF_NAME^{}" | awk 'NR == 1 {print $1}')
+          if [[ -z "$remote_object" || "$remote_object" != "$local_object" ||
+                -z "$remote_commit" || "$remote_commit" != "$local_commit" ||
+                "$local_commit" != "$GITHUB_SHA" ]]; then
+            echo "release tag changed during qualification; refusing to create a draft" >&2
+            exit 1
+          fi
+          if response=$(gh api -i "repos/$GITHUB_REPOSITORY/releases/tags/$GITHUB_REF_NAME" 2>&1); then
+            echo "release already exists; refusing to replace assets" >&2
+            exit 1
+          fi
+          status_line=${response%%$'\n'*}
+          if [[ ! "$status_line" =~ ^HTTP/[0-9.]+[[:space:]]404([[:space:]]|$) ]]; then
+            echo "cannot prove that the release is absent: $status_line" >&2
+            exit 1
+          fi
+          mapfile -d '' assets < <(find release -mindepth 1 -maxdepth 1 -type f -print0 | sort -z)
+          if [[ ${#assets[@]} -ne 44 ]]; then
+            echo "active three-host release inventory must contain exactly 44 regular files, found ${#assets[@]}" >&2
+            exit 1
+          fi
+          prerelease_args=()
+          case "$RELEASE_PRERELEASE" in
+            true) prerelease_args=(--prerelease) ;;
+            false) ;;
+            *) echo "release channel classification is missing or invalid" >&2; exit 1 ;;
+          esac
+          gh release create "$GITHUB_REF_NAME" \
+            --verify-tag \
+            --draft \
+            --title "AROS deterministic toolchains $GITHUB_REF_NAME" \
+            --notes "Built twice, byte-compared, relocation-tested, and verified against the pinned upstream AROS commit. This release remains a draft for independent verification before publication." \
+            "${prerelease_args[@]}" \
+            "${assets[@]}"
+
+  recovery:
+    if: github.event_name == 'workflow_dispatch' && inputs.mode == 'recover'
+    permissions:
+      actions: read
+      contents: write
+      id-token: write
+      attestations: write
+    uses: ./.github/workflows/toolchain-release-recovery.yml
+    with:
+      source_run_id: ${{ inputs.source_run_id }}
+      source_tag: ${{ inputs.source_tag }}
+      release_tag: ${{ inputs.release_tag }}

@@ -1,0 +1,48 @@
+name: Materialize locked aros-tools runtime
+description: Download, attest, verify and extract the exact host-matched aros-tools release runtime.
+
+inputs:
+  host:
+    description: Active release host identifier.
+    required: true
+  destination:
+    description: Absent destination directory for the verified runtime.
+    required: true
+  lock:
+    description: Repository-relative runtime lock path.
+    required: false
+    default: toolchains/aros-tools-runtime-v1.json
+
+outputs:
+  root:
+    description: Verified runtime directory.
+    value: ${{ steps.materialize.outputs.root }}
+
+runs:
+  using: composite
+  steps:
+    - id: install-cosign
+      name: Install Cosign
+      continue-on-error: true
+      uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+    - name: Back off before one Cosign retry
+      if: steps.install-cosign.outcome == 'failure'
+      shell: bash
+      run: sleep 20
+    - name: Retry Cosign installation once
+      if: steps.install-cosign.outcome == 'failure'
+      uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+    - id: materialize
+      name: Materialize immutable runtime closure
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        set -euo pipefail
+        destination='${{ inputs.destination }}'
+        test ! -e "$destination"
+        python3 "$GITHUB_WORKSPACE/scripts/toolchain/materialize-aros-tools-runtime.py" materialize \
+          --lock "$GITHUB_WORKSPACE/${{ inputs.lock }}" \
+          --host '${{ inputs.host }}' \
+          --destination "$destination"
+        printf 'root=%s\n' "$destination" >> "$GITHUB_OUTPUT"

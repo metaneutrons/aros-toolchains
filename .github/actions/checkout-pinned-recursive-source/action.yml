@@ -1,0 +1,68 @@
+name: Checkout an immutable recursive source tree
+description: Check out one immutable Git revision and retry its recursive submodules deterministically
+
+inputs:
+  repository:
+    description: GitHub owner/name of the immutable source repository
+    required: true
+  ref:
+    description: Exact 40-character Git commit to check out
+    required: true
+  path:
+    description: Relative workspace path for the checkout
+    required: true
+  fetch-depth:
+    description: Checkout history depth required by the caller
+    required: false
+    default: "1"
+
+runs:
+  using: composite
+  steps:
+    - name: Checkout the immutable source root
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        repository: ${{ inputs.repository }}
+        ref: ${{ inputs.ref }}
+        fetch-depth: ${{ inputs.fetch-depth }}
+        submodules: false
+        path: ${{ inputs.path }}
+    - name: Initialize recursive submodules with bounded network retries
+      shell: bash
+      working-directory: ${{ inputs.path }}
+      env:
+        EXPECTED_COMMIT: ${{ inputs.ref }}
+        GIT_TERMINAL_PROMPT: "0"
+      run: |
+        set -euo pipefail
+        if [[ ! "$EXPECTED_COMMIT" =~ ^[0-9a-f]{40}$ ]]; then
+          echo "recursive source checkout requires an exact lowercase commit identity" >&2
+          exit 1
+        fi
+        if [[ "$(git rev-parse HEAD)" != "$EXPECTED_COMMIT" ]]; then
+          echo "recursive source root differs from its requested immutable commit" >&2
+          exit 1
+        fi
+        git submodule sync --recursive
+        for attempt in 1 2 3 4 5; do
+          if git -c protocol.version=2 \
+              -c http.lowSpeedLimit=1 \
+              -c http.lowSpeedTime=120 \
+              submodule update --init --recursive --jobs 1; then
+            invalid_status=$(git submodule status --recursive | awk 'substr($0, 1, 1) ~ /^[-+U]$/')
+            if [[ -n "$invalid_status" ]]; then
+              echo "recursive source checkout did not resolve every pinned submodule" >&2
+              printf '%s\n' "$invalid_status" >&2
+              exit 1
+            fi
+            exit 0
+          fi
+          if [[ "$attempt" -eq 5 ]]; then
+            echo "recursive source checkout exhausted five network attempts" >&2
+            exit 1
+          fi
+          delay_seconds=$((attempt * 15))
+          echo "recursive submodule initialization failed; retrying in $delay_seconds seconds" >&2
+          sleep "$delay_seconds"
+          git submodule sync --recursive
+        done

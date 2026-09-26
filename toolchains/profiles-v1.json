@@ -1,0 +1,36 @@
+{
+  "schema": "aros-toolchain-profiles-v1",
+  "upstream_commit": "6722a0ae9e03fe5d26e32703360bd2059e0864cc",
+  "profiles": [
+    {
+      "name": "pc-x86_64",
+      "configure_target": "pc-x86_64",
+      "upstream_output_target": "pc-x86_64",
+      "target_triple": "x86_64-unknown-aros",
+      "cpu": "x86_64",
+      "platform": "pc",
+      "float_abi": "",
+      "capabilities": ["c", "cxx", "objc", "compiler-rt", "compiler-rt32", "libcxx", "libcxxabi", "libunwind", "standalone-collector", "multilib-collector"]
+    },
+    {
+      "name": "arm-raspi",
+      "configure_target": "raspi-armhf",
+      "upstream_output_target": "raspi-arm",
+      "target_triple": "arm-unknown-aros",
+      "cpu": "arm",
+      "platform": "raspi",
+      "float_abi": "hard",
+      "capabilities": ["c", "cxx", "objc", "compiler-rt", "libcxx", "libcxxabi", "libunwind", "standalone-collector"]
+    },
+    {
+      "name": "rpi-aarch64",
+      "configure_target": "raspi-aarch64",
+      "upstream_output_target": "raspi-aarch64",
+      "target_triple": "aarch64-unknown-aros",
+      "cpu": "aarch64",
+      "platform": "raspi",
+      "float_abi": "",
+      "capabilities": ["c", "cxx", "objc", "compiler-rt", "libcxx", "libcxxabi", "libunwind", "standalone-collector"]
+    }
+  ]
+}

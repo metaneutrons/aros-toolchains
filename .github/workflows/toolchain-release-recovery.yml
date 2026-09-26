@@ -1,0 +1,424 @@
+name: AROS Toolchain Release Recovery
+
+on:
+  workflow_call:
+    inputs:
+      source_run_id:
+        required: true
+        type: string
+      source_tag:
+        required: true
+        type: string
+      release_tag:
+        required: true
+        type: string
+  workflow_dispatch:
+    inputs:
+      source_run_id:
+        description: Qualified producer run whose final draft handoff failed
+        required: true
+        type: string
+      source_tag:
+        description: Immutable source release tag recorded by qualification evidence
+        required: true
+        type: string
+      release_tag:
+        description: Fresh immutable recovery release ID and pre-created annotated tag
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: toolchain-release-recovery-${{ inputs.release_tag }}
+  cancel-in-progress: false
+
+env:
+  SOURCE_LOCK: toolchains/llvm-11.0.0.sources.json
+  PROFILES: toolchains/profiles-v1.json
+  TOOLS_RUNTIME_LOCK: toolchains/aros-tools-runtime-v1.json
+  SOURCE_WORKFLOW_PATH: .github/workflows/toolchain-release.yml
+  RECOVERY_WORKFLOW_PATH: .github/workflows/toolchain-release-recovery.yml
+
+jobs:
+  recover:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    permissions:
+      actions: read
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Require the reviewed protected-main recovery workflow
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_REF" != refs/heads/main ||
+                "$GITHUB_SHA" != "$(git rev-parse HEAD)" ]]; then
+            echo "packaging-only recovery must execute the reviewed workflow from protected main" >&2
+            exit 1
+          fi
+      - name: Validate source run identity and required recovery artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+          SOURCE_TAG: ${{ inputs.source_tag }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$SOURCE_RUN_ID" =~ ^[1-9][0-9]*$ ]]; then
+            echo "source run ID must be a positive decimal integer" >&2
+            exit 1
+          fi
+          for tag_name in "$SOURCE_TAG" "$RELEASE_TAG"; do
+            if ! git check-ref-format "refs/tags/$tag_name" >/dev/null 2>&1; then
+              echo "recovery tag is not a valid Git ref" >&2
+              exit 1
+            fi
+          done
+          python3 scripts/toolchain/validate-release-tag.py "$SOURCE_TAG" "$RUNNER_TEMP/source-tag-channel"
+          python3 scripts/toolchain/validate-release-tag.py "$RELEASE_TAG" "$GITHUB_ENV"
+          if [[ "$SOURCE_TAG" == "$RELEASE_TAG" ]]; then
+            echo "recovery tag must be a fresh tag distinct from the source tag" >&2
+            exit 1
+          fi
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN_ID" \
+            > "$RUNNER_TEMP/source-run.json"
+          gh api --paginate --slurp \
+            "repos/$GITHUB_REPOSITORY/actions/workflows?per_page=100" \
+            > "$RUNNER_TEMP/source-workflow-pages.json"
+          source_workflow_id=$(jq -er --arg path "$SOURCE_WORKFLOW_PATH" '
+            [.[].workflows[] | select(.path == $path)] |
+            if length == 1 then .[0].id else error("source workflow path is not unique") end
+          ' "$RUNNER_TEMP/source-workflow-pages.json")
+          jq -e \
+            --arg path "$SOURCE_WORKFLOW_PATH" \
+            --argjson workflow_id "$source_workflow_id" \
+            --argjson run_id "$SOURCE_RUN_ID" \
+            --arg tag "$SOURCE_TAG" '
+              .id == $run_id and
+              .workflow_id == $workflow_id and
+              .path == $path and
+              .event == "push" and
+              .head_branch == $tag and
+              .status == "completed"
+          ' "$RUNNER_TEMP/source-run.json" >/dev/null
+          gh api --paginate --slurp \
+            "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN_ID/artifacts?per_page=100" \
+            > "$RUNNER_TEMP/source-artifact-pages.json"
+          for artifact_name in qualified-final-release qualification-evidence; do
+            artifact_count=$(jq -er --arg name "$artifact_name" '
+              [.[].artifacts[] | select(.name == $name and .expired == false)] | length
+            ' "$RUNNER_TEMP/source-artifact-pages.json")
+            if [[ "$artifact_count" != 1 ]]; then
+              echo "source run $SOURCE_RUN_ID must contain exactly one non-expired $artifact_name artifact (found $artifact_count)" >&2
+              exit 1
+            fi
+          done
+      - id: runtime
+        uses: ./.github/actions/materialize-aros-tools-runtime
+        with:
+          host: linux-x86_64
+          destination: ${{ runner.temp }}/aros-tools-runtime
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: qualified-final-release
+          path: source-release
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.source_run_id }}
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: qualification-evidence
+          path: qualification
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.source_run_id }}
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          pattern: verified-*-pc-x86_64
+          path: source-packages
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.source_run_id }}
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          pattern: verified-*-arm-raspi
+          path: source-packages
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.source_run_id }}
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          pattern: verified-*-rpi-aarch64
+          path: source-packages
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.source_run_id }}
+
+      - name: Validate closed source qualification and create the recovery request
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+          SOURCE_TAG: ${{ inputs.source_tag }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          qualification="$GITHUB_WORKSPACE/qualification/qualification-evidence-v1.json"
+          source_run_id_from_evidence=$(jq -er '.source_run.run_id' "$qualification")
+          source_workflow_from_evidence=$(jq -er '.source_run.workflow' "$qualification")
+          source_tag_from_evidence=$(jq -er '.source_run.source_tag' "$qualification")
+          source_tag_object_from_evidence=$(jq -er '.source_run.tag_object' "$qualification")
+          producer_commit=$(jq -er '.source_run.producer_commit' "$qualification")
+          if [[ "$source_run_id_from_evidence" != "$SOURCE_RUN_ID" ||
+                "$source_workflow_from_evidence" != "$SOURCE_WORKFLOW_PATH" ||
+                "$source_tag_from_evidence" != "$SOURCE_TAG" ]]; then
+            echo "recovery source run identity differs from qualification evidence" >&2
+            exit 1
+          fi
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN_ID" > "$RUNNER_TEMP/source-run.json"
+          gh api --paginate --slurp \
+            "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN_ID/jobs?per_page=100" \
+            > "$RUNNER_TEMP/source-job-pages.json"
+          jq -e --arg tag "$SOURCE_TAG" --arg commit "$producer_commit" --argjson run_id "$SOURCE_RUN_ID" '
+            .id == $run_id and .event == "push" and .head_branch == $tag and
+            .head_sha == $commit and .status == "completed"
+          ' "$RUNNER_TEMP/source-run.json" >/dev/null
+          jq -e '
+            [.[].jobs[]] as $jobs |
+            ([ $jobs[] | select(.name == "plan") ] | length == 1 and all(.[]; .conclusion == "success")) and
+            ([ $jobs[] | select(.name == "sources") ] | length == 1 and all(.[]; .conclusion == "success")) and
+            ([ $jobs[] | select(.name == "draft-release") ] | length == 1 and all(.[]; .conclusion == "failure")) and
+            ([ $jobs[] | select(.name | startswith("build (")) ] | length == 18 and all(.[]; .conclusion == "success")) and
+            ([ $jobs[] | select(.name | startswith("compare (")) ] | length == 9 and all(.[]; .conclusion == "success")) and
+            ([ $jobs[] | select(.name | startswith("compatibility (")) ] | length == 9 and all(.[]; .conclusion == "success")) and
+            ([ $jobs[] | select(.conclusion != "success" and .conclusion != "skipped") | .name ] | sort == ["draft-release"])
+          ' "$RUNNER_TEMP/source-job-pages.json" >/dev/null
+          git fetch --force origin "refs/tags/$SOURCE_TAG:refs/tags/$SOURCE_TAG"
+          if [[ $(git cat-file -t "$SOURCE_TAG") != tag ]]; then
+            echo "source tag must be annotated" >&2
+            exit 1
+          fi
+          source_tag_object=$(git rev-parse "$SOURCE_TAG^{tag}")
+          source_tag_commit=$(git rev-list -n 1 "$SOURCE_TAG")
+          if [[ "$source_tag_object" != "$source_tag_object_from_evidence" ]]; then
+            echo "source tag object differs from qualification evidence" >&2
+            exit 1
+          fi
+          if [[ "$source_tag_commit" != "$producer_commit" ]]; then
+            echo "source tag does not resolve to the qualified producer commit" >&2
+            exit 1
+          fi
+          printf '%s\n' "$source_tag_object" > "$RUNNER_TEMP/source-tag-object.sha"
+          printf '%s\n' "$source_tag_commit" > "$RUNNER_TEMP/source-tag-commit.sha"
+          if ! git fetch --force origin "refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"; then
+            echo "recovery tag must be pre-created by a trusted maintainer credential" >&2
+            exit 1
+          fi
+          if [[ $(git cat-file -t "$RELEASE_TAG") != tag ]]; then
+            echo "recovery tag must be annotated" >&2
+            exit 1
+          fi
+          recovery_tag_object=$(git rev-parse "$RELEASE_TAG^{tag}")
+          recovery_tag_commit=$(git rev-list -n 1 "$RELEASE_TAG")
+          if [[ "$recovery_tag_object" == "$source_tag_object" ]]; then
+            echo "recovery tag must be a fresh annotated tag object" >&2
+            exit 1
+          fi
+          if [[ "$recovery_tag_commit" != "$source_tag_commit" ]]; then
+            echo "recovery tag must resolve to the qualified producer commit" >&2
+            exit 1
+          fi
+          printf '%s\n' "$recovery_tag_object" > "$RUNNER_TEMP/recovery-tag-object.sha"
+          printf '%s\n' "$recovery_tag_commit" > "$RUNNER_TEMP/recovery-tag-commit.sha"
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "recovery release already exists; refusing to replace assets" >&2
+            exit 1
+          fi
+          "$GITHUB_WORKSPACE/scripts/toolchain/verify-provenance-attestation.sh" \
+            --checksums "$GITHUB_WORKSPACE/source-release/SHA256SUMS" \
+            --bundle "$GITHUB_WORKSPACE/source-release/toolchain-provenance.sigstore.json" \
+            --exclude-subject toolchain-provenance.sigstore.json \
+            --repository "$GITHUB_REPOSITORY" \
+            --signer-workflow "$GITHUB_REPOSITORY/$SOURCE_WORKFLOW_PATH" \
+            --source-digest "$source_tag_commit" \
+            --source-ref "refs/tags/$SOURCE_TAG" \
+            --output "$RUNNER_TEMP/verified-source-attestation.json"
+          now=$(date -u +%s)
+          mkdir -p "$RUNNER_TEMP/recovery"
+          "${{ steps.runtime.outputs.root }}/bin/aros" toolchain producer prepare-recovery \
+            --qualification-evidence "$qualification" \
+            --release-dir "$GITHUB_WORKSPACE/source-release" \
+            --source-tag-object "$source_tag_object" \
+            --source-tag-commit "$source_tag_commit" \
+            --recovery-release-id "$RELEASE_TAG" \
+            --recovery-tag-object "$recovery_tag_object" \
+            --recovery-tag-commit "$recovery_tag_commit" \
+            --source-repository "https://github.com/$GITHUB_REPOSITORY" \
+            --source-workflow "$SOURCE_WORKFLOW_PATH" \
+            --attestation-repository "https://github.com/$GITHUB_REPOSITORY" \
+            --attestation-workflow "$SOURCE_WORKFLOW_PATH" \
+            --attestation-signer "github-actions" \
+            --now "$now" \
+            --output "$RUNNER_TEMP/recovery/recovery-request-v1.json"
+          "${{ steps.runtime.outputs.root }}/bin/aros" toolchain producer validate-recovery \
+            --recovery-request "$RUNNER_TEMP/recovery/recovery-request-v1.json" \
+            --release-dir "$GITHUB_WORKSPACE/source-release" \
+            --output "$RUNNER_TEMP/recovery/source-inventory-validation-v1.json"
+
+      - name: Repackage qualified payloads twice through the native producer
+        env:
+          SOURCE_TAG: ${{ inputs.source_tag }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          mkdir repack-a repack-b release
+          mkdir -p "$RUNNER_TEMP/recovery-extract-a" "$RUNNER_TEMP/recovery-extract-b" "$RUNNER_TEMP/recovery-environments"
+          source_lock_file=$(basename "$SOURCE_LOCK")
+          profiles_file=$(basename "$PROFILES")
+          for host in linux-aarch64 linux-x86_64 macos-aarch64; do
+            for profile in arm-raspi pc-x86_64 rpi-aarch64; do
+              lane="$host-$profile"
+              source_package="$GITHUB_WORKSPACE/source-packages/verified-$lane"
+              manifests=("$source_package"/*.tar.xz.manifest.json)
+              if [[ ${#manifests[@]} -ne 1 ]]; then
+                echo "recovery source package must contain exactly one manifest for $lane" >&2
+                exit 1
+              fi
+              environment="$RUNNER_TEMP/recovery-environments/$lane.json"
+              jq -e '.build_environment | select(type == "object")' "${manifests[0]}" > "$environment"
+              "${{ steps.runtime.outputs.root }}/bin/aros" toolchain producer repackage \
+                --recovery-request "$RUNNER_TEMP/recovery/recovery-request-v1.json" \
+                --source-package-dir "$source_package" \
+                --source-release-id "$SOURCE_TAG" \
+                --recipe "$GITHUB_WORKSPACE/source-release/toolchain-recipe-v2.json" \
+                --source-lock "$GITHUB_WORKSPACE/source-release/$source_lock_file" \
+                --profiles "$GITHUB_WORKSPACE/source-release/$profiles_file" \
+                --preset "$profile" \
+                --host "$host" \
+                --build-environment "$environment" \
+                --forbidden-prefix "$GITHUB_WORKSPACE" \
+                --forbidden-prefix "$RUNNER_TEMP" \
+                --first-extraction-dir "$RUNNER_TEMP/recovery-extract-a/$lane" \
+                --second-extraction-dir "$RUNNER_TEMP/recovery-extract-b/$lane" \
+                --first-output-dir "$GITHUB_WORKSPACE/repack-a/$lane" \
+                --second-output-dir "$GITHUB_WORKSPACE/repack-b/$lane" \
+                --comparison-output "$RUNNER_TEMP/recovery/$lane.comparison.json"
+              command cp -R "repack-a/$lane/." release/
+            done
+          done
+
+      - name: Generate complete native recovery release inventory
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          command cp source-release/toolchain-recipe-v2.json release/
+          command cp "source-release/$(basename "$SOURCE_LOCK")" release/
+          command cp "source-release/$(basename "$PROFILES")" release/
+          command cp source-release/toolchain-manifest-v1.schema.json release/
+          command cp source-release/tree-digest-v1.fixture.json release/
+          "${{ steps.runtime.outputs.root }}/bin/aros" toolchain producer index \
+            --directory "$GITHUB_WORKSPACE/release" \
+            --release-id "$RELEASE_TAG" \
+            --base-url "https://github.com/$GITHUB_REPOSITORY/releases/download/$RELEASE_TAG" \
+            --source-lock-filename "$(basename "$SOURCE_LOCK")" \
+            --stage pre-attestation
+
+      - name: Attest recovered checksummed release files
+        id: provenance
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373
+        with:
+          subject-checksums: release/SHA256SUMS
+
+      - name: Verify signed recovered pre-attestation inventory
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PROVENANCE_BUNDLE: ${{ steps.provenance.outputs.bundle-path }}
+        run: |
+          set -euo pipefail
+          # This attestation is bound to the ref and commit that execute this
+          # recovery workflow. A direct dispatch may execute from protected
+          # main, which is intentionally independent of the immutable tags
+          # validated below; do not require GITHUB_REF to equal RELEASE_TAG.
+          "$GITHUB_WORKSPACE/scripts/toolchain/verify-provenance-attestation.sh" \
+            --checksums "$GITHUB_WORKSPACE/release/SHA256SUMS" \
+            --bundle "$PROVENANCE_BUNDLE" \
+            --repository "$GITHUB_REPOSITORY" \
+            --signer-workflow "$GITHUB_REPOSITORY/$RECOVERY_WORKFLOW_PATH" \
+            --source-digest "$GITHUB_SHA" \
+            --source-ref "$GITHUB_REF" \
+            --output "$RUNNER_TEMP/verified-recovery-attestation.json"
+
+      - name: Include provenance and enforce the final native inventory
+        env:
+          PROVENANCE_BUNDLE: ${{ steps.provenance.outputs.bundle-path }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          command cp "$PROVENANCE_BUNDLE" release/toolchain-provenance.sigstore.json
+          "${{ steps.runtime.outputs.root }}/bin/aros" toolchain producer index \
+            --directory "$GITHUB_WORKSPACE/release" \
+            --release-id "$RELEASE_TAG" \
+            --base-url "https://github.com/$GITHUB_REPOSITORY/releases/download/$RELEASE_TAG" \
+            --source-lock-filename "$(basename "$SOURCE_LOCK")" \
+            --stage final
+
+      - name: Validate immutable recovery tag and create draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_TAG: ${{ inputs.source_tag }}
+          SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          test -s "$RUNNER_TEMP/verified-recovery-attestation.json"
+          mapfile -d '' assets < <(find release -mindepth 1 -maxdepth 1 -type f -print0 | sort -z)
+          if [[ ${#assets[@]} -ne 44 ]]; then
+            echo "active three-host release inventory must contain exactly 44 regular files, found ${#assets[@]}" >&2
+            exit 1
+          fi
+          remote_tag_object=$(git ls-remote --tags origin "refs/tags/$RELEASE_TAG" | awk 'NR == 1 {print $1}')
+          remote_commit=$(git ls-remote --tags origin "refs/tags/$RELEASE_TAG^{}" | awk 'NR == 1 {print $1}')
+          if [[ -z "$remote_tag_object" || "$remote_tag_object" != $(cat "$RUNNER_TEMP/recovery-tag-object.sha") ]]; then
+            echo "recovery tag object changed during assembly; refusing to publish" >&2
+            exit 1
+          fi
+          if [[ -z "$remote_commit" || "$remote_commit" != $(cat "$RUNNER_TEMP/recovery-tag-commit.sha") ]]; then
+            echo "recovery tag target changed during assembly; refusing to publish" >&2
+            exit 1
+          fi
+          remote_source_tag_object=$(git ls-remote --tags origin "refs/tags/$SOURCE_TAG" | awk 'NR == 1 {print $1}')
+          remote_source_commit=$(git ls-remote --tags origin "refs/tags/$SOURCE_TAG^{}" | awk 'NR == 1 {print $1}')
+          if [[ -z "$remote_source_tag_object" || "$remote_source_tag_object" != $(cat "$RUNNER_TEMP/source-tag-object.sha") ]]; then
+            echo "source tag object changed during assembly; refusing to publish" >&2
+            exit 1
+          fi
+          if [[ -z "$remote_source_commit" || "$remote_source_commit" != $(cat "$RUNNER_TEMP/source-tag-commit.sha") ]]; then
+            echo "source tag target changed during assembly; refusing to publish" >&2
+            exit 1
+          fi
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "recovery release appeared during assembly; refusing to replace assets" >&2
+            exit 1
+          fi
+          notes=$(mktemp)
+          printf '%s\n' \
+            "Recovered without recompilation from qualified producer run $SOURCE_RUN_ID ($SOURCE_TAG)." \
+            "The source run passed 18 builds, 9 byte comparisons, and 9 compatibility lanes." \
+            "Each unchanged payload was repackaged twice for $RELEASE_TAG and byte-compared again." \
+            "Recovery provenance identifies the workflow execution at $GITHUB_REF ($GITHUB_SHA); it is not required to equal either immutable tag." \
+            "This release remains a draft for independent verification before publication." > "$notes"
+          prerelease_args=()
+          case "$RELEASE_PRERELEASE" in
+            true) prerelease_args=(--prerelease) ;;
+            false) ;;
+            *) echo "release channel classification is missing or invalid" >&2; exit 1 ;;
+          esac
+          gh release create "$RELEASE_TAG" \
+            --verify-tag \
+            --draft \
+            --title "AROS deterministic toolchains $RELEASE_TAG" \
+            --notes-file "$notes" \
+            "${prerelease_args[@]}" \
+            "${assets[@]}"
