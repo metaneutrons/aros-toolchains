@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.1](https://github.com/metaneutrons/aros-toolchains/compare/v0.1.0...v0.1.1) (2026-09-26)
+
+
+### Bug Fixes
+
+* bound compatibility source fetch retries ([#5](https://github.com/metaneutrons/aros-toolchains/issues/5)) ([5b6e6b4](https://github.com/metaneutrons/aros-toolchains/commit/5b6e6b4339bdfb38b69a0784f1d16bd2ce4221a1))
+
 ## 0.1.0 (2026-09-26)
 
 
