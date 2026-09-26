@@ -39,6 +39,7 @@ release_please_config = json.loads(
 )
 if (
     release_please_config.get("release-type") != "simple"
+    or release_please_config.get("initial-version") != "0.1.0"
     or release_please_config.get("include-component-in-tag") is not False
     or release_please_config.get("skip-github-release") is not True
     or "skip-github-release: true" not in release_please
