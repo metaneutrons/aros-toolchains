@@ -55,6 +55,8 @@ if (source_root / "version.txt").read_text(encoding="utf-8").strip() != json.loa
     (source_root / ".release-please-manifest.json").read_text(encoding="utf-8")
 )["."]:
     fail("Release Please version file and manifest disagree")
+if "## Changelog" in (source_root / "CHANGELOG.md").read_text(encoding="utf-8"):
+    fail("Release Please changelog contains a duplicate bootstrap section")
 
 
 def blocks(text: str, prefix: str) -> list[str]:
