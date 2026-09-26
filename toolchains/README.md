@@ -67,6 +67,10 @@ records an identifier, cache filename, safe materialized path, safe relative
 fetch-marker path, URL, SHA-256 and byte size. The compatibility executor
 refuses a source/profile mismatch, a changed input, undeclared files, network
 access, or a source root that has been modified after materialization.
+The release workflow makes at most three online attempts to fill this cache
+after a transport failure, reporting incomplete entries between attempts.
+Every attempt preserves existing objects; offline fetch and full hash
+verification remain mandatory before a build can start.
 
 Inputs use exact downloaded bytes unless their reviewed `normalization` field
 says otherwise. Chromium Gitiles documents that its archive metadata is not

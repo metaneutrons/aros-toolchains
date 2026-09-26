@@ -51,6 +51,12 @@ if (
     fail("Release Please must prepare repository-scoped version PRs only")
 if "      - v*" not in workflow or "startsWith(github.ref, 'refs/tags/v')" not in workflow:
     fail("only canonical SemVer tag candidates may reach the release workflow")
+if (
+    "for attempt in 1 2 3; do" not in workflow
+    or "compatibility source fetch exhausted three bounded attempts" not in workflow
+    or "cache sources list" not in workflow
+):
+    fail("compatibility source transport must have bounded retries and diagnostics")
 if (source_root / "version.txt").read_text(encoding="utf-8").strip() != json.loads(
     (source_root / ".release-please-manifest.json").read_text(encoding="utf-8")
 )["."]:
@@ -776,8 +782,8 @@ if workflow.count('host_tool_args=()') != 1 or workflow.count('"${host_tool_args
     raise SystemExit("release compatibility must materialize and pass one complete measured host-tool closure")
 if workflow.count('type -P gmake || type -P make || true') != 1:
     raise SystemExit("release compatibility must map the stable make role to an explicit host executable")
-if workflow.count('--compatibility-ports-lock "$GITHUB_WORKSPACE/$COMPATIBILITY_PORTS_LOCK"') != 4:
-    raise SystemExit("release must probe, acquire, offline-prove, and hash-verify the compatibility source closure")
+if workflow.count('--compatibility-ports-lock "$GITHUB_WORKSPACE/$COMPATIBILITY_PORTS_LOCK"') != 5:
+    raise SystemExit("release must probe, acquire, diagnose, offline-prove, and hash-verify the compatibility source closure")
 if workflow.count('--ports-lock "$GITHUB_WORKSPACE/$COMPATIBILITY_PORTS_LOCK"') != 1:
     raise SystemExit("release compatibility must bind the declared source-input lock to its native executor")
 if workflow.count('--ports-cache-dir "$GITHUB_WORKSPACE/source-cache"') != 1:
