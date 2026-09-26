@@ -340,6 +340,8 @@ compatibility_artifacts = [
 if not compatibility_artifacts:
     fail("release workflow must preserve native compatibility evidence")
 for block in compatibility_artifacts:
+    if "if: always()" not in block:
+        fail("release workflow must preserve compatibility failure logs")
     if "if-no-files-found: error" not in block:
         fail("compatibility evidence upload must fail closed")
     if "if-no-files-found: warn" in block:
@@ -844,8 +846,9 @@ for workflow_path in workflows:
     if match is None or match.group(1) != source_commit:
         raise SystemExit(f"{workflow_path.name} must pin the checked-out AROS source contract")
 PY
-python3 - "$source_root/.github/workflows/toolchain-compatibility-replay.yml" <<'PY'
+python3 - "$source_root/.github/workflows/toolchain-compatibility-replay.yml" "$source_root/scripts/toolchain/select-replay-matrix.py" <<'PY'
 from pathlib import Path
+import runpy
 import sys
 
 workflow = Path(sys.argv[1]).read_text(encoding="utf-8")
@@ -863,8 +866,26 @@ if "name: verified-toolchain-sources\n          path: source-cache\n          gi
     raise SystemExit("the shared replay source closure must start from the named producer source artifact")
 if "name: replay-verified-source-closure\n          path: source-cache\n      - id: runtime" not in workflow:
     raise SystemExit("compatibility lanes must consume the shared closure instead of fetching sources independently")
-if workflow.count("profile:") != 9:
+selector = runpy.run_path(sys.argv[2], run_name="replay_matrix_contract_test")["select"]
+full = selector("all", "all")["include"]
+if len(full) != 9 or len({(lane["host"], lane["profile"]) for lane in full}) != 9:
     raise SystemExit("compatibility replay must cover the complete active nine-lane matrix")
+if selector("macos-aarch64", "pc-x86_64")["include"] != [
+    {"host": "macos-aarch64", "runner": "macos-15", "profile": "pc-x86_64"}
+]:
+    raise SystemExit("compatibility replay must select one exact diagnostic lane")
+for host, profile in (("macos-intel", "all"), ("all", "invalid-profile")):
+    try:
+        selector(host, profile)
+    except ValueError:
+        continue
+    raise SystemExit("compatibility replay accepted an unsupported lane")
+if "matrix: ${{ fromJSON(needs.source-closure.outputs.matrix) }}" not in workflow:
+    raise SystemExit("compatibility replay must use only the bounded selected matrix")
+if 'python3 scripts/toolchain/select-replay-matrix.py "$REPLAY_HOST" "$REPLAY_PROFILE" "$GITHUB_OUTPUT"' not in workflow:
+    raise SystemExit("compatibility replay must derive its matrix from declared dispatch choices")
+if "- name: Preserve native replay evidence\n        if: always()" not in workflow:
+    raise SystemExit("compatibility replay must retain failure logs")
 if workflow.count("bash dependencies/aros/scripts/ci/install-build-prerequisites.sh") != 1:
     raise SystemExit("compatibility replay must use the shared host prerequisite contract")
 if workflow.count('toolchain producer compatibility-host-tools') != 1:
