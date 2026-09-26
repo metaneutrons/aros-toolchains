@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.2](https://github.com/metaneutrons/aros-toolchains/compare/v0.1.1...v0.1.2) (2026-09-26)
+
+
+### Bug Fixes
+
+* pin qualified AROS-NX source commit ([#8](https://github.com/metaneutrons/aros-toolchains/issues/8)) ([e43c2d1](https://github.com/metaneutrons/aros-toolchains/commit/e43c2d111600c405dc1d7f37bcf5eb3d8e59faf2))
+* retain compatibility failure logs and scope replay lanes ([cae0a59](https://github.com/metaneutrons/aros-toolchains/commit/cae0a595230fb3548bc68f0a2b6d6725b6bc1c91))
+
 ## [0.1.1](https://github.com/metaneutrons/aros-toolchains/compare/v0.1.0...v0.1.1) (2026-09-26)
 
 
