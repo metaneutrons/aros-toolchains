@@ -285,6 +285,13 @@ to both Linux hosts. They never publish and cannot replace the tag gate. Every f
 tag qualification is corrected under a new immutable tag, never by retargeting
 an old tag or replacing assets.
 
+`AROS Toolchain Compatibility Replay` reuses the verified packages and source
+closure from a completed producer run without rebuilding compilers. Its `host`
+and `profile` choices select either the complete nine-lane matrix or one exact
+diagnostic lane. Replay never publishes. Both the replay and release workflows
+retain per-phase compatibility logs when a lane fails; those logs are diagnostic
+evidence, not permission to reuse a failed release tag.
+
 ## Locked CMake C++ consumer contract
 
 A release prefix is a compiler/runtime distribution, not a copy of an AROS
