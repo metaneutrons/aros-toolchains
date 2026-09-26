@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.3](https://github.com/metaneutrons/aros-toolchains/compare/v0.1.2...v0.1.3) (2026-09-26)
+
+
+### Bug Fixes
+
+* bind native executor to released tools runtime ([f96078f](https://github.com/metaneutrons/aros-toolchains/commit/f96078f385f3657deda261eb3560793aed50d44d))
+
 ## [0.1.2](https://github.com/metaneutrons/aros-toolchains/compare/v0.1.1...v0.1.2) (2026-09-26)
 
 
