@@ -59,14 +59,16 @@ silently replaced by a branch or by the executable archive.
 
 ## Offline compatibility source closure
 
-`compatibility-ports-v2.json` is the single source of truth for the separate
+`compatibility-ports-v3.json` is the single source of truth for the separate
 upstream source closure exercised by native compatibility. It binds the exact
 AROS revision and every measured external input reachable from the upstream
 `includes` and `linklibs` graphs for each active target profile. An input
-records an identifier, cache filename, safe materialized path, safe relative
-fetch-marker path, URL, SHA-256 and byte size. The compatibility executor
-refuses a source/profile mismatch, a changed input, undeclared files, network
-access, or a source root that has been modified after materialization.
+records an identifier, cache filename, safe materialized path, optional exact
+CMake cache path, safe relative fetch-marker path, URL, SHA-256 and byte size.
+The compatibility executor preloads every CMake source from verified cache
+copies and runs CMake's fetcher offline. It refuses a source/profile mismatch,
+a changed input, undeclared files, network access, or a source root modified
+after materialization.
 The release workflow makes at most three online attempts to fill this cache
 after a transport failure, reporting incomplete entries between attempts.
 Every attempt preserves existing objects; offline fetch and full hash

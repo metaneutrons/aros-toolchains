@@ -378,7 +378,7 @@ python3 - "$source_root/.github/workflows/toolchain-release.yml" \
     "$source_root/.github/workflows/toolchain-release-recovery.yml" \
     "$source_root/.github/workflows/toolchain-compatibility-replay.yml" <<'PY'
 import json
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import re
 import subprocess
 import sys
@@ -390,7 +390,7 @@ workflow = release_path.read_text(encoding="utf-8")
 recovery = Path(sys.argv[2]).read_text(encoding="utf-8")
 replay = Path(sys.argv[3]).read_text(encoding="utf-8")
 ports_lock = json.loads(
-    (source_root / "toolchains" / "compatibility-ports-v2.json").read_text(encoding="utf-8")
+    (source_root / "toolchains" / "compatibility-ports-v3.json").read_text(encoding="utf-8")
 )
 expected_ports_inputs = {
     "unicode-data-16-0-0": (
@@ -513,6 +513,14 @@ expected_ports_inputs = {
         "4996f0c4f93094719b1ca5c6279b20e588773ba8a247533e486416fb662ddb88",
         2409652,
     ),
+    "softfloat-3e": (
+        "SoftFloat-3e.zip",
+        "SoftFloat-3e.zip",
+        "",
+        "https://www.jhauser.us/arithmetic/SoftFloat-3e.zip",
+        "21130ce885d35c1fe73fc1e1bf2244178167e05c6747cad5f450cc991714c746",
+        729637,
+    ),
     "utf8proc-2-11-3": (
         "utf8proc-v2.11.3.tar.gz",
         "utf8proc/v2.11.3.tar.gz",
@@ -538,19 +546,72 @@ expected_ports_inputs = {
         2434947,
     ),
 }
-if ports_lock.get("schema") != "aros-toolchain-compatibility-ports-v2":
+expected_cmake_cache_paths = {
+    "acpica-unix-20260408": "portssources/acpica-unix-20260408.tar.gz",
+    "bzip2-1-0-8": "portssources/bzip2-1.0.8.tar.gz",
+    "expat-2-8-2": "portssources/expat-2.8.2.tar.bz2",
+    "freetype-2-14-3": "portssources/freetype-2.14.3.tar.xz",
+    "glu-9-0-2": "portssources/glu-9.0.2.tar.xz",
+    "jpeg-9f": "portssources/jpegsrc.v9f.tar.gz",
+    "xz-5-8-3": "portssources/xz-5.8.3.tar.gz",
+    "mbedtls-3-6-7": "portssources/mbedtls-3.6.7.tar.bz2",
+    "mesa-20-0-8": "portssources/mesa-20.0.8.tar.xz",
+    "libpng-1-6-58": "portssources/libpng-1.6.58.tar.gz",
+    "tiff-4-7-2": "portssources/tiff-4.7.2.tar.xz",
+    "softfloat-3e": "Ports/libsoftfloat/SoftFloat-3e.zip",
+    "utf8proc-2-11-3": "portssources/utf8proc/v2.11.3.tar.gz",
+    "chromium-zlib-da752eb2": "portssources/chromium-da752eb2a3660cf1bf8dac620f6380b89dd953a7/zlib.tar.gz",
+    "zstd-1-5-7": "portssources/zstd-1.5.7.tar.gz",
+}
+if ports_lock.get("schema") != "aros-toolchain-compatibility-ports-v3":
     raise SystemExit("compatibility source-input lock has an unsupported schema")
 if ports_lock.get("upstream_commit") != "6722a0ae9e03fe5d26e32703360bd2059e0864cc":
     raise SystemExit("compatibility source-input lock lost its pinned upstream revision")
+ports_inputs = ports_lock.get("inputs")
+if not isinstance(ports_inputs, list):
+    raise SystemExit("compatibility source-input lock must declare inputs as a list")
+input_ids = [input.get("id") for input in ports_inputs]
+if any(not isinstance(input_id, str) or not input_id for input_id in input_ids):
+    raise SystemExit("compatibility source-input lock contains a malformed input id")
+if len(input_ids) != len(set(input_ids)):
+    raise SystemExit("compatibility source-input lock contains duplicate input ids")
 observed_ports_inputs = {
     input.get("id"): (
         input.get("cache_filename"), input.get("relative_path"), input.get("fetch_marker"), input.get("url"),
         input.get("sha256"), input.get("size"),
     )
-    for input in ports_lock.get("inputs", [])
+    for input in ports_inputs
 }
 if observed_ports_inputs != expected_ports_inputs:
     raise SystemExit("compatibility source-input lock differs from the measured upstream closure")
+observed_cmake_cache_paths = {}
+for input in ports_inputs:
+    if "cmake_cache_path" not in input:
+        continue
+    input_id = input.get("id")
+    cache_path = input.get("cmake_cache_path")
+    if (
+        not isinstance(cache_path, str)
+        or not cache_path
+        or PurePosixPath(cache_path).is_absolute()
+        or "\\" in cache_path
+        or any(part in {"", ".", ".."} for part in cache_path.split("/"))
+        or any(ord(character) < 0x20 for character in cache_path)
+    ):
+        raise SystemExit(f"compatibility source-input lock has a malformed CMake cache path: {input_id}")
+    observed_cmake_cache_paths[input_id] = cache_path
+if len(expected_cmake_cache_paths) != 15:
+    raise SystemExit("the CMake inventory contract must enumerate exactly 15 cache mappings")
+if any(
+    "cmake_cache_path" in input
+    for input in ports_inputs
+    if input.get("id") in {"unicode-data-16-0-0", "unicode-special-casing-16-0-0", "boost-1-89-0"}
+):
+    raise SystemExit("Unicode and Boost inputs must not declare a CMake cache mapping")
+if observed_cmake_cache_paths != expected_cmake_cache_paths:
+    raise SystemExit("compatibility source-input lock has missing, extra, or incorrect CMake cache mappings")
+if len(set(observed_cmake_cache_paths.values())) != len(observed_cmake_cache_paths):
+    raise SystemExit("compatibility source-input lock maps multiple inputs to one CMake cache path")
 expected_normalization = {
     "chromium-zlib-da752eb2": "canonical-tar-gzip-v1",
 }
@@ -802,7 +863,7 @@ if "name: native-lifecycle-${{ matrix.host }}-${{ matrix.profile }}-${{ matrix.c
     raise SystemExit("each producer must retain native lifecycle receipts outside the release archive")
 PY
 python3 - "$AROS_TEST_SOURCE_ROOT" \
-    "$source_root/toolchains/compatibility-ports-v2.json" \
+    "$source_root/toolchains/compatibility-ports-v3.json" \
     "$source_root/.github/workflows/ci.yml" \
     "$source_root/.github/workflows/toolchain-release.yml" \
     "$source_root/.github/workflows/toolchain-compatibility-replay.yml" <<'PY'

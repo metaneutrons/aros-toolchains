@@ -29,7 +29,7 @@ env:
   LLVM_VERSION: 11.0.0
   PROFILES: toolchains/profiles-v1.json
   SOURCE_LOCK: toolchains/llvm-11.0.0.sources.json
-  COMPATIBILITY_PORTS_LOCK: toolchains/compatibility-ports-v2.json
+  COMPATIBILITY_PORTS_LOCK: toolchains/compatibility-ports-v3.json
   AROS_SOURCE_REPOSITORY: metaneutrons/AROS-NX
   AROS_SOURCE_COMMIT: cb6974f1c3de43c6f1168d69039af7c32e56153c
   TOOLS_RUNTIME_LOCK: toolchains/aros-tools-runtime-v1.json
