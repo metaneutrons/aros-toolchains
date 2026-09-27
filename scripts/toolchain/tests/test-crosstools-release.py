@@ -364,24 +364,20 @@ def main() -> None:
     ).read_text(encoding="utf-8")
     assert "set_property(GLOBAL PROPERTY TARGET_SUPPORTS_SHARED_LIBS TRUE)" in imported_targets_policy
 
-    # Keep the locked LLVM patch consumable by the host's patch utility. The
-    # X86 include hunk needs ordinary leading context on macOS; a malformed
-    # four-plus new-file header makes that hunk fail after source extraction.
+    # Keep the locked LLVM patch consumable by the host's patch utility.
+    # Its AROS triple additions replace the retired X86 include workaround.
     llvm_patch = (SOURCE_ROOT / "tools" / "crosstools" / "llvm" / "llvm-11.0.0.src-aros.diff").read_text(
         encoding="utf-8"
     )
     assert "\n++++ " not in llvm_patch
     assert re.search(
-        r"^\+\+\+ llvm-11\.0\.0\.src\.aros/lib/Target/X86/MCTargetDesc/X86MCTargetDesc\.h\t.*\n"
-        r"@@ -13,5 \+13,6 @@\n"
-        r" #ifndef LLVM_LIB_TARGET_X86_MCTARGETDESC_X86MCTARGETDESC_H\n"
-        r" #define LLVM_LIB_TARGET_X86_MCTARGETDESC_X86MCTARGETDESC_H\n"
-        r"-\n"
-        r"\+\n"
-        r"\+#include <cstdint>\n",
+        r"^\+\+\+ llvm-11\.0\.0\.src\.aros/include/llvm/ADT/Triple\.h\t.*\n"
+        r"@@ -16,6 \+16,7 @@\n",
         llvm_patch,
         re.MULTILINE,
     )
+    assert "+  bool isAROS() const {" in llvm_patch
+    assert "+    .StartsWith(\"aros\", Triple::AROS)" in llvm_patch
 
     # Clang 11 keyed generated attribute sub-rules by Record pointer. ASLR then
     # changed the installed include and the two dylibs that compile it between

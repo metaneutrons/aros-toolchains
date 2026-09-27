@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify that the locked LLVM 11 AROS patch is accepted by `patch -p1`."""
+"""Verify the pinned LLVM 11 patch and its AROS triple hunks offline."""
 
 from __future__ import annotations
 
@@ -7,6 +7,8 @@ import shutil
 import subprocess
 import tempfile
 import os
+import hashlib
+import re
 from pathlib import Path
 
 
@@ -14,6 +16,26 @@ if "AROS_TEST_SOURCE_ROOT" not in os.environ:
     raise SystemExit("AROS_TEST_SOURCE_ROOT must name the AROS source checkout")
 SOURCE_ROOT = Path(os.environ["AROS_TEST_SOURCE_ROOT"]).resolve()
 PATCH = SOURCE_ROOT / "tools" / "crosstools" / "llvm" / "llvm-11.0.0.src-aros.diff"
+EXPECTED_PATCH_SHA256 = "cc7876734c45eea469056ea4cb7fdf61a62316f677d94f25aab8b9cd9d6b595e"
+FIXTURE_PATHS = frozenset(
+    {
+        "include/llvm/ADT/Triple.h",
+        "include/llvm/Support/Signals.h",
+        "lib/Support/Triple.cpp",
+    }
+)
+
+
+def selected_hunks(patch: str) -> str:
+    blocks = re.split(r"(?=^diff -ruN )", patch, flags=re.MULTILINE)
+    selected = []
+    for block in blocks:
+        match = re.search(r"^--- llvm-11\.0\.0\.src/([^\t\n]+)", block, re.MULTILINE)
+        if match and match.group(1) in FIXTURE_PATHS:
+            selected.append(block)
+    if len(selected) != len(FIXTURE_PATHS):
+        raise SystemExit("LLVM patch lacks one of the closed AROS triple fixture paths")
+    return "".join(selected)
 
 
 def padded_lines(count: int) -> list[str]:
@@ -25,6 +47,14 @@ def write_fixture(root: Path) -> None:
     fixtures: dict[str, list[str]] = {}
 
     triple_header = padded_lines(500)
+    triple_header[15:21] = [
+        "#undef NetBSD\n",
+        "#undef mips\n",
+        "#undef sparc\n",
+        "\n",
+        "namespace llvm {\n",
+        "\n",
+    ]
     triple_header[160:166] = [
         "    UnknownOS,\n",
         "\n",
@@ -73,16 +103,6 @@ def write_fixture(root: Path) -> None:
     ]
     fixtures["lib/Support/Triple.cpp"] = triple_cpp
 
-    x86_header = padded_lines(24)
-    x86_header[12:17] = [
-        "#ifndef LLVM_LIB_TARGET_X86_MCTARGETDESC_X86MCTARGETDESC_H\n",
-        "#define LLVM_LIB_TARGET_X86_MCTARGETDESC_X86MCTARGETDESC_H\n",
-        "\n",
-        "#include <memory>\n",
-        "#include <string>\n",
-    ]
-    fixtures["lib/Target/X86/MCTargetDesc/X86MCTargetDesc.h"] = x86_header
-
     for relative, lines in fixtures.items():
         destination = tree / relative
         destination.parent.mkdir(parents=True, exist_ok=True)
@@ -92,6 +112,9 @@ def write_fixture(root: Path) -> None:
 def main() -> None:
     if shutil.which("patch") is None:
         raise SystemExit("LLVM patch contract test requires patch")
+    patch = PATCH.read_bytes()
+    if hashlib.sha256(patch).hexdigest() != EXPECTED_PATCH_SHA256:
+        raise SystemExit("LLVM patch bytes differ from the locally verified exact-source patch")
 
     with tempfile.TemporaryDirectory(prefix="aros-llvm-patch-test.") as temporary:
         root = Path(temporary)
@@ -99,7 +122,7 @@ def main() -> None:
         result = subprocess.run(
             ["patch", "-p1", "--dry-run", "--batch", "--silent"],
             cwd=root / "llvm-11.0.0.src",
-            input=PATCH.read_text(encoding="utf-8"),
+            input=selected_hunks(patch.decode("utf-8")),
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -110,7 +133,7 @@ def main() -> None:
             + (result.stdout + result.stderr).strip()
         )
 
-    print("LLVM 11 AROS patch applicability contract passed")
+    print("LLVM 11 AROS patch identity and triple-hunk applicability passed")
 
 
 if __name__ == "__main__":
