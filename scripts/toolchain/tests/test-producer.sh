@@ -756,6 +756,17 @@ for name, candidate in (("producer", workflow), ("recovery", recovery)):
         raise SystemExit(f"{name} workflow must pass the validated release-channel argument array once")
     if re.search(r"gh release create[^\n]*(?:\\\n[^\n]*){0,8}--prerelease", candidate):
         raise SystemExit(f"{name} workflow must not unconditionally create prereleases")
+for name, candidate, tag_variable in (
+    ("producer", workflow, "GITHUB_REF_NAME"),
+    ("recovery", recovery, "RELEASE_TAG"),
+):
+    expected_title = f"AROS Toolchains ${tag_variable}"
+    def title_matches(content: str) -> bool:
+        return re.findall(r'--title "([^"]+)"', content) == [expected_title]
+    if not title_matches(candidate):
+        raise SystemExit(f"{name} workflow lost the canonical GitHub release title")
+    if title_matches(candidate.replace(expected_title, "AROS deterministic toolchains", 1)):
+        raise SystemExit(f"{name} title contract failed to reject an invalid title")
 if "prerelease: ${{ steps.release_tag.outputs.prerelease || 'false' }}" not in workflow:
     raise SystemExit("producer release job must consume the validated tag's channel classification")
 if "RELEASE_PRERELEASE: ${{ needs.plan.outputs.prerelease }}" not in workflow:

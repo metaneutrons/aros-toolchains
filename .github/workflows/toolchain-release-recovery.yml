@@ -418,7 +418,7 @@ jobs:
           gh release create "$RELEASE_TAG" \
             --verify-tag \
             --draft \
-            --title "AROS deterministic toolchains $RELEASE_TAG" \
+            --title "AROS Toolchains $RELEASE_TAG" \
             --notes-file "$notes" \
             "${prerelease_args[@]}" \
             "${assets[@]}"
