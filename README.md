@@ -89,6 +89,9 @@ Stable tags use `vMAJOR.MINOR.PATCH`; candidates use
 `vMAJOR.MINOR.PATCH-rc.N`. Product version `v0.1.0` and artifact schema
 `v1` describe different things. Failed candidates keep their tag and cannot
 be repaired in place. Branch and manual runs are non-publishing diagnostics.
+The GitHub display title is `AROS Toolchains <tag>` (for example,
+`AROS Toolchains v0.1.4`); the title is presentation only and never changes
+the immutable tag, asset names, checksums, or provenance.
 See the [producer contract](toolchains/README.md) for exact gates and recovery
 rules.
 

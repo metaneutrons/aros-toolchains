@@ -860,7 +860,7 @@ jobs:
           gh release create "$GITHUB_REF_NAME" \
             --verify-tag \
             --draft \
-            --title "AROS deterministic toolchains $GITHUB_REF_NAME" \
+            --title "AROS Toolchains $GITHUB_REF_NAME" \
             --notes "Built twice, byte-compared, relocation-tested, and verified against the pinned upstream AROS commit. This release remains a draft for independent verification before publication." \
             "${prerelease_args[@]}" \
             "${assets[@]}"
