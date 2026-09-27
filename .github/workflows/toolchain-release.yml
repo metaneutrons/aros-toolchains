@@ -228,6 +228,10 @@ jobs:
           "${{ steps.runtime.outputs.root }}/bin/aros" cache sources verify \
             --source-lock "$GITHUB_WORKSPACE/$SOURCE_LOCK" \
             --dir "$GITHUB_WORKSPACE/source-cache"
+          bash scripts/toolchain/seed-compatibility-zlib.sh \
+            "$GITHUB_WORKSPACE/$COMPATIBILITY_PORTS_LOCK" \
+            "$GITHUB_WORKSPACE/source-cache" \
+            "$GITHUB_WORKSPACE/toolchains/source-seeds/chromium-zlib-da752eb2.tar.gz"
           for attempt in 1 2 3; do
             if "${{ steps.runtime.outputs.root }}/bin/aros" cache sources fetch \
               --compatibility-ports-lock "$GITHUB_WORKSPACE/$COMPATIBILITY_PORTS_LOCK" \
