@@ -79,6 +79,14 @@ if (
     or "cache sources list" not in workflow
 ):
     fail("compatibility source transport must have bounded retries and diagnostics")
+seed_call = "bash scripts/toolchain/seed-compatibility-zlib.sh"
+seed_asset = "toolchains/source-seeds/chromium-zlib-da752eb2.tar.gz"
+if (
+    workflow.count(seed_call) != 1
+    or workflow.count(seed_asset) != 1
+    or workflow.index(seed_call) > workflow.index("for attempt in 1 2 3; do")
+):
+    fail("Chromium zlib must be seeded from the lock-verified source before network fetching")
 if (source_root / "version.txt").read_text(encoding="utf-8").strip() != json.loads(
     (source_root / ".release-please-manifest.json").read_text(encoding="utf-8")
 )["."]:
@@ -1051,6 +1059,27 @@ case "$temporary" in
     *) echo "refusing unsafe temporary directory: $temporary" >&2; exit 1 ;;
 esac
 trap 'rm -rf "$temporary"' EXIT
+
+seed_script="$source_root/scripts/toolchain/seed-compatibility-zlib.sh"
+seed_archive="$source_root/toolchains/source-seeds/chromium-zlib-da752eb2.tar.gz"
+ports_lock="$source_root/toolchains/compatibility-ports-v3.json"
+mkdir -p "$temporary/seed-positive" "$temporary/seed-corrupt" "$temporary/seed-mismatched-lock"
+bash "$seed_script" "$ports_lock" "$temporary/seed-positive" "$seed_archive" >/dev/null
+cmp "$seed_archive" "$temporary/seed-positive/zlib.tar.gz"
+command cp "$seed_archive" "$temporary/corrupt-zlib.tar.gz"
+printf 'corrupt\n' >> "$temporary/corrupt-zlib.tar.gz"
+if bash "$seed_script" "$ports_lock" "$temporary/seed-corrupt" "$temporary/corrupt-zlib.tar.gz" >/dev/null 2>&1; then
+    echo 'Chromium zlib seed accepted modified bytes' >&2
+    exit 1
+fi
+test ! -e "$temporary/seed-corrupt/zlib.tar.gz"
+jq '(.inputs[] | select(.id == "chromium-zlib-da752eb2") | .sha256) = "0000000000000000000000000000000000000000000000000000000000000000"' \
+    "$ports_lock" > "$temporary/mismatched-ports-lock.json"
+if bash "$seed_script" "$temporary/mismatched-ports-lock.json" "$temporary/seed-mismatched-lock" "$seed_archive" >/dev/null 2>&1; then
+    echo 'Chromium zlib seed accepted a mismatched source lock' >&2
+    exit 1
+fi
+test ! -e "$temporary/seed-mismatched-lock/zlib.tar.gz"
 
 mkdir -p "$temporary/provenance-inventory" "$temporary/provenance-bin"
 printf '%s\n' 'first attested payload' > "$temporary/provenance-inventory/first.bin"
