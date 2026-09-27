@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.4](https://github.com/metaneutrons/aros-toolchains/compare/v0.1.3...v0.1.4) (2026-09-27)
+
+
+### Bug Fixes
+
+* seed lock-verified Chromium zlib for release builds ([ab086d5](https://github.com/metaneutrons/aros-toolchains/commit/ab086d509a902b1867b0f27421f88b193b061002))
+
 ## [0.1.3](https://github.com/metaneutrons/aros-toolchains/compare/v0.1.2...v0.1.3) (2026-09-26)
 
 
