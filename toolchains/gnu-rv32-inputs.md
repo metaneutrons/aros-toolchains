@@ -16,12 +16,19 @@ The source lock identifies downloaded bytes and source-owned patches. Native
 source, producer and tools trees into a recipe. The scope regression test is
 not another lock parser and does not establish authenticated release evidence.
 
-The profile's `upstream_commit` records its upstream comparison baseline, not
-the source commit of a future build. Each generated recipe must record the
-actual clean source commit and tree separately. The current local compiler and
-SDK proofs used different source/package contexts; they cannot be combined into
-a release qualification. Their required source changes must first be integrated
-and qualified on the selected source revision.
+The staged profile still records the comparison baseline used by the retained
+local proofs. It is not ready for a V2 release-input collection: that contract
+requires each group's profile `upstream_commit` to equal its recipe's actual
+clean source commit. Activation must bind the profile to the qualified source
+revision, regenerate its exact-byte digest and recipe bindings, and update the
+scope regression's expected digest. Do not weaken the native identity check or
+substitute a prospective commit.
+
+The current local compiler and SDK proofs used different source/package
+contexts; they cannot be combined into a release qualification. Their required
+source changes must first be integrated and qualified on the selected source
+revision. Different compiler families may select different qualified source
+commits, but each group's source/profile/recipe binding must agree.
 
 The active workflow and executor still select the published LLVM/V1 runtime
 and inputs. Do not advance the executor or runtime lock with prospective
