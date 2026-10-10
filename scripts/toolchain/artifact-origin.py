@@ -111,7 +111,28 @@ def require_oidc_claims(claims: dict, context: dict, now: int) -> int:
         require(claims.get(key) == expected, "OIDC workflow/source/runner binding differs")
     for key in ("repository_id", "run_id", "run_attempt"):
         require(positive(claims.get(key)) == context[key], "OIDC provider identity differs")
-    require("job_workflow_ref" not in claims, "reusable job requires a separate approved workflow policy")
+    if "job_workflow_ref" in claims:
+        # Emit only closed classifications, never arbitrary claims or a JWT.
+        # Presence alone is not evidence that the runner called another file;
+        # retain the current rejection until the live provider shape is known.
+        def identity_shape(key: str, expected: str) -> str:
+            if key not in claims:
+                return "absent"
+            value = claims[key]
+            if value is None:
+                return "null"
+            if not isinstance(value, str):
+                return "non-string"
+            if not value:
+                return "empty"
+            return "matches-caller" if value == expected else "differs"
+
+        ref_shape = identity_shape("job_workflow_ref", claims["workflow_ref"])
+        sha_shape = identity_shape("job_workflow_sha", context["producer_commit"])
+        raise OriginError(
+            "unapproved job workflow identity "
+            f"(ref={ref_shape}, sha={sha_shape}); no token or claim values logged"
+        )
     epochs = [claims.get(key) for key in ("iat", "nbf", "exp")]
     require(all(type(epoch) is int for epoch in epochs), "OIDC token times are invalid")
     issued, starts, expires = epochs

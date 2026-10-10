@@ -276,6 +276,23 @@ class OidcClaimTests(unittest.TestCase):
                 with self.assertRaises(origin.OriginError):
                     origin.require_oidc_claims(observed, self.ctx, self.now)
 
+    def test_job_workflow_diagnostics_are_closed_and_still_fail_before_recording(self) -> None:
+        cases = (
+            ({"job_workflow_ref": None}, "ref=null, sha=absent"),
+            ({"job_workflow_ref": "", "job_workflow_sha": ""}, "ref=empty, sha=empty"),
+            ({"job_workflow_ref": self.valid["workflow_ref"], "job_workflow_sha": COMMIT},
+             "ref=matches-caller, sha=matches-caller"),
+            ({"job_workflow_ref": "DO-NOT-LOG-this-provider-value", "job_workflow_sha": COMMIT},
+             "ref=differs, sha=matches-caller"),
+            ({"job_workflow_ref": 17, "job_workflow_sha": False}, "ref=non-string, sha=non-string"),
+        )
+        for fields, shape in cases:
+            with self.subTest(shape=shape):
+                with self.assertRaises(origin.OriginError) as caught:
+                    origin.require_oidc_claims(dict(self.valid, **fields), self.ctx, self.now)
+                self.assertEqual(str(caught.exception),
+                                 f"unapproved job workflow identity ({shape}); no token or claim values logged")
+
     def test_rejects_times_outside_the_short_token_window(self) -> None:
         cases = {
             "issued too far in the future": dict(self.valid, iat=self.now + 31),
