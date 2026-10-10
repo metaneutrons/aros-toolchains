@@ -177,13 +177,18 @@ jobs:
             exit 1
           fi
           gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN_ID" > "$RUNNER_TEMP/source-run.json"
+          source_run_attempt=$(jq -er '.run_attempt | select(type == "number" and . > 0 and . == floor) | tostring' "$RUNNER_TEMP/source-run.json")
           gh api --paginate --slurp \
-            "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN_ID/jobs?per_page=100" \
+            "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN_ID/attempts/$source_run_attempt/jobs?per_page=100" \
             > "$RUNNER_TEMP/source-job-pages.json"
           jq -e --arg tag "$SOURCE_TAG" --arg commit "$producer_commit" --argjson run_id "$SOURCE_RUN_ID" '
             .id == $run_id and .event == "push" and .head_branch == $tag and
             .head_sha == $commit and .status == "completed"
           ' "$RUNNER_TEMP/source-run.json" >/dev/null
+          bash "$GITHUB_WORKSPACE/scripts/toolchain/verify-workflow-job-attempt.sh" \
+            --pages "$RUNNER_TEMP/source-job-pages.json" \
+            --run-id "$SOURCE_RUN_ID" --run-attempt "$source_run_attempt" \
+            --source-digest "$producer_commit"
           jq -e '
             [.[].jobs[]] as $jobs |
             ([ $jobs[] | select(.name == "plan") ] | length == 1 and all(.[]; .conclusion == "success")) and
@@ -243,6 +248,7 @@ jobs:
             --signer-workflow "$GITHUB_REPOSITORY/$SOURCE_WORKFLOW_PATH" \
             --source-digest "$source_tag_commit" \
             --source-ref "refs/tags/$SOURCE_TAG" \
+            --run-id "$SOURCE_RUN_ID" --run-attempt "$source_run_attempt" \
             --output "$RUNNER_TEMP/verified-source-attestation.json"
           now=$(date -u +%s)
           mkdir -p "$RUNNER_TEMP/recovery"
@@ -348,6 +354,7 @@ jobs:
             --signer-workflow "$GITHUB_REPOSITORY/$RECOVERY_WORKFLOW_PATH" \
             --source-digest "$GITHUB_SHA" \
             --source-ref "$GITHUB_REF" \
+            --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" \
             --output "$RUNNER_TEMP/verified-recovery-attestation.json"
 
       - name: Include provenance and enforce the final native inventory

@@ -404,6 +404,8 @@ fi
 provenance_verifier="$source_root/scripts/toolchain/verify-provenance-attestation.sh"
 [[ -f "$provenance_verifier" && ! -L "$provenance_verifier" ]]
 bash -n "$provenance_verifier"
+bash "$source_root/scripts/toolchain/tests/test-provenance-run-attempt.sh"
+bash "$source_root/scripts/toolchain/tests/test-workflow-job-attempt.sh"
 python3 - "$source_root/.github/workflows/toolchain-release.yml" \
     "$source_root/.github/workflows/toolchain-release-recovery.yml" \
     "$source_root/.github/workflows/toolchain-compatibility-replay.yml" <<'PY'
@@ -697,6 +699,77 @@ if workflow.count("verify-provenance-attestation.sh") != 1:
     raise SystemExit("producer draft must verify the complete signed pre-attestation inventory once")
 if recovery.count("verify-provenance-attestation.sh") != 2:
     raise SystemExit("recovery must verify both source and recovered signed inventories")
+def require_attestation_attempts(text: str, expected: list[tuple[str, str]]) -> None:
+    lines = text.splitlines()
+    calls = []
+    for index, line in enumerate(lines):
+        if "verify-provenance-attestation.sh" not in line:
+            continue
+        command = [line]
+        while lines[index].rstrip().endswith("\\") and index + 1 < len(lines):
+            index += 1
+            command.append(lines[index])
+        calls.append("\n".join(command))
+    if len(calls) != len(expected):
+        raise SystemExit("attestation calls must match the closed run-attempt selection")
+    for call, (run, attempt) in zip(calls, expected, strict=True):
+        if f'--run-id "${run}" --run-attempt "${attempt}"' not in call:
+            raise SystemExit("every attestation call must select its exact provider run attempt")
+
+require_attestation_attempts(workflow, [("GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT")])
+require_attestation_attempts(recovery, [
+    ("SOURCE_RUN_ID", "source_run_attempt"),
+    ("GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT"),
+])
+def require_source_job_attempt(text: str) -> None:
+    endpoint = 'actions/runs/$SOURCE_RUN_ID/attempts/$source_run_attempt/jobs?per_page=100'
+    helper = 'bash "$GITHUB_WORKSPACE/scripts/toolchain/verify-workflow-job-attempt.sh"'
+    lines = text.splitlines()
+    calls = []
+    for index, line in enumerate(lines):
+        if "verify-workflow-job-attempt.sh" not in line:
+            continue
+        command = [line]
+        while lines[index].rstrip().endswith("\\") and index + 1 < len(lines):
+            index += 1
+            command.append(lines[index])
+        calls.append("\n".join(command))
+    if (
+        text.count(endpoint) != 1
+        or 'actions/runs/$SOURCE_RUN_ID/jobs?' in text
+        or len(calls) != 1
+        or helper not in calls[0]
+        or '--pages "$RUNNER_TEMP/source-job-pages.json"' not in calls[0]
+        or '--run-id "$SOURCE_RUN_ID" --run-attempt "$source_run_attempt"' not in calls[0]
+        or '--source-digest "$producer_commit"' not in calls[0]
+        or text.index("source_run_attempt=$(jq") > text.index(endpoint)
+        or text.index(helper) > text.index("git fetch --force origin")
+    ):
+        raise SystemExit("recovery must join complete provider jobs to its exact verified source run attempt before tag processing")
+
+require_source_job_attempt(recovery)
+for defective in (
+    recovery.replace('/attempts/$source_run_attempt/jobs?', '/jobs?', 1),
+    recovery.replace('--source-digest "$producer_commit"', '', 1),
+    recovery.replace('bash "$GITHUB_WORKSPACE/scripts/toolchain/verify-workflow-job-attempt.sh"', 'echo ignored', 1),
+):
+    try:
+        require_source_job_attempt(defective)
+    except SystemExit as error:
+        if str(error) != "recovery must join complete provider jobs to its exact verified source run attempt before tag processing":
+            raise
+    else:
+        raise SystemExit("recovery job policy accepted an unbound provider job acquisition")
+try:
+    require_attestation_attempts(
+        workflow.replace('--run-attempt "$GITHUB_RUN_ATTEMPT"', '', 1),
+        [("GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT")],
+    )
+except SystemExit as error:
+    if str(error) != "every attestation call must select its exact provider run attempt":
+        raise
+else:
+    raise SystemExit("attestation policy accepted an unbound workflow attempt")
 if "--exclude-subject toolchain-provenance.sigstore.json" not in recovery:
     raise SystemExit("recovery must exclude only the self-referential provenance bundle from signed subjects")
 if "gh attestation verify" in workflow or "gh attestation verify" in recovery:
