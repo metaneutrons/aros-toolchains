@@ -13,8 +13,23 @@ from typing import Callable
 REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
 PROFILE_PATH = REPOSITORY_ROOT / "toolchains/profiles-gnu-rv32-v2.json"
 SOURCE_LOCK_PATH = REPOSITORY_ROOT / "toolchains/gnu-16.2.0.sources.json"
+COMPATIBILITY_PORTS_LOCK_PATH = REPOSITORY_ROOT / "toolchains/compatibility-ports-gnu-rv32-v3.json"
 EXPECTED_PROFILE_SHA256 = "9d6b7db6d1bdb16c9d37dfa5a7ddc94ec0ee594afc1bda53c2a466a5e6f6f416"
 EXPECTED_SOURCE_LOCK_SHA256 = "ced11b5c510c89a05fe3863be812f211362c08d550a8acdd46b6942b92c38c0b"
+EXPECTED_COMPATIBILITY_PORTS_LOCK_SHA256 = "0f2b5aed127c39d99dd373a91966cb256c664af5da9367e04473411c3c3aff43"
+
+COMPATIBILITY_PORTS_MAPPINGS = {
+    "boost-1-89-0": (
+        "portssources/boost_1_89_0.tar.gz",
+        "9de758db755e8330a01d995b0a24d09798048400ac25c03fc5ea9be364b13c93",
+        190099283,
+    ),
+    "codesets-6-22": (
+        "portssources/codesets/6.22.tar.gz",
+        "c4b11066b9c51c5670f69122efbdb1c58ddd69c4dbe1dcd480aac74577250cc1",
+        206125,
+    ),
+}
 
 SOURCE_VERSIONS = {
     "gcc": "16.2.0",
@@ -157,6 +172,56 @@ def require_source_lock_scope(document: dict) -> None:
         )
 
 
+def require_compatibility_ports_scope(document: dict) -> None:
+    profiles = document.get("profiles")
+    require(
+        isinstance(profiles, list)
+        and len(profiles) == 1
+        and isinstance(profiles[0], dict)
+        and profiles[0].get("name") == "rv32-esp32p4",
+        "GNU RV32 compatibility ports lock must contain exactly one rv32-esp32p4 profile",
+    )
+
+    inputs = document.get("inputs")
+    require(isinstance(inputs, list), "GNU RV32 compatibility ports lock inputs must be a list")
+    require(
+        all(isinstance(record, dict) for record in inputs),
+        "GNU RV32 compatibility ports lock inputs must be objects",
+    )
+    input_ids = [record.get("id") for record in inputs]
+    require(
+        all(isinstance(input_id, str) and input_id for input_id in input_ids)
+        and len(set(input_ids)) == len(input_ids),
+        "GNU RV32 compatibility ports lock must have unique input IDs",
+    )
+
+    cache_paths = [record["cmake_cache_path"] for record in inputs if "cmake_cache_path" in record]
+    require(
+        all(isinstance(path, str) and path for path in cache_paths),
+        "GNU RV32 compatibility ports lock CMake cache paths must be non-empty strings",
+    )
+    require(
+        len(set(cache_paths)) == len(cache_paths),
+        "GNU RV32 compatibility ports lock maps multiple inputs to one CMake cache path",
+    )
+
+    inputs_by_id = {record["id"]: record for record in inputs}
+    for input_id, (cache_path, sha256, size) in COMPATIBILITY_PORTS_MAPPINGS.items():
+        record = inputs_by_id.get(input_id)
+        require(
+            record is not None and record.get("cmake_cache_path") == cache_path,
+            f"GNU RV32 compatibility ports lock is missing required CMake cache mapping for {input_id}",
+        )
+        require(
+            record.get("sha256") == sha256,
+            f"GNU RV32 compatibility ports checksum for {input_id} differs from the measured input",
+        )
+        require(
+            record.get("size") == size,
+            f"GNU RV32 compatibility ports size for {input_id} differs from the measured input",
+        )
+
+
 def require_digest(raw: bytes, expected: str, label: str) -> None:
     actual = hashlib.sha256(raw).hexdigest()
     require(actual == expected, f"{label} bytes differ from the measured release input")
@@ -189,6 +254,16 @@ def main() -> None:
     source_lock, source_lock_raw = load_document(SOURCE_LOCK_PATH)
     require_source_lock_scope(source_lock)
     require_digest(source_lock_raw, EXPECTED_SOURCE_LOCK_SHA256, "GNU source lock")
+
+    compatibility_ports_lock, compatibility_ports_lock_raw = load_document(
+        COMPATIBILITY_PORTS_LOCK_PATH
+    )
+    require_compatibility_ports_scope(compatibility_ports_lock)
+    require_digest(
+        compatibility_ports_lock_raw,
+        EXPECTED_COMPATIBILITY_PORTS_LOCK_SHA256,
+        "GNU RV32 compatibility ports lock",
+    )
 
     expect_scope_failure(
         "changed lock bytes",
@@ -233,6 +308,36 @@ def main() -> None:
         "changed source entry",
         "source lock component gcc version differs from the measured input",
         lambda: require_source_lock_scope(changed_source_probe),
+    )
+
+    missing_mapping_probe = copy.deepcopy(compatibility_ports_lock)
+    next(record for record in missing_mapping_probe["inputs"] if record["id"] == "boost-1-89-0").pop(
+        "cmake_cache_path"
+    )
+    expect_scope_failure(
+        "missing compatibility CMake mapping",
+        "GNU RV32 compatibility ports lock is missing required CMake cache mapping for boost-1-89-0",
+        lambda: require_compatibility_ports_scope(missing_mapping_probe),
+    )
+
+    changed_checksum_probe = copy.deepcopy(compatibility_ports_lock)
+    next(record for record in changed_checksum_probe["inputs"] if record["id"] == "codesets-6-22")[
+        "sha256"
+    ] = "0" * 64
+    expect_scope_failure(
+        "changed compatibility checksum",
+        "GNU RV32 compatibility ports checksum for codesets-6-22 differs from the measured input",
+        lambda: require_compatibility_ports_scope(changed_checksum_probe),
+    )
+
+    duplicate_mapping_probe = copy.deepcopy(compatibility_ports_lock)
+    next(record for record in duplicate_mapping_probe["inputs"] if record["id"] == "codesets-6-22")[
+        "cmake_cache_path"
+    ] = COMPATIBILITY_PORTS_MAPPINGS["boost-1-89-0"][0]
+    expect_scope_failure(
+        "duplicate compatibility CMake mapping",
+        "GNU RV32 compatibility ports lock maps multiple inputs to one CMake cache path",
+        lambda: require_compatibility_ports_scope(duplicate_mapping_probe),
     )
 
     changed_patch_probe = copy.deepcopy(source_lock)

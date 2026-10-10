@@ -10,6 +10,12 @@ workflow or qualify a compiler, SDK, board boot or publication.
   `ilp32f` ABI, `medany` code model and P4 ISA. RV64 is deliberately excluded
   from this release group. The GNU source closure itself is shared; the profile
   document determines the target scope.
+- `compatibility-ports-gnu-rv32-v3.json` stages the 22 measured compatibility
+  inputs used by the local GNU diagnostic. Boost and Codesets include their
+  explicit CMake cache paths. All 16 fetch commands selected by the local
+  `includes` / `linklibs` graph have a unique, checksum-matching offline cache
+  mapping; the remaining records support upstream and host-Python phases.
+  This input mapping check is not a completed SDK or compatibility proof.
 
 The source lock identifies downloaded bytes and source-owned patches. Native
 `aros-tools` parses its semantics, verifies the cache and binds the exact
@@ -23,6 +29,11 @@ clean source commit. Activation must bind the profile to the qualified source
 revision, regenerate its exact-byte digest and recipe bindings, and update the
 scope regression's expected digest. Do not weaken the native identity check or
 substitute a prospective commit.
+
+The staged compatibility lock also retains the local diagnostic's exact
+upstream comparison commit. Before activation, qualify that baseline with the
+selected package and source context. Do not treat the successful cache
+verification or mapping audit as authentication of a release input group.
 
 The current local compiler and SDK proofs used different source/package
 contexts; they cannot be combined into a release qualification. Their required
