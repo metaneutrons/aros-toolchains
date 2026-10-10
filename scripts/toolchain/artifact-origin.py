@@ -17,6 +17,7 @@ import json
 import os
 from pathlib import Path
 import re
+import resource
 import stat
 import subprocess
 import sys
@@ -27,6 +28,7 @@ import urllib.request
 import zipfile
 
 SCHEMA = "aros-toolchain-artifact-origin-v1"
+SELECTION_SCHEMA = "aros-toolchain-artifact-selection-v1"
 AUDIENCE = "aros-toolchain-artifact-origin"
 MAX_METADATA = 16 * 1024 * 1024
 MAX_PAYLOAD = 32 * 1024 * 1024 * 1024
@@ -78,23 +80,33 @@ def canonical(value: object) -> bytes:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False).encode() + b"\n"
 
 
-def context_from_environment(workflow: str) -> dict:
-    repository = os.environ.get("GITHUB_REPOSITORY", "")
-    source = os.environ.get("GITHUB_SHA", "")
-    ref = os.environ.get("GITHUB_REF", "")
+def validate_context(value: object) -> dict:
+    ctx = exact_keys(value, {"repository", "repository_id", "producer_commit", "source_ref",
+                             "workflow", "run_id", "run_attempt"})
+    repository, source, ref, workflow = (ctx[key] for key in
+                                       ("repository", "producer_commit", "source_ref", "workflow"))
+    require(all(isinstance(item, str) for item in (repository, source, ref, workflow)),
+            "workflow/source selectors must be strings")
     require(bool(re.fullmatch(r"[A-Za-z0-9._-]+/[A-Za-z0-9._-]+", repository)), "repository is invalid")
     require(bool(re.fullmatch(r"[0-9a-f]{40}", source)), "producer commit is invalid")
     require(bool(re.fullmatch(r"refs/(heads|tags)/[A-Za-z0-9._/-]+", ref)), "source ref is invalid")
     require(bool(re.fullmatch(r"\.github/workflows/[A-Za-z0-9_-]+\.yml", workflow)), "workflow path is invalid")
-    return {
-        "repository": repository,
+    for key in ("repository_id", "run_id", "run_attempt"):
+        require(type(ctx[key]) is int and positive(ctx[key]) == ctx[key],
+                "selected provider identity is not an integer")
+    return ctx
+
+
+def context_from_environment(workflow: str) -> dict:
+    return validate_context({
+        "repository": os.environ.get("GITHUB_REPOSITORY", ""),
         "repository_id": positive(os.environ.get("GITHUB_REPOSITORY_ID", "")),
-        "producer_commit": source,
-        "source_ref": ref,
+        "producer_commit": os.environ.get("GITHUB_SHA", ""),
+        "source_ref": os.environ.get("GITHUB_REF", ""),
         "workflow": workflow,
         "run_id": positive(os.environ.get("GITHUB_RUN_ID", "")),
         "run_attempt": positive(os.environ.get("GITHUB_RUN_ATTEMPT", "")),
-    }
+    })
 
 
 def require_oidc_claims(claims: dict, context: dict, now: int) -> int:
@@ -203,7 +215,7 @@ def jobs_for(context: dict) -> list:
                     f'/attempts/{context["run_attempt"]}/jobs?per_page=100'])
 
 
-def select_job(pages: list, context: dict, check_id: int, name: str, status: str) -> dict:
+def complete_jobs(pages: list) -> list:
     require(isinstance(pages, list) and 0 < len(pages) <= 100, "job pages are invalid")
     totals = []
     jobs = []
@@ -215,6 +227,11 @@ def select_job(pages: list, context: dict, check_id: int, name: str, status: str
     require(all(isinstance(job, dict) for job in jobs), "job metadata is invalid")
     ids = [positive(job.get("id")) for job in jobs]
     require(len(set(ids)) == len(ids), "job pages repeat an identity")
+    return jobs
+
+
+def select_job(pages: list, context: dict, check_id: int, name: str, status: str) -> dict:
+    jobs = complete_jobs(pages)
     check_url = f'https://api.github.com/repos/{context["repository"]}/check-runs/{check_id}'
     selected = [job for job in jobs if job.get("check_run_url") == check_url]
     require(len(selected) == 1, "OIDC check ID does not select exactly one owning job")
@@ -230,6 +247,20 @@ def select_job(pages: list, context: dict, check_id: int, name: str, status: str
     require(job.get("conclusion") == ("success" if status == "completed" else None),
             "owning job did not succeed or is not currently executing")
     return {"id": positive(job["id"]), "check_run_id": check_id, "name": name}
+
+
+def select_source_job(pages: list, context: dict, expected: dict) -> dict:
+    """Select provider ownership before reading a signed origin's check ID."""
+    jobs = complete_jobs(pages)
+    selected = [job for job in jobs if positive(job.get("id")) == expected["id"]]
+    require(len(selected) == 1 and selected[0].get("name") == expected["name"],
+            "source job ID/name does not select one provider job")
+    match = re.fullmatch(
+        rf'https://api\.github\.com/repos/{re.escape(context["repository"])}/check-runs/([1-9][0-9]*)',
+        selected[0].get("check_run_url", ""),
+    )
+    require(match is not None, "source job check URL is invalid")
+    return select_job(pages, context, positive(match.group(1)), expected["name"], "completed")
 
 
 def select_artifact(artifact: dict, context: dict, artifact_id: int, name: str, digest: str) -> dict:
@@ -336,7 +367,8 @@ def verify_zip(path: Path, files: dict, digest: str, size: int | None = None) ->
         require(len(archive.infolist()) == len(files), "ZIP member count differs from signed files")
         for member in archive.infolist():
             name = member.filename
-            require(portable_path(name) and name not in seen and name in files,
+            require(member.orig_filename == name and "\x00" not in member.orig_filename
+                    and portable_path(name) and name not in seen and name in files,
                     "ZIP contains a duplicate or unselected member")
             seen.add(name)
             mode = member.external_attr >> 16
@@ -391,7 +423,8 @@ def record(args: argparse.Namespace, context: dict) -> None:
     print("Recorded unsigned owning-job observation; signature and independent verification remain required.")
 
 
-def verify(args: argparse.Namespace, context: dict) -> None:
+def verify(args: argparse.Namespace, context: dict, *, expected_job: dict | None = None,
+           expected_artifact: dict | None = None) -> None:
     measured, raw = normalized_file(args.origin, MAX_METADATA)
     bundle_measurement, _ = normalized_file(args.bundle, MAX_METADATA)
     require(args.origin != args.bundle, "origin and signature bundle must be separate files")
@@ -400,6 +433,10 @@ def verify(args: argparse.Namespace, context: dict) -> None:
             and origin["selection"] == selection(args), "signed origin differs from independent selection")
     job = exact_keys(origin["job"], {"id", "check_run_id", "name"})
     artifact = exact_keys(origin["artifact"], {"id", "name", "sha256", "size_in_bytes"})
+    require(expected_job is None or job == expected_job,
+            "signed owner differs from independently selected source job")
+    require(expected_artifact is None or artifact == expected_artifact,
+            "signed payload differs from independently selected source artifact")
     for identity in (job["id"], job["check_run_id"], artifact["id"], artifact["size_in_bytes"]):
         require(type(identity) is int and positive(identity) == identity, "signed identity is not an integer")
     require(job["name"] == args.job_name and artifact["id"] == args.artifact_id
@@ -437,6 +474,136 @@ def verify(args: argparse.Namespace, context: dict) -> None:
     print("Verified owning workflow/run-attempt/job and exact artifact ZIP/file bytes; not release qualification.")
 
 
+def source_selection(value: object, caller: dict) -> dict:
+    """Validate a caller-owned plan, never a selection inferred from origin.json."""
+    selected = exact_keys(value, {"schema", "context", "selection", "job", "artifact", "proof"})
+    require(selected["schema"] == SELECTION_SCHEMA, "source selection schema differs")
+    source = validate_context(selected["context"])
+    require(source["repository"] == caller["repository"]
+            and source["repository_id"] == caller["repository_id"],
+            "cross-repository artifact recovery is not admitted")
+    require((source["run_id"], source["run_attempt"]) != (caller["run_id"], caller["run_attempt"]),
+            "source attempt must differ from the current caller attempt")
+    lane = exact_keys(selected["selection"], {"role", "group", "host", "profile", "copy"})
+    require(selection(argparse.Namespace(**lane)) == lane, "source lane differs")
+    job = exact_keys(selected["job"], {"id", "name"})
+    require(type(job["id"]) is int and positive(job["id"]) == job["id"]
+            and isinstance(job["name"], str) and 0 < len(job["name"]) <= 256,
+            "source job selection is invalid")
+    for key in ("artifact", "proof"):
+        item = exact_keys(selected[key], {"id", "name", "sha256", "size_in_bytes"})
+        require(all(type(item[field]) is int and positive(item[field]) == item[field]
+                    for field in ("id", "size_in_bytes"))
+                and item["size_in_bytes"] <= (2 * MAX_METADATA if key == "proof" else MAX_PAYLOAD)
+                and isinstance(item["name"], str) and bool(SEGMENT.fullmatch(item["name"]))
+                and isinstance(item["sha256"], str) and bool(re.fullmatch(r"[0-9a-f]{64}", item["sha256"])),
+                "source artifact selection is invalid")
+    require(selected["artifact"]["id"] != selected["proof"]["id"]
+            and selected["artifact"]["name"] != selected["proof"]["name"],
+            "payload and proof must have separate artifact identities")
+    return selected
+
+
+def download_proof(context: dict, proof: dict, archive: Path) -> None:
+    """Numeric proof transport with a kernel byte cap before the GET."""
+    require(type(proof["size_in_bytes"]) is int and 0 < proof["size_in_bytes"] <= 2 * MAX_METADATA,
+            "proof download size is invalid")
+    with archive.open("xb") as handle:
+        # All supported reader hosts are Unix. Cap child regular-file writes
+        # before downloading; a small declared proof must not exhaust disk.
+        limit = proof["size_in_bytes"] + 1
+        command = subprocess.run(["gh", "api", f'repos/{context["repository"]}/actions/artifacts/{proof["id"]}/zip'],
+                                 stdout=handle, stderr=subprocess.DEVNULL, timeout=180, check=False,
+                                 preexec_fn=lambda: resource.setrlimit(resource.RLIMIT_FSIZE, (limit, limit)))
+    require(command.returncode == 0, "numeric proof artifact download failed")
+
+
+def proof_members(archive: Path, proof: dict) -> dict[str, bytes]:
+    """Read two bounded ordinary members, never extract untrusted ZIP paths."""
+    measured, _ = normalized_file(archive, 2 * MAX_METADATA)
+    require(measured == {"sha256": proof["sha256"], "size": proof["size_in_bytes"]},
+            "downloaded proof ZIP digest or size differs")
+    contents = {}
+    with zipfile.ZipFile(archive) as handle:
+        members = handle.infolist()
+        require(len(members) == 2 and {item.filename for item in members} ==
+                {"origin.json", "origin.sigstore.json"}, "proof ZIP must contain exactly two selected files")
+        for item in members:
+            mode = item.external_attr >> 16
+            require(item.orig_filename == item.filename and "\x00" not in item.orig_filename
+                    and 0 <= item.file_size <= MAX_METADATA
+                    and stat.S_IFMT(mode) in (0, stat.S_IFREG)
+                    and not item.is_dir() and not (item.flag_bits & 1)
+                    and item.compress_type in (zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED),
+                    "proof ZIP member is not a bounded ordinary file")
+            with handle.open(item) as member:
+                raw = member.read(MAX_METADATA + 1)
+            require(len(raw) == item.file_size <= MAX_METADATA, "proof ZIP member size differs")
+            contents[item.filename] = raw
+    files = {name: {"sha256": hashlib.sha256(raw).hexdigest(), "size": len(raw)}
+             for name, raw in contents.items()}
+    verify_zip(archive, files, proof["sha256"], proof["size_in_bytes"])
+    return contents
+
+
+def verify_source(args: argparse.Namespace, caller: dict) -> None:
+    plan_measurement, raw = normalized_file(args.source_selection, MAX_METADATA)
+    selected = source_selection(parse_json(raw), caller)
+    local = args.origin is not None or args.bundle is not None
+    require(not local or (args.origin is not None and args.bundle is not None),
+            "local origin and bundle must be supplied together")
+    if local:
+        require(args.origin.name == "origin.json" and args.bundle.name == "origin.sigstore.json",
+                "cross-run proof must use the closed origin/signature file names")
+        origin_measurement, _ = normalized_file(args.origin, MAX_METADATA)
+        bundle_measurement, _ = normalized_file(args.bundle, MAX_METADATA)
+        require(args.origin != args.bundle and args.source_selection not in (args.origin, args.bundle),
+                "source selection, origin and bundle must be separate files")
+    # Authenticate the CURRENT reader independently. Never spoof GITHUB_* to
+    # resemble the original owner, or select the caller from a source record.
+    require(os.environ.get("GITHUB_WORKFLOW_REF") ==
+            f'{caller["repository"]}/{caller["workflow"]}@{caller["source_ref"]}'
+            and os.environ.get("GITHUB_WORKFLOW_SHA") == caller["producer_commit"],
+            "current caller workflow identity differs")
+    caller_check = owning_check_id(caller)
+    select_job(jobs_for(caller), caller, caller_check, args.job_name, "in_progress")
+    source = selected["context"]
+    owner = select_source_job(jobs_for(source), source, selected["job"])
+    proof = selected["proof"]
+    observed = gh_json(["api", f'repos/{source["repository"]}/actions/artifacts/{proof["id"]}'])
+    require(select_artifact(observed, source, proof["id"], proof["name"], proof["sha256"]) == proof,
+            "provider proof differs from independently selected source artifact")
+    # Verify the raw proof ZIP BEFORE materializing anything from it. Workflow
+    # callers need no earlier archive extraction to obtain these two files.
+    with tempfile.TemporaryDirectory(prefix="aros-artifact-proof-") as temporary:
+        archive = Path(temporary).resolve() / "proof.zip"
+        download_proof(source, proof, archive)
+        contents = proof_members(archive, proof)
+        if local:
+            verify_zip(archive, {"origin.json": origin_measurement,
+                                 "origin.sigstore.json": bundle_measurement},
+                       proof["sha256"], proof["size_in_bytes"])
+            origin_path, bundle_path = args.origin, args.bundle
+        else:
+            for name, raw in contents.items():
+                with (archive.parent / name).open("xb") as handle:
+                    handle.write(raw)
+            origin_path, bundle_path = archive.parent / "origin.json", archive.parent / "origin.sigstore.json"
+        payload = selected["artifact"]
+        source_args = argparse.Namespace(**selected["selection"],
+                                         job_name=selected["job"]["name"],
+                                         artifact_id=payload["id"], artifact_name=payload["name"],
+                                         origin=origin_path, bundle=bundle_path)
+        verify(source_args, source, expected_job=owner, expected_artifact=payload)
+    require(normalized_file(args.source_selection, MAX_METADATA)[0] == plan_measurement,
+            "source selection changed during verification")
+    require(not local or (normalized_file(args.origin, MAX_METADATA)[0] == origin_measurement
+            and normalized_file(args.bundle, MAX_METADATA)[0] == bundle_measurement),
+            "source proof changed during verification")
+    require(context_from_environment(args.workflow) == caller, "current caller context changed")
+    print("Verified independently selected prior-run source; current caller remains separate; no publication authority.")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     modes = parser.add_subparsers(dest="mode", required=True)
@@ -455,17 +622,27 @@ def main() -> int:
         else:
             command.add_argument("--origin", type=Path, required=True)
             command.add_argument("--bundle", type=Path, required=True)
+    command = modes.add_parser("verify-source")
+    for key in ("workflow", "job-name"):
+        command.add_argument(f"--{key}", required=True)
+    command.add_argument("--source-selection", type=Path, required=True)
+    for key in ("origin", "bundle"):
+        command.add_argument(f"--{key}", type=Path,
+                             help="Optional local proof; supply both files or verify directly from the selected raw ZIP")
     try:
         flags = [arg.split("=", 1)[0] for arg in sys.argv[1:] if arg.startswith("--")]
         require(len(flags) == len(set(flags)), "duplicate argument selector")
         args = parser.parse_args()
-        require(bool(SEGMENT.fullmatch(args.artifact_name)) and 0 < len(args.job_name) <= 256,
+        require((args.mode == "verify-source" or bool(SEGMENT.fullmatch(args.artifact_name)))
+                and 0 < len(args.job_name) <= 256,
                 "artifact/job name selection is invalid")
         context = context_from_environment(args.workflow)
         if args.mode == "record":
             record(args, context)
-        else:
+        elif args.mode == "verify":
             verify(args, context)
+        else:
+            verify_source(args, context)
         return 0
     except OriginError as error:
         # Every OriginError message is a code-owned reason, never provider
