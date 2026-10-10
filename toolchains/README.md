@@ -39,6 +39,10 @@ and locked `aros-tools` source commit/tree to match the signed-off recipe. It
 rejects any tracked working-tree mutation; untracked transport caches do not
 alter that identity.
 
+The [staged GNU RV32 inputs](gnu-rv32-inputs.md) preserve the measured source
+closure and RV32-only target scope for the next compiler-family integration.
+They are not selected by the active LLVM/V1 release workflow.
+
 `aros-tools-runtime-v1.json` is the bootstrap lock for the producer runtime.
 It records the immutable GitHub Release ID, annotated tag object, peeled source
 commit and tree, signer workflow identity, certificate issuer, and the exact
