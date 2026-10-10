@@ -1,5 +1,9 @@
 # AROS toolchain release contract
 
+The staged [compiler-family scheduling contract](family-release-workflow-v2.md)
+defines the mixed LLVM/GNU RV32 matrix adapter. It does not replace or qualify
+the active nine-lane release workflow yet.
+
 This directory defines the immutable inputs and target profiles used by the
 GitHub toolchain producer. The verified `aros-tools` CLI drives the upstream
 AROS contract (`configure` followed by `make crosstools`); it is not a second

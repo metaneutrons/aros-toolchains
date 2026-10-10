@@ -1,0 +1,12 @@
+{
+  "schema": "aros-toolchain-workflow-policy-v2",
+  "hosts": {
+    "linux-aarch64": "ubuntu-24.04-arm",
+    "linux-x86_64": "ubuntu-24.04",
+    "macos-aarch64": "macos-15"
+  },
+  "groups": {
+    "gnu-rv32": ["rv32-esp32p4"],
+    "llvm": ["arm-raspi", "pc-x86_64", "rpi-aarch64"]
+  }
+}

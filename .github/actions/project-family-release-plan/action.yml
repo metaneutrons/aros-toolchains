@@ -1,0 +1,96 @@
+name: Project native family release plan
+description: Derive scheduling matrices from exact native release inputs and reviewed runner policy; no artifact or publication admission.
+
+inputs:
+  aros:
+    description: Absolute path to the independently verified release executable.
+    required: true
+  directory:
+    description: Absolute staged directory containing the closed V2 input collection.
+    required: true
+  inputs-sha256:
+    description: Independently selected raw collection SHA-256.
+    required: true
+  producer-commit:
+    description: Exact independently selected producer commit.
+    required: true
+  tools-commit:
+    description: Exact source commit of the independently verified runtime.
+    required: true
+  policy:
+    description: Absolute path to the reviewed scheduling policy.
+    required: true
+  policy-sha256:
+    description: Policy SHA-256 selected from the trusted producer revision.
+    required: true
+  scope:
+    description: all for complete scheduling, linux or linux-x86_64 for diagnostics only.
+    required: true
+
+outputs:
+  host_matrix:
+    description: Selected host runners, not release qualification.
+    value: ${{ steps.project.outputs.host_matrix }}
+  group_matrix:
+    description: Exact source-group document references.
+    value: ${{ steps.project.outputs.group_matrix }}
+  build_matrix:
+    description: Selected group/host/profile lanes with independent A/B copies.
+    value: ${{ steps.project.outputs.build_matrix }}
+  verify_matrix:
+    description: Selected group/host/profile comparison and compatibility lanes.
+    value: ${{ steps.project.outputs.verify_matrix }}
+  complete_lane_count:
+    description: Complete input-derived lane count before diagnostic filtering.
+    value: ${{ steps.project.outputs.complete_lane_count }}
+  selected_lane_count:
+    description: Selected scheduling lane count.
+    value: ${{ steps.project.outputs.selected_lane_count }}
+  build_count:
+    description: Selected scheduling A/B build count.
+    value: ${{ steps.project.outputs.build_count }}
+
+runs:
+  using: composite
+  steps:
+    - id: project
+      shell: bash
+      env:
+        MATRIX_AROS: ${{ inputs.aros }}
+        MATRIX_DIRECTORY: ${{ inputs.directory }}
+        MATRIX_INPUTS_SHA256: ${{ inputs.inputs-sha256 }}
+        MATRIX_PRODUCER_COMMIT: ${{ inputs.producer-commit }}
+        MATRIX_TOOLS_COMMIT: ${{ inputs.tools-commit }}
+        MATRIX_POLICY: ${{ inputs.policy }}
+        MATRIX_POLICY_SHA256: ${{ inputs.policy-sha256 }}
+        MATRIX_SCOPE: ${{ inputs.scope }}
+      run: |
+        set -euo pipefail
+        python3 -B - <<'PY'
+        import json
+        import os
+        from pathlib import Path
+        import subprocess
+        import sys
+
+        script = Path(os.environ["GITHUB_ACTION_PATH"]).resolve().parents[2] / "scripts/toolchain/release-matrix-v2.py"
+        command = [sys.executable, "-B", str(script)]
+        for flag, variable in (
+            ("aros", "MATRIX_AROS"), ("directory", "MATRIX_DIRECTORY"),
+            ("inputs-sha256", "MATRIX_INPUTS_SHA256"),
+            ("producer-commit", "MATRIX_PRODUCER_COMMIT"),
+            ("tools-commit", "MATRIX_TOOLS_COMMIT"), ("policy", "MATRIX_POLICY"),
+            ("policy-sha256", "MATRIX_POLICY_SHA256"), ("scope", "MATRIX_SCOPE"),
+        ):
+            command.extend(["--" + flag, os.environ[variable]])
+        completed = subprocess.run(command, check=True, stdout=subprocess.PIPE, timeout=75)
+        matrix = json.loads(completed.stdout)
+        values = {
+            key: json.dumps(matrix[key], sort_keys=True, separators=(",", ":"))
+            for key in ("host_matrix", "group_matrix", "build_matrix", "verify_matrix",
+                        "complete_lane_count", "selected_lane_count", "build_count")
+        }
+        with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+            for key, value in values.items():
+                output.write(key + "=" + value + "\n")
+        PY
