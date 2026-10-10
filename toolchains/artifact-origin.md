@@ -60,10 +60,54 @@ authentication does not establish compiler independence, byte reproducibility,
 compatibility, source closure or publication authority. Those remain separate
 native CLI and release-policy gates.
 
-The current helper consumes the executing workflow's independently supplied
-`GITHUB_*` context. Cross-run recovery selection and complete compiler-family
-workflow integration remain separate work; the existing release workflow does
-not yet invoke this helper.
+The `record` and `verify` commands consume the executing workflow's
+independently supplied `GITHUB_*` context. `verify-source` keeps that current
+caller context separate from an explicitly selected original run and attempt.
+Complete compiler-family production workflow integration remains separate work;
+the existing release workflow does not yet invoke this helper.
+
+## Explicit prior-run verification
+
+`verify-source --workflow CALLER_WORKFLOW --job-name CALLER_JOB` requires
+an absolute `--source-selection` file path. It never
+overrides `GITHUB_*` to impersonate the original run. The current caller's
+workflow ref/commit, runner OIDC check ID and executing provider job are checked
+independently. The diagnostic reader has no GitHub attestation-write or
+release-write permissions. Its OIDC token access is not a publishing credential;
+external OIDC relying parties must enforce their own workflow/audience policy.
+
+The caller-owned selection is closed JSON with schema
+`aros-toolchain-artifact-selection-v1` and these fields:
+
+| Field | Independent selection |
+| --- | --- |
+| `context` | Exact `repository`, `repository_id`, `workflow`, `producer_commit`, `source_ref`, `run_id`, `run_attempt` |
+| `selection` | Exact `role`, `group`, `host`, `profile`, `copy` |
+| `job` | Provider unique numeric `id` and exact `name` |
+| `artifact` | Payload numeric `id`, exact `name`, ZIP `sha256` and `size_in_bytes` |
+| `proof` | Separate proof numeric `id`, exact `name`, ZIP `sha256` and `size_in_bytes` |
+
+Obtain those selectors from the reviewed source plan and provider observations,
+not the origin record or its signature predicate. A selector file is not an
+authorization credential: production callers must admit only a reviewed source
+workflow/commit and enforce protected recovery and fresh release policy.
+Cross-repository sources and the current caller attempt are rejected.
+
+The reader first selects the source job independently by its provider ID/name
+from complete attempt-specific pages, then compares its check ID and full job
+projection with the signed record. The proof ZIP must match its independently
+selected provider digest/size and contain exactly `origin.json` and
+`origin.sigstore.json`. Its download is kernel-capped at the selected ZIP size
+plus one byte and each ordinary member is limited to 16 MiB before reading.
+Only those two fixed files are materialized in a private temporary directory;
+there is no general-purpose archive extraction before verification. Optionally
+provide both `--origin` and `--bundle` absolute paths to also require byte
+equality with an already retained local proof. Only then are
+the original source workflow signature, certificate invocation, signed payload
+identity, original payload ZIP and closed file inventory verified. The selection
+and any supplied local proof files are remeasured before success. The private
+download/materialization directory is removed on success or failure. No proof is re-signed,
+no original artifact is replaced, and no compiler execution is inferred.
 
 ## Non-publishing provider probe
 
@@ -85,6 +129,16 @@ Local unit tests use synthetic provider and signature responses only; they do
 not prove actual OIDC issuance, provider metadata or cryptographic verification.
 An actual successful probe and its rejection evidence are required before using
 this transport in a release gate.
+
+To test two distinct runs, supply an independently measured source selection
+as the `artifact_origin_source` JSON input with `artifact_origin_probe=false`.
+The read-only job accepts only the earlier CI diagnostic fixture owner, not a
+release workflow. It verifies both original artifacts and authenticates its
+own current reader job, then requires a deliberately wrong source-job selector
+and modified isolated local proof bytes to fail at their respective identity
+and ZIP-byte boundaries. Both modes are disabled by default and cannot be enabled together.
+The source artifacts must remain available and unexpired. This is a transport
+probe, not production release qualification.
 
 ## Provider contracts
 

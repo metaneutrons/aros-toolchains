@@ -10,6 +10,10 @@ on:
         description: 'Run the non-publishing owning-job artifact transport probe'
         type: boolean
         default: false
+      artifact_origin_source:
+        description: 'Closed independently measured source selection JSON for a read-only prior-run probe'
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -174,3 +178,114 @@ jobs:
           grep -Fx \
             'artifact origin verification failed: origin signature authentication failed; no retry or credential fallback' \
             "$RUNNER_TEMP/artifact-origin-counterprobe/rejection.log"
+
+  artifact-origin-source-verification:
+    name: Verify prior-run artifact origin
+    if: github.event_name == 'workflow_dispatch' && inputs.artifact_origin_source != ''
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+      attestations: read
+      id-token: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Checkout exact read-only cross-run verifier
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Validate independent source selection without changing caller identity
+        env:
+          SOURCE_SELECTION: ${{ inputs.artifact_origin_source }}
+          SAME_RUN_PROBE: ${{ inputs.artifact_origin_probe }}
+        run: |
+          set -euo pipefail
+          python3 -B - <<'PY'
+          import importlib.util
+          import os
+          from pathlib import Path
+          spec = importlib.util.spec_from_file_location('origin', 'scripts/toolchain/artifact-origin.py')
+          origin = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(origin)
+          origin.require(os.environ['SAME_RUN_PROBE'] == 'false', 'select only one diagnostic probe')
+          ctx = origin.context_from_environment('.github/workflows/ci.yml')
+          selected = origin.source_selection(origin.parse_json(os.environ['SOURCE_SELECTION'].encode()), ctx)
+          # Diagnostic scope only. Production must select a reviewed release
+          # workflow/commit independently; this cannot qualify a compiler.
+          origin.require(selected['context']['workflow'] == '.github/workflows/ci.yml'
+                         and selected['selection'] == {'role': 'diagnostic', 'group': 'probe',
+                             'host': 'linux-x86_64', 'profile': 'fixture', 'copy': 'none'}
+                         and selected['job']['name'] == 'Artifact origin probe',
+                         'cross-run diagnostic source is not the selected fixture owner')
+          root = Path(os.environ['RUNNER_TEMP']) / 'artifact-origin-source'
+          root.mkdir()
+          with (root / 'selection.json').open('xb') as handle:
+              handle.write(origin.canonical(selected))
+          PY
+      - name: Verify source signature, both original ZIPs and current reader job separately
+        run: |
+          set -euo pipefail
+          python3 -B scripts/toolchain/artifact-origin.py verify-source \
+            --workflow .github/workflows/ci.yml --job-name 'Verify prior-run artifact origin' \
+            --source-selection "$RUNNER_TEMP/artifact-origin-source/selection.json"
+      - name: Reject an independently selected wrong source job
+        run: |
+          set -euo pipefail
+          python3 -B - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          root = Path(os.environ['RUNNER_TEMP']) / 'artifact-origin-source'
+          selected = json.loads((root / 'selection.json').read_bytes())
+          selected['job']['id'] += 1
+          with (root / 'wrong-job.json').open('x') as handle:
+              json.dump(selected, handle)
+          PY
+          if python3 -B scripts/toolchain/artifact-origin.py verify-source \
+            --workflow .github/workflows/ci.yml --job-name 'Verify prior-run artifact origin' \
+            --source-selection "$RUNNER_TEMP/artifact-origin-source/wrong-job.json" \
+            2> "$RUNNER_TEMP/artifact-origin-source/rejection.log"; then
+            echo 'wrong source job unexpectedly passed' >&2
+            exit 1
+          fi
+          grep -Fx \
+            'artifact origin verification failed: source job ID/name does not select one provider job' \
+            "$RUNNER_TEMP/artifact-origin-source/rejection.log"
+      - name: Reject modified local proof bytes after bounded source retrieval
+        run: |
+          set -euo pipefail
+          python3 -B - <<'PY'
+          import argparse
+          import importlib.util
+          import os
+          from pathlib import Path
+          import tempfile
+          spec = importlib.util.spec_from_file_location('origin', 'scripts/toolchain/artifact-origin.py')
+          origin = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(origin)
+          caller = origin.context_from_environment('.github/workflows/ci.yml')
+          plan = Path(os.environ['RUNNER_TEMP']) / 'artifact-origin-source/selection.json'
+          selected = origin.source_selection(origin.parse_json(plan.read_bytes()), caller)
+          with tempfile.TemporaryDirectory(prefix='origin-counterprobe-', dir=os.environ['RUNNER_TEMP']) as temporary:
+              root = Path(temporary).resolve()
+              archive = root / 'proof.zip'
+              origin.download_proof(selected['context'], selected['proof'], archive)
+              files = origin.proof_members(archive, selected['proof'])
+              origin.require(files['origin.json'].endswith(b'\n'), 'counterprobe requires a canonical record')
+              files['origin.json'] = files['origin.json'][:-1] + b' '
+              for name, raw in files.items():
+                  with (root / name).open('xb') as handle:
+                      handle.write(raw)
+              args = argparse.Namespace(workflow='.github/workflows/ci.yml',
+                  job_name='Verify prior-run artifact origin', source_selection=plan,
+                  origin=root / 'origin.json', bundle=root / 'origin.sigstore.json')
+              try:
+                  origin.verify_source(args, caller)
+              except origin.OriginError as error:
+                  origin.require(str(error) == 'ZIP member bytes differ', 'modified proof failed at the wrong boundary')
+                  print('Modified local proof rejected against exact original ZIP; not release qualification.')
+              else:
+                  raise SystemExit('modified local proof unexpectedly passed')
+          PY
