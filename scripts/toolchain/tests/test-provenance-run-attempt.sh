@@ -212,6 +212,8 @@ expect_run_attempt_failure run-id-only "$run_id" '' \
     'run ID and attempt must both be positive canonical decimal integers'
 expect_run_attempt_failure attempt-only '' "$run_attempt" \
     'run ID and attempt must both be positive canonical decimal integers'
+expect_run_attempt_failure explicit-empty-pair '' '' \
+    'run ID and attempt must both be positive canonical decimal integers'
 expect_run_attempt_failure zero-run 0 1 \
     'run ID and attempt must both be positive canonical decimal integers'
 expect_run_attempt_failure zero-attempt 1 0 \

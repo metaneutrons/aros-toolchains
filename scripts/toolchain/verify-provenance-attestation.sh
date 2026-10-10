@@ -32,6 +32,7 @@ output=''
 exclude_subject=''
 run_id=''
 run_attempt=''
+run_selection_set=0
 
 while (($#)); do
     case "$1" in
@@ -43,8 +44,8 @@ while (($#)); do
         --source-ref) source_ref=${2-}; shift 2 ;;
         --output) output=${2-}; shift 2 ;;
         --exclude-subject) exclude_subject=${2-}; shift 2 ;;
-        --run-id) run_id=${2-}; shift 2 ;;
-        --run-attempt) run_attempt=${2-}; shift 2 ;;
+        --run-id) run_selection_set=1; run_id=${2-}; shift 2 ;;
+        --run-attempt) run_selection_set=1; run_attempt=${2-}; shift 2 ;;
         --help|-h) usage ;;
         *) usage ;;
     esac
@@ -61,7 +62,7 @@ done
     || fail 'source ref is not a canonical Git branch or tag ref'
 [[ -z "$exclude_subject" || "$exclude_subject" =~ ^[A-Za-z0-9._-]+$ ]] \
     || fail 'excluded subject must be a basename'
-if [[ -n "$run_id" || -n "$run_attempt" ]]; then
+if [[ "$run_selection_set" == 1 ]]; then
     [[ "$run_id" =~ ^[1-9][0-9]*$ && "$run_attempt" =~ ^[1-9][0-9]*$ ]] \
         || fail 'run ID and attempt must both be positive canonical decimal integers'
 fi
