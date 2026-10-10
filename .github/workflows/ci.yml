@@ -5,6 +5,11 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      artifact_origin_probe:
+        description: 'Run the non-publishing owning-job artifact transport probe'
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -38,3 +43,134 @@ jobs:
         env:
           AROS_TEST_SOURCE_ROOT: ${{ github.workspace }}/aros-source
         run: scripts/toolchain/tests/test-producer.sh
+
+  artifact-origin-probe:
+    name: Artifact origin probe
+    if: github.event_name == 'workflow_dispatch' && inputs.artifact_origin_probe
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+      attestations: write
+    outputs:
+      payload-id: ${{ steps.payload.outputs.artifact-id }}
+      proof-id: ${{ steps.proof.outputs.artifact-id }}
+    env:
+      PAYLOAD_NAME: artifact-origin-payload-${{ github.run_id }}-${{ github.run_attempt }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Checkout exact diagnostic workflow source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Stage only the two selected diagnostic files
+        run: |
+          set -euo pipefail
+          mkdir "$RUNNER_TEMP/artifact-origin-payload"
+          for fixture in smoke.c smoke.cpp; do
+            test -f "scripts/toolchain/fixtures/$fixture"
+            test ! -L "scripts/toolchain/fixtures/$fixture"
+            cp "scripts/toolchain/fixtures/$fixture" "$RUNNER_TEMP/artifact-origin-payload/$fixture"
+          done
+      - name: Upload the closed two-file diagnostic payload
+        id: payload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ env.PAYLOAD_NAME }}
+          path: ${{ runner.temp }}/artifact-origin-payload/
+          if-no-files-found: error
+          include-hidden-files: true
+          retention-days: 7
+      - name: Bind upload and file bytes to this authenticated owning job
+        env:
+          PAYLOAD_ID: ${{ steps.payload.outputs.artifact-id }}
+          PAYLOAD_SHA256: ${{ steps.payload.outputs.artifact-digest }}
+        run: |
+          set -euo pipefail
+          mkdir "$RUNNER_TEMP/artifact-origin-proof"
+          python3 -B scripts/toolchain/artifact-origin.py record \
+            --workflow .github/workflows/ci.yml --job-name 'Artifact origin probe' \
+            --artifact-id "$PAYLOAD_ID" --artifact-name "$PAYLOAD_NAME" \
+            --artifact-sha256 "$PAYLOAD_SHA256" \
+            --role diagnostic --group probe --host linux-x86_64 --profile fixture --copy none \
+            --payload-dir "$RUNNER_TEMP/artifact-origin-payload" \
+            --output "$RUNNER_TEMP/artifact-origin-proof/origin.json"
+      - name: Sign the origin record on its owning job
+        id: origin-signature
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        with:
+          subject-path: ${{ runner.temp }}/artifact-origin-proof/origin.json
+      - name: Retain the exact signature bundle separately from the payload
+        env:
+          ORIGIN_BUNDLE: ${{ steps.origin-signature.outputs.bundle-path }}
+        run: |
+          set -euo pipefail
+          test -f "$ORIGIN_BUNDLE" && test ! -L "$ORIGIN_BUNDLE"
+          cp "$ORIGIN_BUNDLE" "$RUNNER_TEMP/artifact-origin-proof/origin.sigstore.json"
+      - name: Upload the signed origin proof
+        id: proof
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: artifact-origin-proof-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/artifact-origin-proof/
+          if-no-files-found: error
+          include-hidden-files: true
+          retention-days: 7
+
+  artifact-origin-verification:
+    name: Verify artifact origin
+    needs: artifact-origin-probe
+    if: github.event_name == 'workflow_dispatch' && inputs.artifact_origin_probe
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+      attestations: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      PAYLOAD_ID: ${{ needs.artifact-origin-probe.outputs.payload-id }}
+      PAYLOAD_NAME: artifact-origin-payload-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - name: Checkout exact read-only diagnostic verifier
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Download the one proof by numeric artifact ID
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          artifact-ids: ${{ needs.artifact-origin-probe.outputs.proof-id }}
+          path: ${{ runner.temp }}/artifact-origin-proof
+          merge-multiple: true
+          digest-mismatch: error
+      - name: Independently verify provider job, signature and exact artifact bytes
+        run: |
+          set -euo pipefail
+          python3 -B scripts/toolchain/artifact-origin.py verify \
+            --workflow .github/workflows/ci.yml --job-name 'Artifact origin probe' \
+            --artifact-id "$PAYLOAD_ID" --artifact-name "$PAYLOAD_NAME" \
+            --role diagnostic --group probe --host linux-x86_64 --profile fixture --copy none \
+            --origin "$RUNNER_TEMP/artifact-origin-proof/origin.json" \
+            --bundle "$RUNNER_TEMP/artifact-origin-proof/origin.sigstore.json"
+      - name: Reject a modified isolated origin record
+        run: |
+          set -euo pipefail
+          mkdir "$RUNNER_TEMP/artifact-origin-counterprobe"
+          cp "$RUNNER_TEMP/artifact-origin-proof/origin.json" \
+            "$RUNNER_TEMP/artifact-origin-counterprobe/origin.json"
+          printf '\n' >> "$RUNNER_TEMP/artifact-origin-counterprobe/origin.json"
+          if python3 -B scripts/toolchain/artifact-origin.py verify \
+            --workflow .github/workflows/ci.yml --job-name 'Artifact origin probe' \
+            --artifact-id "$PAYLOAD_ID" --artifact-name "$PAYLOAD_NAME" \
+            --role diagnostic --group probe --host linux-x86_64 --profile fixture --copy none \
+            --origin "$RUNNER_TEMP/artifact-origin-counterprobe/origin.json" \
+            --bundle "$RUNNER_TEMP/artifact-origin-proof/origin.sigstore.json" \
+            2> "$RUNNER_TEMP/artifact-origin-counterprobe/rejection.log"; then
+            echo 'modified origin unexpectedly passed authentication' >&2
+            exit 1
+          fi
+          grep -Fx \
+            'artifact origin verification failed: origin signature authentication failed; no retry or credential fallback' \
+            "$RUNNER_TEMP/artifact-origin-counterprobe/rejection.log"
