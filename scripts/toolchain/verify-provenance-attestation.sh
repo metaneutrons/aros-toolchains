@@ -12,7 +12,7 @@ usage: verify-provenance-attestation.sh \
   --checksums PATH --bundle PATH --repository OWNER/REPO \
   --signer-workflow OWNER/REPO/.github/workflows/WORKFLOW.yml \
   --source-digest GIT_COMMIT --source-ref GIT_REF --output PATH \
-  [--exclude-subject BASENAME]
+  [--exclude-subject BASENAME] [--run-id INTEGER --run-attempt INTEGER]
 EOF
     exit 64
 }
@@ -30,6 +30,8 @@ source_digest=''
 source_ref=''
 output=''
 exclude_subject=''
+run_id=''
+run_attempt=''
 
 while (($#)); do
     case "$1" in
@@ -41,6 +43,8 @@ while (($#)); do
         --source-ref) source_ref=${2-}; shift 2 ;;
         --output) output=${2-}; shift 2 ;;
         --exclude-subject) exclude_subject=${2-}; shift 2 ;;
+        --run-id) run_id=${2-}; shift 2 ;;
+        --run-attempt) run_attempt=${2-}; shift 2 ;;
         --help|-h) usage ;;
         *) usage ;;
     esac
@@ -57,6 +61,10 @@ done
     || fail 'source ref is not a canonical Git branch or tag ref'
 [[ -z "$exclude_subject" || "$exclude_subject" =~ ^[A-Za-z0-9._-]+$ ]] \
     || fail 'excluded subject must be a basename'
+if [[ -n "$run_id" || -n "$run_attempt" ]]; then
+    [[ "$run_id" =~ ^[1-9][0-9]*$ && "$run_attempt" =~ ^[1-9][0-9]*$ ]] \
+        || fail 'run ID and attempt must both be positive canonical decimal integers'
+fi
 [[ -f "$checksums" && ! -L "$checksums" ]] || fail 'checksum document must be a regular file'
 [[ -f "$bundle" && ! -L "$bundle" ]] || fail 'provenance bundle must be a regular file'
 [[ ! -e "$output" ]] || fail "refusing to overwrite verification output: $output"
@@ -126,6 +134,18 @@ jq -e --slurpfile expected "$expected_json" '
         {name: .name, digest: .digest}] | unique | sort_by(.name)) == $expected[0]
 ' "$verified_json" >/dev/null \
     || fail 'signed provenance subjects do not exactly match the checksum inventory'
+
+if [[ -n "$run_id" ]]; then
+    # This field comes from the verified Fulcio certificate, not the workflow-
+    # controlled statement predicate. It binds this exact provider run attempt;
+    # it does not authenticate an individual job or artifact upload by itself.
+    invocation="https://github.com/$repository/actions/runs/$run_id/attempts/$run_attempt"
+    jq -e --arg invocation "$invocation" '
+        type == "array" and length > 0 and
+        all(.[]; .verificationResult.signature.certificate.runInvocationURI == $invocation)
+    ' "$verified_json" >/dev/null \
+        || fail 'verified certificate invocation differs from the selected run attempt'
+fi
 
 mkdir -p "$(dirname "$output")"
 command mv "$verified_json" "$output"

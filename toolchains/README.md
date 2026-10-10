@@ -170,6 +170,16 @@ the signed pre-attestation inventory offline with
 the bundle itself. Reviewers use the same two-layer check rather than treating
 the final `SHA256SUMS` file as an attestation subject.
 
+Release and recovery verification also require the exact run ID and attempt.
+The verifier checks `runInvocationURI` in every **verified certificate**, not
+in a workflow-controlled provenance predicate. Source recovery selects the
+attempt from the provider's source-run response; new signatures bind the
+executing run and attempt. The command keeps these selectors optional only
+for historical offline inventory verification, and rejects a partial pair.
+This run-level signature check does not establish an individual build job,
+artifact upload or independent A/B execution. Those owning-job joins remain
+separate requirements for compiler-family release integration.
+
 ## Review and promote a draft
 
 1. Download the complete draft and verify every entry in `SHA256SUMS`, the

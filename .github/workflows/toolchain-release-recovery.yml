@@ -235,6 +235,7 @@ jobs:
             echo "recovery release already exists; refusing to replace assets" >&2
             exit 1
           fi
+          source_run_attempt=$(jq -er '.run_attempt | select(type == "number" and . > 0 and . == floor) | tostring' "$RUNNER_TEMP/source-run.json")
           "$GITHUB_WORKSPACE/scripts/toolchain/verify-provenance-attestation.sh" \
             --checksums "$GITHUB_WORKSPACE/source-release/SHA256SUMS" \
             --bundle "$GITHUB_WORKSPACE/source-release/toolchain-provenance.sigstore.json" \
@@ -243,6 +244,7 @@ jobs:
             --signer-workflow "$GITHUB_REPOSITORY/$SOURCE_WORKFLOW_PATH" \
             --source-digest "$source_tag_commit" \
             --source-ref "refs/tags/$SOURCE_TAG" \
+            --run-id "$SOURCE_RUN_ID" --run-attempt "$source_run_attempt" \
             --output "$RUNNER_TEMP/verified-source-attestation.json"
           now=$(date -u +%s)
           mkdir -p "$RUNNER_TEMP/recovery"
@@ -348,6 +350,7 @@ jobs:
             --signer-workflow "$GITHUB_REPOSITORY/$RECOVERY_WORKFLOW_PATH" \
             --source-digest "$GITHUB_SHA" \
             --source-ref "$GITHUB_REF" \
+            --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" \
             --output "$RUNNER_TEMP/verified-recovery-attestation.json"
 
       - name: Include provenance and enforce the final native inventory

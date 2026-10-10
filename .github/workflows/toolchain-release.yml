@@ -763,6 +763,7 @@ jobs:
             --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/toolchain-release.yml" \
             --source-digest "$source_tag_commit" \
             --source-ref "refs/tags/$GITHUB_REF_NAME" \
+            --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" \
             --output "$RUNNER_TEMP/verified-pre-attestation.json"
 
       - name: Include provenance bundle and refresh checksums
