@@ -177,13 +177,18 @@ jobs:
             exit 1
           fi
           gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN_ID" > "$RUNNER_TEMP/source-run.json"
+          source_run_attempt=$(jq -er '.run_attempt | select(type == "number" and . > 0 and . == floor) | tostring' "$RUNNER_TEMP/source-run.json")
           gh api --paginate --slurp \
-            "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN_ID/jobs?per_page=100" \
+            "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN_ID/attempts/$source_run_attempt/jobs?per_page=100" \
             > "$RUNNER_TEMP/source-job-pages.json"
           jq -e --arg tag "$SOURCE_TAG" --arg commit "$producer_commit" --argjson run_id "$SOURCE_RUN_ID" '
             .id == $run_id and .event == "push" and .head_branch == $tag and
             .head_sha == $commit and .status == "completed"
           ' "$RUNNER_TEMP/source-run.json" >/dev/null
+          bash "$GITHUB_WORKSPACE/scripts/toolchain/verify-workflow-job-attempt.sh" \
+            --pages "$RUNNER_TEMP/source-job-pages.json" \
+            --run-id "$SOURCE_RUN_ID" --run-attempt "$source_run_attempt" \
+            --source-digest "$producer_commit"
           jq -e '
             [.[].jobs[]] as $jobs |
             ([ $jobs[] | select(.name == "plan") ] | length == 1 and all(.[]; .conclusion == "success")) and
@@ -235,7 +240,6 @@ jobs:
             echo "recovery release already exists; refusing to replace assets" >&2
             exit 1
           fi
-          source_run_attempt=$(jq -er '.run_attempt | select(type == "number" and . > 0 and . == floor) | tostring' "$RUNNER_TEMP/source-run.json")
           "$GITHUB_WORKSPACE/scripts/toolchain/verify-provenance-attestation.sh" \
             --checksums "$GITHUB_WORKSPACE/source-release/SHA256SUMS" \
             --bundle "$GITHUB_WORKSPACE/source-release/toolchain-provenance.sigstore.json" \
