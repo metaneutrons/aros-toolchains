@@ -183,6 +183,10 @@ This run-level signature check does not establish an individual build job,
 artifact upload or independent A/B execution. Those owning-job joins remain
 separate requirements for compiler-family release integration.
 
+The [owning-job artifact transport probe](artifact-origin.md) checks that
+separate boundary without building compilers or publishing. It is disabled in
+normal CI and is not yet part of the release workflow.
+
 ## Review and promote a draft
 
 1. Download the complete draft and verify every entry in `SHA256SUMS`, the
