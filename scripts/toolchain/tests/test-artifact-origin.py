@@ -237,6 +237,10 @@ class OidcClaimTests(unittest.TestCase):
     def test_exact_hosted_workflow_source_times_and_current_check_id(self) -> None:
         self.assertEqual(origin.require_oidc_claims(self.valid, self.ctx, self.now), CHECK_RUN_ID)
 
+    def test_accepts_only_the_exact_direct_workflow_self_reference_pair(self) -> None:
+        direct = dict(self.valid, job_workflow_ref=self.valid["workflow_ref"], job_workflow_sha=COMMIT)
+        self.assertEqual(origin.require_oidc_claims(direct, self.ctx, self.now), CHECK_RUN_ID)
+
     def test_rejects_mismatched_audience_repository_source_workflow_or_runner(self) -> None:
         mismatches = {
             "iss": "https://issuer.example.invalid",
@@ -280,11 +284,17 @@ class OidcClaimTests(unittest.TestCase):
         cases = (
             ({"job_workflow_ref": None}, "ref=null, sha=absent"),
             ({"job_workflow_ref": "", "job_workflow_sha": ""}, "ref=empty, sha=empty"),
-            ({"job_workflow_ref": self.valid["workflow_ref"], "job_workflow_sha": COMMIT},
-             "ref=matches-caller, sha=matches-caller"),
+            ({"job_workflow_ref": self.valid["workflow_ref"]}, "ref=matches-caller, sha=absent"),
+            ({"job_workflow_sha": COMMIT}, "ref=absent, sha=matches-caller"),
+            ({"job_workflow_ref": self.valid["workflow_ref"], "job_workflow_sha": "c" * 40},
+             "ref=matches-caller, sha=differs"),
+            ({"job_workflow_ref": self.valid["workflow_ref"], "job_workflow_sha": None},
+             "ref=matches-caller, sha=null"),
             ({"job_workflow_ref": "DO-NOT-LOG-this-provider-value", "job_workflow_sha": COMMIT},
              "ref=differs, sha=matches-caller"),
             ({"job_workflow_ref": 17, "job_workflow_sha": False}, "ref=non-string, sha=non-string"),
+            ({"job_workflow_ref": f"{REPOSITORY}/.github/workflows/called.yml@refs/heads/main",
+              "job_workflow_sha": COMMIT}, "ref=differs, sha=matches-caller"),
         )
         for fields, shape in cases:
             with self.subTest(shape=shape):

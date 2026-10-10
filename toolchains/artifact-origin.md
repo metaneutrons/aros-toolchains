@@ -12,6 +12,10 @@ checks the exact repository, source commit, workflow, run and attempt claims,
 and selects that check uniquely in the attempt-specific Jobs API. It never
 reads an OIDC token from caller-supplied metadata or persists the token.
 This direct issuance check is not a standalone JWT signature verifier.
+When GitHub includes `job_workflow_ref` / `job_workflow_sha` on a direct job,
+both must exactly equal the independently selected calling workflow and commit.
+A different called workflow, incomplete pair or malformed claim is rejected;
+no reusable-workflow admission policy is inferred from those claims.
 
 The record contains the exact job identity, lane selection, numeric artifact
 ID, API/upload ZIP digest and size, and a closed inventory of file sizes and
