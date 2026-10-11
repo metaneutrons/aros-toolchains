@@ -16,7 +16,21 @@ SOURCE_LOCK_PATH = REPOSITORY_ROOT / "toolchains/gnu-16.2.0.sources.json"
 COMPATIBILITY_PORTS_LOCK_PATH = REPOSITORY_ROOT / "toolchains/compatibility-ports-gnu-rv32-v3.json"
 EXPECTED_PROFILE_SHA256 = "9d6b7db6d1bdb16c9d37dfa5a7ddc94ec0ee594afc1bda53c2a466a5e6f6f416"
 EXPECTED_SOURCE_LOCK_SHA256 = "ced11b5c510c89a05fe3863be812f211362c08d550a8acdd46b6942b92c38c0b"
-EXPECTED_COMPATIBILITY_PORTS_LOCK_SHA256 = "0f2b5aed127c39d99dd373a91966cb256c664af5da9367e04473411c3c3aff43"
+EXPECTED_COMPATIBILITY_PORTS_LOCK_SHA256 = "677374d2c5e85aee222c577d5e0feb988833bf9db4425ec69f2456f15dd240e4"
+
+MEASURED_UCD_INPUT = {
+    "id": "unicode-ucd-16-0-0",
+    "cache_filename": "UCD.zip",
+    "relative_path": "UCD.zip",
+    "fetch_marker": "",
+    "url": "https://www.unicode.org/Public/16.0.0/ucd/UCD.zip",
+    "sha256": "c86dd81f2b14a43b0cc064aa5f89aa7241386801e35c59c7984e579832634eb2",
+    "size": 9020779,
+}
+
+# The source's classic %fetch location is revision-scoped. CMake's separate
+# mapping already names the same subtree under its build's portssources root.
+ZLIB_CLASSIC_CACHE = "chromium-da752eb2a3660cf1bf8dac620f6380b89dd953a7"
 
 COMPATIBILITY_PORTS_MAPPINGS = {
     "boost-1-89-0": (
@@ -195,6 +209,35 @@ def require_compatibility_ports_scope(document: dict) -> None:
         "GNU RV32 compatibility ports lock must have unique input IDs",
     )
 
+    inputs_by_id = {record["id"]: record for record in inputs}
+    zlib_input = inputs_by_id.get("chromium-zlib-da752eb2")
+    require(
+        zlib_input is not None
+        and zlib_input.get("relative_path") == f"{ZLIB_CLASSIC_CACHE}/zlib.tar.gz"
+        and zlib_input.get("fetch_marker") == f"{ZLIB_CLASSIC_CACHE}/.zlib-fetched"
+        and zlib_input.get("cmake_cache_path") == f"portssources/{ZLIB_CLASSIC_CACHE}/zlib.tar.gz",
+        "GNU RV32 zlib cache paths must match the revision-scoped upstream fetch location",
+    )
+    ucd_input = inputs_by_id.get(MEASURED_UCD_INPUT["id"])
+    require(
+        ucd_input is not None,
+        "GNU RV32 compatibility ports lock must contain the measured Unicode UCD archive input",
+    )
+    require(
+        ucd_input == MEASURED_UCD_INPUT,
+        "GNU RV32 compatibility ports UCD archive differs from the measured input",
+    )
+
+    selected_inputs = profiles[0].get("inputs")
+    require(
+        isinstance(selected_inputs, list)
+        and all(isinstance(input_id, str) and input_id for input_id in selected_inputs)
+        and len(selected_inputs) == len(input_ids)
+        and len(set(selected_inputs)) == len(selected_inputs)
+        and set(selected_inputs) == set(input_ids),
+        "GNU RV32 compatibility ports profile must select every locked input exactly once",
+    )
+
     cache_paths = [record["cmake_cache_path"] for record in inputs if "cmake_cache_path" in record]
     require(
         all(isinstance(path, str) and path for path in cache_paths),
@@ -329,6 +372,57 @@ def main() -> None:
         "GNU RV32 compatibility ports checksum for codesets-6-22 differs from the measured input",
         lambda: require_compatibility_ports_scope(changed_checksum_probe),
     )
+
+    missing_ucd_probe = copy.deepcopy(compatibility_ports_lock)
+    missing_ucd_probe["inputs"] = [
+        record
+        for record in missing_ucd_probe["inputs"]
+        if record.get("id") != MEASURED_UCD_INPUT["id"]
+    ]
+    expect_scope_failure(
+        "missing UCD archive input",
+        "GNU RV32 compatibility ports lock must contain the measured Unicode UCD archive input",
+        lambda: require_compatibility_ports_scope(missing_ucd_probe),
+    )
+
+    for field, value, label in (
+        ("sha256", "0" * 64, "changed UCD archive checksum"),
+        ("size", MEASURED_UCD_INPUT["size"] + 1, "changed UCD archive size"),
+        ("relative_path", "UCD-renamed.zip", "changed UCD archive path"),
+    ):
+        changed_ucd_probe = copy.deepcopy(compatibility_ports_lock)
+        next(
+            record
+            for record in changed_ucd_probe["inputs"]
+            if record["id"] == MEASURED_UCD_INPUT["id"]
+        )[field] = value
+        expect_scope_failure(
+            label,
+            "GNU RV32 compatibility ports UCD archive differs from the measured input",
+            lambda probe=changed_ucd_probe: require_compatibility_ports_scope(probe),
+        )
+
+    unselected_ucd_probe = copy.deepcopy(compatibility_ports_lock)
+    unselected_ucd_probe["profiles"][0]["inputs"].remove(MEASURED_UCD_INPUT["id"])
+    expect_scope_failure(
+        "unselected UCD archive input",
+        "GNU RV32 compatibility ports profile must select every locked input exactly once",
+        lambda: require_compatibility_ports_scope(unselected_ucd_probe),
+    )
+
+    for field, value in (
+        ("relative_path", "zlib.tar.gz"),
+        ("fetch_marker", ".zlib-fetched"),
+        ("cmake_cache_path", "portssources/zlib.tar.gz"),
+    ):
+        flat_zlib_probe = copy.deepcopy(compatibility_ports_lock)
+        next(record for record in flat_zlib_probe["inputs"]
+             if record["id"] == "chromium-zlib-da752eb2")[field] = value
+        expect_scope_failure(
+            f"flat zlib {field}",
+            "GNU RV32 zlib cache paths must match the revision-scoped upstream fetch location",
+            lambda probe=flat_zlib_probe: require_compatibility_ports_scope(probe),
+        )
 
     duplicate_mapping_probe = copy.deepcopy(compatibility_ports_lock)
     next(record for record in duplicate_mapping_probe["inputs"] if record["id"] == "codesets-6-22")[

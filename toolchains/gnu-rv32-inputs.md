@@ -17,6 +17,11 @@ workflow or qualify a compiler, SDK, board boot or publication.
   mapping; the remaining records support upstream and host-Python phases.
   This input mapping check is not a completed SDK or compatibility proof.
 
+The classic Chromium zlib cache path and its fetch marker retain the selected
+revision subtree (`chromium-<revision>/`). Its independent CMake path names
+that same subtree under `portssources/`. The cache filename, canonical bytes,
+size and checksum are unchanged; no Rust-side zlib path alias is needed.
+
 The source lock identifies downloaded bytes and source-owned patches. Native
 `aros-tools` parses its semantics, verifies the cache and binds the exact
 source, producer and tools trees into a recipe. The scope regression test is
