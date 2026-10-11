@@ -412,6 +412,10 @@ python3 -B "$source_root/scripts/toolchain/tests/test-origin-retention-workflow.
 python3 -B "$source_root/scripts/toolchain/tests/test-artifact-origin-source.py"
 python3 -B "$source_root/scripts/toolchain/tests/test-release-matrix-v2.py"
 python3 -B "$source_root/scripts/toolchain/tests/test-build-lane-v2.py"
+python3 -B "$source_root/scripts/toolchain/tests/test-native-lane-transport.py"
+python3 -B "$source_root/scripts/toolchain/tests/test-admit-lane-v2.py"
+bash -n "$source_root/scripts/toolchain/admit-lane-v2.sh"
+shellcheck "$source_root/scripts/toolchain/admit-lane-v2.sh"
 python3 - "$source_root/.github/workflows/toolchain-release.yml" \
     "$source_root/.github/workflows/toolchain-release-recovery.yml" \
     "$source_root/.github/workflows/toolchain-compatibility-replay.yml" <<'PY'
