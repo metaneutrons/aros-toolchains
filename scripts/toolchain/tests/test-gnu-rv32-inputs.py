@@ -16,7 +16,7 @@ SOURCE_LOCK_PATH = REPOSITORY_ROOT / "toolchains/gnu-16.2.0.sources.json"
 COMPATIBILITY_PORTS_LOCK_PATH = REPOSITORY_ROOT / "toolchains/compatibility-ports-gnu-rv32-v3.json"
 EXPECTED_PROFILE_SHA256 = "9d6b7db6d1bdb16c9d37dfa5a7ddc94ec0ee594afc1bda53c2a466a5e6f6f416"
 EXPECTED_SOURCE_LOCK_SHA256 = "ced11b5c510c89a05fe3863be812f211362c08d550a8acdd46b6942b92c38c0b"
-EXPECTED_COMPATIBILITY_PORTS_LOCK_SHA256 = "93e44b23bf2af76b379613214b42df3a8bf80691bd4ac5e2a73fbbdfdb2c8248"
+EXPECTED_COMPATIBILITY_PORTS_LOCK_SHA256 = "677374d2c5e85aee222c577d5e0feb988833bf9db4425ec69f2456f15dd240e4"
 
 MEASURED_UCD_INPUT = {
     "id": "unicode-ucd-16-0-0",
@@ -27,6 +27,10 @@ MEASURED_UCD_INPUT = {
     "sha256": "c86dd81f2b14a43b0cc064aa5f89aa7241386801e35c59c7984e579832634eb2",
     "size": 9020779,
 }
+
+# The source's classic %fetch location is revision-scoped. CMake's separate
+# mapping already names the same subtree under its build's portssources root.
+ZLIB_CLASSIC_CACHE = "chromium-da752eb2a3660cf1bf8dac620f6380b89dd953a7"
 
 COMPATIBILITY_PORTS_MAPPINGS = {
     "boost-1-89-0": (
@@ -206,6 +210,14 @@ def require_compatibility_ports_scope(document: dict) -> None:
     )
 
     inputs_by_id = {record["id"]: record for record in inputs}
+    zlib_input = inputs_by_id.get("chromium-zlib-da752eb2")
+    require(
+        zlib_input is not None
+        and zlib_input.get("relative_path") == f"{ZLIB_CLASSIC_CACHE}/zlib.tar.gz"
+        and zlib_input.get("fetch_marker") == f"{ZLIB_CLASSIC_CACHE}/.zlib-fetched"
+        and zlib_input.get("cmake_cache_path") == f"portssources/{ZLIB_CLASSIC_CACHE}/zlib.tar.gz",
+        "GNU RV32 zlib cache paths must match the revision-scoped upstream fetch location",
+    )
     ucd_input = inputs_by_id.get(MEASURED_UCD_INPUT["id"])
     require(
         ucd_input is not None,
@@ -396,6 +408,20 @@ def main() -> None:
         "GNU RV32 compatibility ports profile must select every locked input exactly once",
         lambda: require_compatibility_ports_scope(unselected_ucd_probe),
     )
+
+    for field, value in (
+        ("relative_path", "zlib.tar.gz"),
+        ("fetch_marker", ".zlib-fetched"),
+        ("cmake_cache_path", "portssources/zlib.tar.gz"),
+    ):
+        flat_zlib_probe = copy.deepcopy(compatibility_ports_lock)
+        next(record for record in flat_zlib_probe["inputs"]
+             if record["id"] == "chromium-zlib-da752eb2")[field] = value
+        expect_scope_failure(
+            f"flat zlib {field}",
+            "GNU RV32 zlib cache paths must match the revision-scoped upstream fetch location",
+            lambda probe=flat_zlib_probe: require_compatibility_ports_scope(probe),
+        )
 
     duplicate_mapping_probe = copy.deepcopy(compatibility_ports_lock)
     next(record for record in duplicate_mapping_probe["inputs"] if record["id"] == "codesets-6-22")[
