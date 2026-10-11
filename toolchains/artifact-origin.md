@@ -140,6 +140,37 @@ and ZIP-byte boundaries. Both modes are disabled by default and cannot be enable
 The source artifacts must remain available and unexpired. This is a transport
 probe, not production release qualification.
 
+## Release subject manifests
+
+The V2 index command writes its pre-attestation subject manifest outside the
+release directory. Pass those exact bytes directly to the pinned attestor's
+`subject-checksums` input; do not relocate payloads, prefix subject names, or
+copy a second checksum inventory into the release. The attestor reads the
+manifest's basename/digest entries, not payload paths relative to the manifest.
+
+`verify-provenance-attestation.sh` supports two exclusive input modes:
+
+- Existing V1 callers use `--checksums PATH`, with subjects beside that file.
+- V2 callers use `--subject-manifest PATH --subject-manifest-sha256 SHA256
+  --subject-dir DIR`. Select the manifest's raw SHA-256 independently from the
+  native index result and select the owned release root explicitly.
+
+The V2 mode snapshots a regular manifest of at most 1 MiB, requires canonical
+LF-terminated basename/digest entries, verifies every selected regular subject
+under the explicit root, and rejects exclusions, duplicate names, symlinks,
+self-reference and the provenance bundle as its own subject. It requires the
+verified attestation's complete subject set to match, not just the one file
+passed to `gh attestation verify`. Supply `--run-id` and `--run-attempt` to bind
+the verified certificate invocation to the selected provider attempt.
+
+Keep the manifest and release root quiescent during verification. The verifier
+remeasures them before writing success, but is not a concurrent-writer security
+boundary. Native index/readback gates separately enforce the complete release
+inventory, canonical subject manifest and payload/receipt joins. Release
+provenance does not replace owning-job transport authentication or publication
+authorization. The local manifest tests use fake `gh` responses and establish
+policy rejection only; actual cryptographic verification remains a release gate.
+
 ## Provider contracts
 
 - [GitHub OIDC claims](https://docs.github.com/en/actions/reference/security/oidc)

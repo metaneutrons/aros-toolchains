@@ -405,6 +405,7 @@ provenance_verifier="$source_root/scripts/toolchain/verify-provenance-attestatio
 [[ -f "$provenance_verifier" && ! -L "$provenance_verifier" ]]
 bash -n "$provenance_verifier"
 bash "$source_root/scripts/toolchain/tests/test-provenance-run-attempt.sh"
+bash "$source_root/scripts/toolchain/tests/test-provenance-subject-manifest.sh"
 bash "$source_root/scripts/toolchain/tests/test-workflow-job-attempt.sh"
 python3 -B "$source_root/scripts/toolchain/tests/test-artifact-origin.py"
 python3 -B "$source_root/scripts/toolchain/tests/test-artifact-origin-source.py"
