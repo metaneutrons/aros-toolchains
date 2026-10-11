@@ -94,6 +94,9 @@ not real compilation or cryptographic/provider admission. The separately
 retained local RV32 compiler/package proof and live provider-origin probe do
 not by themselves qualify this composite action on all release hosts.
 
-The complete mixed production workflow, independent reader wiring, final
-release qualification and recovery activation remain required work. Do not
-enable production from this adapter's `local-byte-readback-only` handoff.
+The [native lane admission adapter](native-lane-admission-v2.md) connects live
+original-owner authentication to native portable package readback. Its local
+process tests are not a live native owning-job exercise. The complete mixed
+production workflow, final release qualification and recovery activation remain
+required work. Do not enable production from this adapter's
+`local-byte-readback-only` handoff.
