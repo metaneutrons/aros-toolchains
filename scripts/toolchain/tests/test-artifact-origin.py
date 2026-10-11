@@ -13,6 +13,8 @@ import json
 import os
 from pathlib import Path
 import stat
+import subprocess
+import sys
 import tempfile
 from types import SimpleNamespace
 import unittest
@@ -544,6 +546,43 @@ class ZipVerificationTests(unittest.TestCase):
                 origin.verify_zip(path, {"file.txt": measurement(b"exact")}, wrong_digest)
 
 
+class PayloadDownloadTests(unittest.TestCase):
+    def test_real_child_accepts_exact_bytes_and_stops_oversized_writes(self) -> None:
+        # Replace only the network program with a real local child. The actual
+        # download helper supplies the kernel cap; no provider proof is claimed.
+        real_run = subprocess.run
+        for byte_count, accepted in ((4096, True), (8192, False)):
+            with self.subTest(byte_count=byte_count), tempfile.TemporaryDirectory() as temporary:
+                output = Path(temporary) / "payload.zip"
+                selected = {"id": ARTIFACT_ID, "size_in_bytes": 4096}
+
+                def local_child(command, **kwargs):
+                    self.assertEqual(command, ["gh", "api",
+                        f"repos/{REPOSITORY}/actions/artifacts/{ARTIFACT_ID}/zip"])
+                    return real_run([sys.executable, "-c",
+                        "import os; data=b'x'*int(__import__('sys').argv[1]); "
+                        "n=os.write(1,data); os.write(1,data[n:])", str(byte_count)], **kwargs)
+
+                with mock.patch.object(origin.subprocess, "run", side_effect=local_child):
+                    if accepted:
+                        origin.download_payload(context(), selected, output)
+                        self.assertEqual(output.read_bytes(), b"x" * byte_count)
+                    else:
+                        with self.assertRaisesRegex(origin.OriginError, "numeric artifact download failed"):
+                            origin.download_payload(context(), selected, output)
+                        self.assertLessEqual(output.stat().st_size, selected["size_in_bytes"] + 1)
+
+    def test_invalid_sizes_fail_before_output_creation_or_download(self) -> None:
+        for size in (True, False, 0, -1, 1.0, "4096", origin.MAX_PAYLOAD + 1):
+            with self.subTest(size=size), tempfile.TemporaryDirectory() as temporary:
+                output = Path(temporary) / "payload.zip"
+                with mock.patch.object(origin.subprocess, "run") as download:
+                    with self.assertRaisesRegex(origin.OriginError, "payload download size is invalid"):
+                        origin.download_payload(context(), {"id": ARTIFACT_ID, "size_in_bytes": size}, output)
+                    download.assert_not_called()
+                self.assertFalse(output.exists())
+
+
 class RecordVerifyCallFlowTests(unittest.TestCase):
     """Call-flow tests use explicit mocks; no provider or signature is authenticated."""
 
@@ -571,10 +610,16 @@ class RecordVerifyCallFlowTests(unittest.TestCase):
                 return selected_artifact
             raise AssertionError(f"unexpected mocked GitHub call: {args!r}, {purpose!r}")
 
-        def mocked_run(command, *, stdout=None, stderr=None, timeout=None, check=None):
+        def mocked_run(command, *, stdout=None, stderr=None, timeout=None, check=None,
+                       preexec_fn=None):
             download_calls.append(list(command))
             if stdout is None:
                 raise AssertionError("mocked ZIP download did not receive an output handle")
+            self.assertIsNotNone(preexec_fn)
+            with mock.patch.object(origin.resource, "setrlimit") as setrlimit:
+                preexec_fn()
+                limit = selected_artifact["size_in_bytes"] + 1
+                setrlimit.assert_called_once_with(origin.resource.RLIMIT_FSIZE, (limit, limit))
             stdout.write(selected_download)
             return SimpleNamespace(returncode=0)
 

@@ -317,12 +317,16 @@ class CrossRunVerifySourceTests(unittest.TestCase):
                                                        (limit, limit))
                 stdout.write(downloads["proof"])
             elif selected_command[-1].endswith(f"/{PAYLOAD_ID}/zip"):
-                if preexec_fn is not None:
-                    raise AssertionError("payload download unexpectedly changed its process limit")
+                if preexec_fn is None:
+                    raise AssertionError("payload download omitted its child file-size cap")
+                with mock.patch.object(origin.resource, "setrlimit") as setrlimit:
+                    preexec_fn()
+                    limit = data["selection"]["artifact"]["size_in_bytes"] + 1
+                    setrlimit.assert_called_once_with(origin.resource.RLIMIT_FSIZE, (limit, limit))
                 stdout.write(downloads["payload"])
             else:
-                if preexec_fn is not None:
-                    raise AssertionError("unexpected child file-size cap on another download")
+                if preexec_fn is None:
+                    raise AssertionError("payload download omitted its child file-size cap")
                 # Dynamic selected identities still receive the relevant
                 # baseline synthetic bytes and must fail the independent check.
                 stdout.write(downloads["payload"])

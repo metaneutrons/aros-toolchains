@@ -36,6 +36,9 @@ commit, source ref, run, attempt, job name, artifact ID/name and lane. It:
 4. Checks the numeric artifact's provider repository/run/source identity and
    signed ZIP digest/size, downloads by numeric ID, and verifies every regular
    ZIP member against the signed closed file inventory without extraction.
+   The download child has a kernel file-size limit of the selected ZIP size
+   plus one byte before the GET; oversized responses cannot consume unbounded
+   local disk. Exact size and digest checks still follow the download.
 
 Linked metadata, linked payload files, duplicate or case-aliased paths,
 unexpected ZIP members, incomplete provider pages, changed bytes and unknown

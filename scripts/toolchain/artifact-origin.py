@@ -467,10 +467,7 @@ def verify(args: argparse.Namespace, context: dict, *, expected_job: dict | None
     # Fetch by numeric identity, not a glob/name or an untrusted download URL.
     with tempfile.TemporaryDirectory(prefix="aros-artifact-origin-") as temporary:
         archive = Path(temporary).resolve() / "payload.zip"
-        with archive.open("xb") as handle:
-            command = subprocess.run(["gh", "api", f'repos/{context["repository"]}/actions/artifacts/{args.artifact_id}/zip'],
-                                     stdout=handle, stderr=subprocess.DEVNULL, timeout=180, check=False)
-        require(command.returncode == 0, "numeric artifact download failed")
+        download_payload(context, artifact, archive)
         verify_zip(archive, origin["files"], artifact["sha256"], artifact["size_in_bytes"])
     require(normalized_file(args.origin, MAX_METADATA)[0] == measured, "origin changed during verification")
     require(normalized_file(args.bundle, MAX_METADATA)[0] == bundle_measurement,
@@ -506,6 +503,19 @@ def source_selection(value: object, caller: dict) -> dict:
             and selected["artifact"]["name"] != selected["proof"]["name"],
             "payload and proof must have separate artifact identities")
     return selected
+
+
+def download_payload(context: dict, artifact: dict, archive: Path) -> None:
+    """Bound payload writes before the GET, not only during ZIP verification."""
+    require(type(artifact["size_in_bytes"]) is int
+            and 0 < artifact["size_in_bytes"] <= MAX_PAYLOAD,
+            "payload download size is invalid")
+    limit = artifact["size_in_bytes"] + 1
+    with archive.open("xb") as handle:
+        command = subprocess.run(["gh", "api", f'repos/{context["repository"]}/actions/artifacts/{artifact["id"]}/zip'],
+                                 stdout=handle, stderr=subprocess.DEVNULL, timeout=180, check=False,
+                                 preexec_fn=lambda: resource.setrlimit(resource.RLIMIT_FSIZE, (limit, limit)))
+    require(command.returncode == 0, "numeric artifact download failed")
 
 
 def download_proof(context: dict, proof: dict, archive: Path) -> None:
