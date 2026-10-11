@@ -845,11 +845,11 @@ def verify_source(args: argparse.Namespace, caller: dict) -> None:
     if verified_output is not None:
         verified_output = verified_output_preflight(
             verified_output, [args.source_selection, args.origin, args.bundle])
-    plan_measurement, raw = normalized_file(args.source_selection, MAX_METADATA)
+    plan_measurement, selection_raw = normalized_file(args.source_selection, MAX_METADATA)
     # Preserve diagnostic/internal Namespace callers created before this
     # optional mode existed.
     same_attempt = getattr(args, "same_attempt", False)
-    selected = source_selection(parse_json(raw), caller, same_attempt=same_attempt)
+    selected = source_selection(parse_json(selection_raw), caller, same_attempt=same_attempt)
     local = args.origin is not None or args.bundle is not None
     require(not local or (args.origin is not None and args.bundle is not None),
             "local origin and bundle must be supplied together")
@@ -891,9 +891,9 @@ def verify_source(args: argparse.Namespace, caller: dict) -> None:
                        proof["sha256"], proof["size_in_bytes"])
             origin_path, bundle_path = args.origin, args.bundle
         else:
-            for name, raw in contents.items():
+            for name, member_bytes in contents.items():
                 with (archive.parent / name).open("xb") as handle:
-                    handle.write(raw)
+                    handle.write(member_bytes)
             origin_path, bundle_path = archive.parent / "origin.json", archive.parent / "origin.sigstore.json"
         payload = selected["artifact"]
         source_args = argparse.Namespace(**selected["selection"],
@@ -937,7 +937,7 @@ def verify_source(args: argparse.Namespace, caller: dict) -> None:
                 {"payload.zip": payload_archive,
                  "origin.json": contents["origin.json"],
                  "origin.sigstore.json": contents["origin.sigstore.json"],
-                 "selection.json": raw},
+                 "selection.json": selection_raw},
                 identities, limits, final_check,
             )
     if verified_output is None:

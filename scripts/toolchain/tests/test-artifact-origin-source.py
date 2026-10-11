@@ -348,6 +348,7 @@ class CrossRunVerifySourceTests(unittest.TestCase):
         verified_args: list[argparse.Namespace] = []
         materialized_dirs: list[tuple[Path, tuple[str, ...]]] = []
         materialized_bytes: list[tuple[bytes, bytes]] = []
+        captured_stdout = io.StringIO()
 
         def mocked_oidc(ctx: dict) -> int:
             oidc_calls.append(copy.deepcopy(ctx))
@@ -379,7 +380,7 @@ class CrossRunVerifySourceTests(unittest.TestCase):
                     mock.patch.object(origin, "gh_json", side_effect=mocked_gh_json), \
                     mock.patch.object(origin.subprocess, "run", side_effect=mocked_run), \
                     mock.patch.object(origin, "verify", side_effect=maybe_change_selection):
-                with redirect_stdout(io.StringIO()):
+                with redirect_stdout(captured_stdout):
                     origin.verify_source(data["args"], CALLER)
         finally:
             data["gh_calls"] = gh_calls
@@ -389,6 +390,7 @@ class CrossRunVerifySourceTests(unittest.TestCase):
             data["verified_args"] = verified_args
             data["materialized_dirs"] = materialized_dirs
             data["materialized_bytes"] = materialized_bytes
+            data["stdout"] = captured_stdout.getvalue()
         return gh_calls, download_calls
 
     def run_rejected(self, data: dict, **options) -> None:
@@ -489,6 +491,34 @@ class CrossRunVerifySourceTests(unittest.TestCase):
             with zipfile.ZipFile(output / "payload.zip") as archive:
                 self.assertEqual(archive.namelist(), ["bin/tool"])
 
+    def test_nonlocal_verified_output_keeps_selection_when_proof_member_is_larger(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            data = fixture(Path(temporary))
+            data["args"].origin = None
+            data["args"].bundle = None
+            initial_selection_size = data["selection_path"].stat().st_size
+            larger_bundle = origin.canonical({
+                "mock": "synthetic proof member " + "x" * (initial_selection_size + 256),
+            })
+            proof_bytes = proof_zip_bytes([
+                ("origin.json", data["origin_bytes"], None),
+                ("origin.sigstore.json", larger_bundle, None),
+            ])
+            self.rebind_proof(data, proof_bytes)
+            data["bundle_bytes"] = larger_bundle
+            selection_bytes = data["selection_path"].read_bytes()
+            self.assertGreater(len(larger_bundle), len(selection_bytes))
+            self.assertNotEqual(selection_bytes, data["origin_bytes"])
+            self.assertNotEqual(selection_bytes, larger_bundle)
+
+            output = data["root"] / "verified-output"
+            data["args"].verified_output_dir = output
+            self.run_source_verification(data)
+
+            self.assertEqual((output / "selection.json").read_bytes(), selection_bytes)
+            self.assertEqual((output / "origin.json").read_bytes(), data["origin_bytes"])
+            self.assertEqual((output / "origin.sigstore.json").read_bytes(), larger_bundle)
+
     def test_verified_output_is_opt_in_and_default_leaves_no_retained_copy(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             data = fixture(Path(temporary))
@@ -581,6 +611,29 @@ class CrossRunVerifySourceTests(unittest.TestCase):
             with mock.patch.object(origin, "_write_retained_file", side_effect=mutate_after_write):
                 self.run_rejected(data)
             self.assertFalse(output.exists())
+
+        with tempfile.TemporaryDirectory() as temporary:
+            data = fixture(Path(temporary))
+            data["args"].origin = None
+            data["args"].bundle = None
+            output = data["root"] / "selection-counterprobe-output"
+            data["args"].verified_output_dir = output
+            real_write = origin._write_retained_file
+
+            def mutate_selection_after_write(root_fd, name, source, expected, limit, created):
+                real_write(root_fd, name, source, expected, limit, created)
+                if name == "selection.json":
+                    with (output / name).open("ab") as handle:
+                        handle.write(b"x")
+
+            with mock.patch.object(origin, "_write_retained_file",
+                                   side_effect=mutate_selection_after_write):
+                with self.assertRaisesRegex(
+                        origin.OriginError,
+                        "retained output differs from its verified identity"):
+                    self.run_source_verification(data)
+            self.assertFalse(output.exists())
+            self.assertEqual(data["stdout"], "")
 
     def test_rejects_incomplete_optional_local_pair_before_provider_access(self) -> None:
         for origin_path, bundle_path in ((None, "bundle"), ("origin", None)):
