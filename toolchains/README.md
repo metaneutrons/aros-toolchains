@@ -43,6 +43,10 @@ The [staged GNU RV32 inputs](gnu-rv32-inputs.md) preserve the measured source
 closure and RV32-only target scope for the next compiler-family integration.
 They are not selected by the active LLVM/V1 release workflow.
 
+The [V2 scheduling boundary](release-matrix-v2.md) derives runner and A/B job
+matrices from the native release-input plan without a second target list. Its
+offline tests do not activate the mixed-family release workflow.
+
 `aros-tools-runtime-v1.json` is the bootstrap lock for the producer runtime.
 It records the immutable GitHub Release ID, annotated tag object, peeled source
 commit and tree, signer workflow identity, certificate issuer, and the exact
