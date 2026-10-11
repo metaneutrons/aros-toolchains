@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Mocked cross-run artifact recovery tests; no provider or signature is authenticated."""
+"""Mocked source-artifact recovery tests; no provider or signature is authenticated."""
 
 from __future__ import annotations
 
@@ -110,14 +110,14 @@ def caller_job() -> dict:
     }
 
 
-def source_job() -> dict:
+def source_job(ctx: dict = SOURCE) -> dict:
     return {
         "id": SOURCE_JOB_ID,
         "check_run_url": f"https://api.github.com/repos/{REPOSITORY}/check-runs/{SOURCE_CHECK_ID}",
         "name": SOURCE_JOB_NAME,
-        "head_sha": SOURCE["producer_commit"],
-        "run_id": SOURCE["run_id"],
-        "run_attempt": SOURCE["run_attempt"],
+        "head_sha": ctx["producer_commit"],
+        "run_id": ctx["run_id"],
+        "run_attempt": ctx["run_attempt"],
         "status": "completed",
         "conclusion": "success",
     }
@@ -139,8 +139,9 @@ def provider_artifact(ctx: dict, identity: dict) -> dict:
     }
 
 
-def fixture(root: Path) -> dict:
+def fixture(root: Path, *, same_attempt: bool = False) -> dict:
     root = root.resolve()
+    source_context = copy.deepcopy(CALLER if same_attempt else SOURCE)
     payload_zip = root / "payload.zip"
     payload_zip_bytes = write_zip(payload_zip, {"bin/tool": PAYLOAD_BYTES})
     payload = {
@@ -152,7 +153,7 @@ def fixture(root: Path) -> dict:
 
     origin_record = {
         "schema": origin.SCHEMA,
-        "context": copy.deepcopy(SOURCE),
+        "context": copy.deepcopy(source_context),
         "selection": dict(LANE),
         "job": {"id": SOURCE_JOB_ID, "check_run_id": SOURCE_CHECK_ID,
                 "name": SOURCE_JOB_NAME},
@@ -178,7 +179,7 @@ def fixture(root: Path) -> dict:
     }
     selection = {
         "schema": origin.SELECTION_SCHEMA,
-        "context": copy.deepcopy(SOURCE),
+        "context": copy.deepcopy(source_context),
         "selection": dict(LANE),
         "job": {"id": SOURCE_JOB_ID, "name": SOURCE_JOB_NAME},
         "artifact": dict(payload),
@@ -186,8 +187,8 @@ def fixture(root: Path) -> dict:
     }
     selection_path = root / "source-selection.json"
     selection_path.write_bytes(origin.canonical(selection))
-    invocation = (f"https://github.com/{REPOSITORY}/actions/runs/{SOURCE['run_id']}"
-                  f"/attempts/{SOURCE['run_attempt']}")
+    invocation = (f"https://github.com/{REPOSITORY}/actions/runs/{source_context['run_id']}"
+                  f"/attempts/{source_context['run_attempt']}")
     verified = [{"verificationResult": {
         "signature": {"certificate": {"runInvocationURI": invocation}},
         "statement": {"subject": [{"name": origin_path.name,
@@ -195,7 +196,7 @@ def fixture(root: Path) -> dict:
     }}]
     return {
         "root": root,
-        "source": copy.deepcopy(SOURCE),
+        "source": source_context,
         "caller": copy.deepcopy(CALLER),
         "origin_record": origin_record,
         "origin_bytes": origin_bytes,
@@ -208,16 +209,26 @@ def fixture(root: Path) -> dict:
         "selection_path": selection_path,
         "payload": payload,
         "proof": proof,
-        "source_pages": [{"total_count": 1, "jobs": [source_job()]}],
+        "source_pages": [{"total_count": 1, "jobs": [source_job(source_context)]}],
         "caller_pages": [{"total_count": 1, "jobs": [caller_job()]}],
-        "proof_provider": provider_artifact(SOURCE, proof),
-        "payload_provider": provider_artifact(SOURCE, payload),
+        "proof_provider": provider_artifact(source_context, proof),
+        "payload_provider": provider_artifact(source_context, payload),
         "verified": verified,
         "args": argparse.Namespace(
             workflow=CALLER["workflow"], job_name=CALLER_JOB_NAME,
             source_selection=selection_path, origin=origin_path, bundle=bundle_path,
         ),
     }
+
+
+def same_attempt_pages(data: dict) -> list[dict]:
+    """A complete mocked shared job page for a same-attempt read."""
+    pages = [{"total_count": 2,
+              "jobs": [caller_job(), source_job(data["source"])]}]
+    data["caller_pages"] = pages
+    data["source_pages"] = pages
+    data["args"].same_attempt = True
+    return pages
 
 
 def environment_for(ctx: dict) -> dict[str, str]:
@@ -383,6 +394,9 @@ class CrossRunVerifySourceTests(unittest.TestCase):
     def run_rejected(self, data: dict, **options) -> None:
         with self.assertRaises(origin.OriginError):
             self.run_source_verification(data, **options)
+
+    def prepare_same_attempt(self, data: dict) -> list[dict]:
+        return same_attempt_pages(data)
 
     def test_positive_uses_source_for_signature_provider_and_downloads_caller_for_oidc_and_jobs(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -623,11 +637,136 @@ class CrossRunVerifySourceTests(unittest.TestCase):
 
     def test_rejects_source_attempt_equal_to_caller_attempt(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
-            data = fixture(Path(temporary))
-            data["selection"]["context"]["run_id"] = CALLER["run_id"]
-            data["selection"]["context"]["run_attempt"] = CALLER["run_attempt"]
+            data = fixture(Path(temporary), same_attempt=True)
+            self.run_rejected(data)
+            self.assertEqual(data["oidc_calls"], [])
+            self.assertEqual(data["download_calls"], [])
+
+    def test_explicit_same_attempt_accepts_exact_context_and_distinct_completed_job(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            data = fixture(Path(temporary), same_attempt=True)
+            pages = self.prepare_same_attempt(data)
+            gh_calls, downloads = self.run_source_verification(data)
+
+            self.assertEqual(data["oidc_calls"], [CALLER])
+            self.assertEqual(data["oidc_env"], [environment_for(CALLER)])
+            endpoints = [call[0][3] for call in gh_calls
+                         if call[0][:3] == ["api", "--paginate", "--slurp"]]
+            expected = (f"repos/{REPOSITORY}/actions/runs/{CALLER['run_id']}"
+                        f"/attempts/{CALLER['run_attempt']}/jobs?per_page=100")
+            self.assertEqual(endpoints, [expected, expected, expected])
+            self.assertEqual(pages[0]["total_count"], 2)
+            self.assertNotEqual(data["selection"]["job"]["id"], CALLER_JOB_ID)
+            self.assertEqual(downloads, [
+                ["gh", "api", f"repos/{REPOSITORY}/actions/artifacts/{PROOF_ID}/zip"],
+                ["gh", "api", f"repos/{REPOSITORY}/actions/artifacts/{PAYLOAD_ID}/zip"],
+            ])
+
+    def test_same_attempt_requires_owner_job_id_distinct_from_authenticated_reader(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            data = fixture(Path(temporary), same_attempt=True)
+            self.prepare_same_attempt(data)
+            data["selection"]["job"]["id"] = CALLER_JOB_ID
             data["args"].source_selection.write_bytes(origin.canonical(data["selection"]))
             self.run_rejected(data)
+
+            self.assertEqual(data["oidc_calls"], [CALLER])
+            self.assertEqual(data["download_calls"], [])
+            self.assertFalse(any(call[0][:1] == ["api"] and "/actions/artifacts/" in call[0][1]
+                                 for call in data["gh_calls"]))
+
+    def test_same_attempt_rejects_every_changed_source_context_field_before_oidc(self) -> None:
+        mutations = {
+            "repository": lambda ctx: ctx.__setitem__("repository", "other/project"),
+            "repository_id": lambda ctx: ctx.__setitem__("repository_id", REPOSITORY_ID + 1),
+            "workflow": lambda ctx: ctx.__setitem__("workflow", ".github/workflows/other.yml"),
+            "commit": lambda ctx: ctx.__setitem__("producer_commit", "d" * 40),
+            "ref": lambda ctx: ctx.__setitem__("source_ref", "refs/heads/other"),
+            "run": lambda ctx: ctx.__setitem__("run_id", CALLER["run_id"] + 1),
+            "attempt": lambda ctx: ctx.__setitem__("run_attempt", CALLER["run_attempt"] + 1),
+        }
+        for field, mutate in mutations.items():
+            with self.subTest(field=field), tempfile.TemporaryDirectory() as temporary:
+                data = fixture(Path(temporary), same_attempt=True)
+                data["args"].same_attempt = True
+                mutate(data["selection"]["context"])
+                data["args"].source_selection.write_bytes(origin.canonical(data["selection"]))
+                self.run_rejected(data)
+                self.assertEqual(data["oidc_calls"], [])
+                self.assertEqual(data["download_calls"], [])
+
+    def test_same_attempt_rejects_incomplete_or_unsuccessful_source_job(self) -> None:
+        cases = (("in progress", "in_progress", None),
+                 ("queued", "queued", None),
+                 ("failed", "completed", "failure"))
+        for label, status, conclusion in cases:
+            with self.subTest(source_state=label), tempfile.TemporaryDirectory() as temporary:
+                data = fixture(Path(temporary), same_attempt=True)
+                pages = self.prepare_same_attempt(data)
+                pages[0]["jobs"][1]["status"] = status
+                pages[0]["jobs"][1]["conclusion"] = conclusion
+                self.run_rejected(data)
+                self.assertEqual(data["oidc_calls"], [CALLER])
+                self.assertEqual(data["download_calls"], [])
+
+        with tempfile.TemporaryDirectory() as temporary:
+            data = fixture(Path(temporary), same_attempt=True)
+            pages = self.prepare_same_attempt(data)
+            pages[0]["total_count"] = 3
+            self.run_rejected(data)
+            self.assertEqual(data["download_calls"], [])
+
+    def test_same_attempt_keeps_proof_payload_provider_and_signature_checks(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            data = fixture(Path(temporary), same_attempt=True)
+            self.prepare_same_attempt(data)
+            data["proof_provider"]["digest"] = "sha256:" + "f" * 64
+            self.run_rejected(data)
+            self.assertEqual(data["download_calls"], [])
+
+        with tempfile.TemporaryDirectory() as temporary:
+            data = fixture(Path(temporary), same_attempt=True)
+            self.prepare_same_attempt(data)
+            data["payload_provider"]["digest"] = "sha256:" + "f" * 64
+            self.run_rejected(data)
+            self.assertEqual(data["download_calls"], [
+                ["gh", "api", f"repos/{REPOSITORY}/actions/artifacts/{PROOF_ID}/zip"]
+            ])
+
+        with tempfile.TemporaryDirectory() as temporary:
+            data = fixture(Path(temporary), same_attempt=True)
+            self.prepare_same_attempt(data)
+            data["verified"][0]["verificationResult"]["statement"]["subject"][0]["digest"]["sha256"] = "f" * 64
+            self.run_rejected(data)
+            self.assertEqual(data["download_calls"], [
+                ["gh", "api", f"repos/{REPOSITORY}/actions/artifacts/{PROOF_ID}/zip"]
+            ])
+            self.assertFalse(any(command[-1].endswith(f"/{PAYLOAD_ID}/zip")
+                                 for command in data["download_calls"]))
+
+    def test_source_selection_requires_exact_boolean_same_attempt_option(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            data = fixture(Path(temporary), same_attempt=True)
+            for invalid in (None, 0, 1, "true"):
+                with self.subTest(value=invalid), self.assertRaises(origin.OriginError):
+                    origin.source_selection(data["selection"], CALLER, same_attempt=invalid)
+
+    def test_cli_same_attempt_flag_is_explicit_and_defaults_off(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            selection_path = Path(temporary) / "selection.json"
+            selection_path.write_bytes(b"{}")
+            base = ["artifact-origin.py", "verify-source", "--workflow", CALLER["workflow"],
+                    "--job-name", CALLER_JOB_NAME, "--source-selection", str(selection_path)]
+            for flag, expected in (([], False), (["--same-attempt"], True)):
+                with self.subTest(same_attempt=expected):
+                    captured = []
+                    with mock.patch.dict(os.environ, environment_for(CALLER), clear=False), \
+                            mock.patch.object(sys, "argv", base + flag), \
+                            mock.patch.object(origin, "verify_source",
+                                              side_effect=lambda args, context: captured.append(args)):
+                        self.assertEqual(origin.main(), 0)
+                    self.assertEqual(len(captured), 1)
+                    self.assertIs(captured[0].same_attempt, expected)
 
     def test_selects_source_job_by_id_and_rejects_a_signed_owner_with_another_id(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

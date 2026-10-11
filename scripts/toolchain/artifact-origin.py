@@ -475,16 +475,20 @@ def verify(args: argparse.Namespace, context: dict, *, expected_job: dict | None
     print("Verified owning workflow/run-attempt/job and exact artifact ZIP/file bytes; not release qualification.")
 
 
-def source_selection(value: object, caller: dict) -> dict:
+def source_selection(value: object, caller: dict, *, same_attempt: bool = False) -> dict:
     """Validate a caller-owned plan, never a selection inferred from origin.json."""
+    require(type(same_attempt) is bool, "same-attempt selector must be boolean")
     selected = exact_keys(value, {"schema", "context", "selection", "job", "artifact", "proof"})
     require(selected["schema"] == SELECTION_SCHEMA, "source selection schema differs")
     source = validate_context(selected["context"])
     require(source["repository"] == caller["repository"]
             and source["repository_id"] == caller["repository_id"],
             "cross-repository artifact recovery is not admitted")
-    require((source["run_id"], source["run_attempt"]) != (caller["run_id"], caller["run_attempt"]),
-            "source attempt must differ from the current caller attempt")
+    if same_attempt:
+        require(source == caller, "same-attempt source context must exactly match current caller")
+    else:
+        require((source["run_id"], source["run_attempt"]) != (caller["run_id"], caller["run_attempt"]),
+                "source attempt must differ from the current caller attempt")
     lane = exact_keys(selected["selection"], {"role", "group", "host", "profile", "copy"})
     require(selection(argparse.Namespace(**lane)) == lane, "source lane differs")
     job = exact_keys(selected["job"], {"id", "name"})
@@ -562,7 +566,10 @@ def proof_members(archive: Path, proof: dict) -> dict[str, bytes]:
 
 def verify_source(args: argparse.Namespace, caller: dict) -> None:
     plan_measurement, raw = normalized_file(args.source_selection, MAX_METADATA)
-    selected = source_selection(parse_json(raw), caller)
+    # Preserve diagnostic/internal Namespace callers created before this
+    # optional mode existed.
+    same_attempt = getattr(args, "same_attempt", False)
+    selected = source_selection(parse_json(raw), caller, same_attempt=same_attempt)
     local = args.origin is not None or args.bundle is not None
     require(not local or (args.origin is not None and args.bundle is not None),
             "local origin and bundle must be supplied together")
@@ -580,8 +587,11 @@ def verify_source(args: argparse.Namespace, caller: dict) -> None:
             and os.environ.get("GITHUB_WORKFLOW_SHA") == caller["producer_commit"],
             "current caller workflow identity differs")
     caller_check = owning_check_id(caller)
-    select_job(jobs_for(caller), caller, caller_check, args.job_name, "in_progress")
+    caller_job = select_job(jobs_for(caller), caller, caller_check, args.job_name, "in_progress")
     source = selected["context"]
+    if same_attempt:
+        require(selected["job"]["id"] != caller_job["id"],
+                "same-attempt source owner must be a different job")
     owner = select_source_job(jobs_for(source), source, selected["job"])
     proof = selected["proof"]
     observed = gh_json(["api", f'repos/{source["repository"]}/actions/artifacts/{proof["id"]}'])
@@ -615,7 +625,7 @@ def verify_source(args: argparse.Namespace, caller: dict) -> None:
             and normalized_file(args.bundle, MAX_METADATA)[0] == bundle_measurement),
             "source proof changed during verification")
     require(context_from_environment(args.workflow) == caller, "current caller context changed")
-    print("Verified independently selected prior-run source; current caller remains separate; no publication authority.")
+    print("Verified independently selected source owner; current caller remains separate; no publication authority.")
 
 
 def main() -> int:
@@ -643,6 +653,8 @@ def main() -> int:
     for key in ("origin", "bundle"):
         command.add_argument(f"--{key}", type=Path,
                              help="Optional local proof; supply both files or verify directly from the selected raw ZIP")
+    command.add_argument("--same-attempt", action="store_true",
+                         help="Allow a source in this exact run attempt only when its owner is a different completed job")
     try:
         flags = [arg.split("=", 1)[0] for arg in sys.argv[1:] if arg.startswith("--")]
         require(len(flags) == len(set(flags)), "duplicate argument selector")

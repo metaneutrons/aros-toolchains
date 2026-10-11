@@ -69,7 +69,7 @@ caller context separate from an explicitly selected original run and attempt.
 Complete compiler-family production workflow integration remains separate work;
 the existing release workflow does not yet invoke this helper.
 
-## Explicit prior-run verification
+## Explicit source-owner verification
 
 `verify-source --workflow CALLER_WORKFLOW --job-name CALLER_JOB` requires
 an absolute `--source-selection` file path. It never
@@ -94,7 +94,19 @@ Obtain those selectors from the reviewed source plan and provider observations,
 not the origin record or its signature predicate. A selector file is not an
 authorization credential: production callers must admit only a reviewed source
 workflow/commit and enforce protected recovery and fresh release policy.
-Cross-repository sources and the current caller attempt are rejected.
+Cross-repository sources are always rejected; the current caller attempt is
+rejected by default.
+
+The default keeps that cross-attempt rule. An explicitly selected
+`--same-attempt` read is allowed only when the source's entire context equals
+the current caller context (repository and numeric repository ID, workflow,
+commit, ref, run and attempt). The reader still authenticates its own OIDC
+check and in-progress job, then requires the selected source owner to be a
+different numeric job ID selected from complete attempt-specific Jobs pages;
+that owner must be completed successfully and must still match the signed
+record. The flag does not impersonate the owner or weaken provider, proof,
+signature, digest or payload verification. It grants no extraction,
+publication or release authority.
 
 The reader first selects the source job independently by its provider ID/name
 from complete attempt-specific pages, then compares its check ID and full job
