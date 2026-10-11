@@ -463,6 +463,125 @@ class CrossRunVerifySourceTests(unittest.TestCase):
                 data["origin_bytes"], data["bundle_bytes"],
             )])
 
+    def test_verified_output_retains_only_exact_verified_transport_bytes(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            data = fixture(Path(temporary))
+            output = data["root"] / "verified-output"
+            data["args"].verified_output_dir = output
+            self.run_source_verification(data)
+
+            expected = {
+                "payload.zip": data["payload_zip_bytes"],
+                "origin.json": data["origin_bytes"],
+                "origin.sigstore.json": data["bundle_bytes"],
+                "selection.json": data["selection_path"].read_bytes(),
+            }
+            self.assertEqual({path.name for path in output.iterdir()}, set(expected))
+            self.assertTrue(stat.S_ISDIR(output.lstat().st_mode))
+            self.assertEqual(stat.S_IMODE(output.stat().st_mode) & 0o077, 0)
+            for name, raw in expected.items():
+                retained = output / name
+                self.assertEqual(retained.read_bytes(), raw)
+                self.assertTrue(stat.S_ISREG(retained.lstat().st_mode))
+                self.assertEqual(stat.S_IMODE(retained.stat().st_mode) & 0o077, 0)
+            # The ZIP is retained as transport bytes; its member is not unpacked.
+            self.assertFalse((output / "bin").exists())
+            with zipfile.ZipFile(output / "payload.zip") as archive:
+                self.assertEqual(archive.namelist(), ["bin/tool"])
+
+    def test_verified_output_is_opt_in_and_default_leaves_no_retained_copy(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            data = fixture(Path(temporary))
+            output = data["root"] / "not-created-by-default"
+            self.assertFalse(hasattr(data["args"], "verified_output_dir"))
+            self.run_source_verification(data)
+            self.assertFalse(output.exists())
+
+    def test_verified_output_rejects_unsafe_targets_before_oidc_or_provider_access(self) -> None:
+        cases = ("relative", "existing", "linked-target", "linked-parent", "overlap")
+        for case in cases:
+            with self.subTest(target=case), tempfile.TemporaryDirectory() as temporary:
+                data = fixture(Path(temporary))
+                root = data["root"]
+                if case == "relative":
+                    output = Path("relative-retention-dir")
+                elif case == "existing":
+                    output = root / "existing"
+                    output.mkdir()
+                elif case == "linked-target":
+                    target = root / "target"
+                    target.mkdir()
+                    output = root / "linked-target"
+                    output.symlink_to(target, target_is_directory=True)
+                elif case == "linked-parent":
+                    target = root / "real-parent"
+                    target.mkdir()
+                    linked_parent = root / "linked-parent"
+                    linked_parent.symlink_to(target, target_is_directory=True)
+                    output = linked_parent / "retained"
+                else:
+                    output = data["selection_path"] / "retained"
+                data["args"].verified_output_dir = output
+                self.run_rejected(data)
+                self.assertEqual(data["oidc_calls"], [])
+                self.assertEqual(data["gh_calls"], [])
+                self.assertEqual(data["download_calls"], [])
+
+    def test_verified_output_is_absent_after_signature_failure_or_corrupt_payload(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            data = fixture(Path(temporary))
+            output = data["root"] / "signature-failure-output"
+            data["args"].verified_output_dir = output
+            data["verified"][0]["verificationResult"]["statement"]["subject"][0]["digest"]["sha256"] = "f" * 64
+            self.run_rejected(data)
+            self.assertFalse(output.exists())
+            self.assertEqual(data["download_calls"], [
+                ["gh", "api", f"repos/{REPOSITORY}/actions/artifacts/{PROOF_ID}/zip"]
+            ])
+
+        with tempfile.TemporaryDirectory() as temporary:
+            data = fixture(Path(temporary))
+            output = data["root"] / "corrupt-payload-output"
+            data["args"].verified_output_dir = output
+            self.run_rejected(data, download_overrides={
+                "payload": data["payload_zip_bytes"] + b"corrupt",
+            })
+            self.assertFalse(output.exists())
+            self.assertTrue(any(command[-1].endswith(f"/{PAYLOAD_ID}/zip")
+                                for command in data["download_calls"]))
+
+    def test_verified_output_rechecks_context_and_retained_bytes_then_cleans_owned_root(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            data = fixture(Path(temporary))
+            output = data["root"] / "context-drift-output"
+            data["args"].verified_output_dir = output
+            changed = copy.deepcopy(CALLER)
+            changed["producer_commit"] = "d" * 40
+            with mock.patch.object(origin, "context_from_environment",
+                                   side_effect=[CALLER, changed]):
+                self.run_rejected(data)
+            self.assertFalse(output.exists())
+            self.assertEqual(data["download_calls"], [
+                ["gh", "api", f"repos/{REPOSITORY}/actions/artifacts/{PROOF_ID}/zip"],
+                ["gh", "api", f"repos/{REPOSITORY}/actions/artifacts/{PAYLOAD_ID}/zip"],
+            ])
+
+        with tempfile.TemporaryDirectory() as temporary:
+            data = fixture(Path(temporary))
+            output = data["root"] / "byte-counterprobe-output"
+            data["args"].verified_output_dir = output
+            real_write = origin._write_retained_file
+
+            def mutate_after_write(root_fd, name, source, expected, limit, created):
+                real_write(root_fd, name, source, expected, limit, created)
+                if name == "payload.zip":
+                    with (output / name).open("ab") as handle:
+                        handle.write(b"x")
+
+            with mock.patch.object(origin, "_write_retained_file", side_effect=mutate_after_write):
+                self.run_rejected(data)
+            self.assertFalse(output.exists())
+
     def test_rejects_incomplete_optional_local_pair_before_provider_access(self) -> None:
         for origin_path, bundle_path in ((None, "bundle"), ("origin", None)):
             with self.subTest(origin=origin_path, bundle=bundle_path), \
@@ -751,12 +870,14 @@ class CrossRunVerifySourceTests(unittest.TestCase):
                 with self.subTest(value=invalid), self.assertRaises(origin.OriginError):
                     origin.source_selection(data["selection"], CALLER, same_attempt=invalid)
 
-    def test_cli_same_attempt_flag_is_explicit_and_defaults_off(self) -> None:
+    def test_cli_optional_flags_parse_and_same_attempt_defaults_off(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             selection_path = Path(temporary) / "selection.json"
             selection_path.write_bytes(b"{}")
+            output_path = Path(temporary) / "retained-output"
             base = ["artifact-origin.py", "verify-source", "--workflow", CALLER["workflow"],
-                    "--job-name", CALLER_JOB_NAME, "--source-selection", str(selection_path)]
+                    "--job-name", CALLER_JOB_NAME, "--source-selection", str(selection_path),
+                    "--verified-output-dir", str(output_path)]
             for flag, expected in (([], False), (["--same-attempt"], True)):
                 with self.subTest(same_attempt=expected):
                     captured = []
@@ -767,6 +888,7 @@ class CrossRunVerifySourceTests(unittest.TestCase):
                         self.assertEqual(origin.main(), 0)
                     self.assertEqual(len(captured), 1)
                     self.assertIs(captured[0].same_attempt, expected)
+                    self.assertEqual(captured[0].verified_output_dir, output_path)
 
     def test_selects_source_job_by_id_and_rejects_a_signed_owner_with_another_id(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

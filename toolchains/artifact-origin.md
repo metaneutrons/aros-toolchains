@@ -124,14 +124,31 @@ and any supplied local proof files are remeasured before success. The private
 download/materialization directory is removed on success or failure. No proof is re-signed,
 no original artifact is replaced, and no compiler execution is inferred.
 
+Optionally pass `--verified-output-dir ABSOLUTE_PATH` to retain the verified
+transport. Before OIDC or provider access, the reader rejects a relative,
+linked, existing, noncanonical-parent or input-overlapping destination. After
+signature, provider, payload ZIP/member, selection, proof and caller-context
+checks pass, it creates a fresh owner-only directory containing exactly
+`payload.zip`, `origin.json`, `origin.sigstore.json` and `selection.json`.
+Those are the raw payload ZIP, raw proof members and original selection bytes;
+the payload archive is never extracted. Each file is created exclusively and
+remeasured against its independently verified digest and size. A later failure
+removes only files created by this invocation and its own empty root. If safe
+cleanup cannot complete, the command fails and reports that an incomplete
+owned directory may need cleanup. This retains transport bytes only; it does
+not admit a native package, qualify a release or grant publication authority.
+Without the option, no transport files are retained.
+
 ## Non-publishing provider probe
 
 The `Producer contracts` workflow has a manual boolean input,
 `artifact_origin_probe`, disabled by default. When explicitly enabled, one
 Ubuntu job uploads the two committed smoke fixtures, records and signs their
-origin, and a second read-only job verifies the completed owner and downloads
-the original ZIP. An isolated one-byte-changed record must fail specifically
-at signature authentication. Neither job has a release environment, tag or
+origin. One reader verifies the completed owner and downloads the original
+ZIP; its isolated one-byte-changed record must fail at signature authentication.
+A separate OIDC-authenticated reader exercises explicit same-attempt selection
+and retains the four verified transport files. Its isolated changed ZIP must
+fail at the digest/size boundary. Readers have no release environment, tag or
 release write permission, compiler build, or package publication step.
 
 ```console

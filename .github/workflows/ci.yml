@@ -179,6 +179,112 @@ jobs:
             'artifact origin verification failed: origin signature authentication failed; no retry or credential fallback' \
             "$RUNNER_TEMP/artifact-origin-counterprobe/rejection.log"
 
+  artifact-origin-same-attempt-verification:
+    name: Verify same-attempt artifact retention
+    needs: artifact-origin-probe
+    if: github.event_name == 'workflow_dispatch' && inputs.artifact_origin_probe
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+      attestations: read
+      id-token: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      PAYLOAD_ID: ${{ needs.artifact-origin-probe.outputs.payload-id }}
+      PROOF_ID: ${{ needs.artifact-origin-probe.outputs.proof-id }}
+    steps:
+      - name: Checkout exact non-publishing transport reader
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Select the completed owner and original uploads independently
+        run: |
+          set -euo pipefail
+          python3 -B - <<'PY'
+          import importlib.util
+          import os
+          from pathlib import Path
+          spec = importlib.util.spec_from_file_location('origin', 'scripts/toolchain/artifact-origin.py')
+          origin = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(origin)
+          context = origin.context_from_environment('.github/workflows/ci.yml')
+          pages = origin.jobs_for(context)
+          jobs = origin.complete_jobs(pages)
+          owners = [job for job in jobs if job['name'] == 'Artifact origin probe']
+          origin.require(len(owners) == 1, 'diagnostic owner is not unique')
+          owner = {'id': owners[0]['id'], 'name': 'Artifact origin probe'}
+          origin.select_source_job(pages, context, owner)
+          artifacts = {}
+          for key, prefix, variable in (
+              ('artifact', 'artifact-origin-payload', 'PAYLOAD_ID'),
+              ('proof', 'artifact-origin-proof', 'PROOF_ID'),
+          ):
+              identity = origin.positive(os.environ[variable])
+              name = f'{prefix}-{context["run_id"]}-{context["run_attempt"]}'
+              observed = origin.gh_json(['api', f'repos/{context["repository"]}/actions/artifacts/{identity}'])
+              digest = observed.get('digest', '')
+              origin.require(isinstance(digest, str) and digest.startswith('sha256:'),
+                             'provider upload has no SHA-256 digest')
+              artifacts[key] = origin.select_artifact(observed, context, identity, name, digest[7:])
+          selected = {
+              'schema': origin.SELECTION_SCHEMA, 'context': context,
+              'selection': {'role': 'diagnostic', 'group': 'probe',
+                  'host': 'linux-x86_64', 'profile': 'fixture', 'copy': 'none'},
+              'job': owner, **artifacts,
+          }
+          origin.source_selection(selected, context, same_attempt=True)
+          root = Path(os.environ['RUNNER_TEMP']).resolve() / 'same-attempt-origin'
+          root.mkdir(mode=0o700)
+          with (root / 'selection.json').open('xb') as handle:
+              handle.write(origin.canonical(selected))
+          PY
+      - name: Authenticate and retain raw transport without extraction
+        run: |
+          set -euo pipefail
+          python3 -B scripts/toolchain/artifact-origin.py verify-source \
+            --workflow .github/workflows/ci.yml --job-name 'Verify same-attempt artifact retention' \
+            --same-attempt --source-selection "$RUNNER_TEMP/same-attempt-origin/selection.json" \
+            --verified-output-dir "$RUNNER_TEMP/same-attempt-origin/verified"
+      - name: Check retained diagnostic bytes and reject changed ZIP bytes
+        run: |
+          set -euo pipefail
+          python3 -B - <<'PY'
+          import importlib.util
+          import os
+          from pathlib import Path
+          spec = importlib.util.spec_from_file_location('origin', 'scripts/toolchain/artifact-origin.py')
+          origin = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(origin)
+          root = Path(os.environ['RUNNER_TEMP']).resolve() / 'same-attempt-origin'
+          retained = root / 'verified'
+          origin.require({path.name for path in retained.iterdir()} ==
+              {'payload.zip', 'origin.json', 'origin.sigstore.json', 'selection.json'},
+              'retained transport inventory differs')
+          origin.require((root / 'selection.json').read_bytes() ==
+              (retained / 'selection.json').read_bytes(), 'retained selection differs')
+          selected = origin.parse_json((retained / 'selection.json').read_bytes())
+          record = origin.parse_json((retained / 'origin.json').read_bytes())
+          payload = selected['artifact']
+          origin.verify_zip(retained / 'payload.zip', record['files'],
+                            payload['sha256'], payload['size_in_bytes'])
+          # Alter only a new isolated diagnostic copy. Never touch the retained ZIP.
+          changed = bytearray((retained / 'payload.zip').read_bytes())
+          changed[0] ^= 1
+          corrupted = root / 'corrupted.zip'
+          with corrupted.open('xb') as handle:
+              handle.write(changed)
+          try:
+              origin.verify_zip(corrupted, record['files'], payload['sha256'], payload['size_in_bytes'])
+          except origin.OriginError as error:
+              origin.require(str(error) == 'downloaded artifact ZIP digest or size differs',
+                             'changed ZIP failed at the wrong boundary')
+              print('Changed retained ZIP copy rejected; transport only, not native admission.')
+          else:
+              raise SystemExit('changed retained ZIP unexpectedly passed')
+          PY
+
   artifact-origin-source-verification:
     name: Verify prior-run artifact origin
     if: github.event_name == 'workflow_dispatch' && inputs.artifact_origin_source != ''
