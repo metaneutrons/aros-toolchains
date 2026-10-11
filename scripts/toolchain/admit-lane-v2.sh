@@ -120,7 +120,12 @@ signed_measurement=$(jq -er '.files["evidence/measurement.json"].sha256' "$root/
 [[ "$measurement_sha" == "$signed_measurement" ]] || fail 'extracted measurement differs from authenticated origin'
 build_sha=$(digest "$root/payload/evidence/build-result.json")
 archives=("$root/payload/package/"*.tar.xz)
-(( ${#archives[@]} == 1 )) && [[ -f "${archives[0]}" && ! -L "${archives[0]}" ]] || fail 'native transport does not select exactly one archive'
+if (( ${#archives[@]} != 1 )); then
+    fail 'native transport does not select exactly one archive'
+fi
+if [[ ! -f "${archives[0]}" || -L "${archives[0]}" ]]; then
+    fail 'native transport does not select exactly one archive'
+fi
 archive_sha=$(digest "${archives[0]}")
 archive_size=$(wc -c < "${archives[0]}" | tr -d '[:space:]')
 context=(--recipe "$recipe" --source-lock "$source_lock" --profiles "$profiles"
