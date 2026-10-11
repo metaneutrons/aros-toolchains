@@ -10,8 +10,11 @@ workflow or qualify a compiler, SDK, board boot or publication.
   `ilp32f` ABI, `medany` code model and P4 ISA. RV64 is deliberately excluded
   from this release group. The GNU source closure itself is shared; the profile
   document determines the target scope.
-- `compatibility-ports-gnu-rv32-v3.json` stages the 22 measured compatibility
-  inputs used by the local GNU diagnostic. Boost and Codesets include their
+- `compatibility-ports-gnu-rv32-v3.json` stages the 23 measured compatibility
+  inputs used by the local GNU diagnostic. It includes the complete measured
+  Unicode 16.0.0 `UCD.zip` required by the selected source's `genctbl` rule;
+  the two text-file mappings remain because CMake still consumes them. Boost
+  and Codesets include their
   explicit CMake cache paths. All 16 fetch commands selected by the local
   `includes` / `linklibs` graph have a unique, checksum-matching offline cache
   mapping; the remaining records support upstream and host-Python phases.
