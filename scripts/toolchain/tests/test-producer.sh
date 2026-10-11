@@ -410,6 +410,7 @@ bash "$source_root/scripts/toolchain/tests/test-workflow-job-attempt.sh"
 python3 -B "$source_root/scripts/toolchain/tests/test-artifact-origin.py"
 python3 -B "$source_root/scripts/toolchain/tests/test-artifact-origin-source.py"
 python3 -B "$source_root/scripts/toolchain/tests/test-release-matrix-v2.py"
+python3 -B "$source_root/scripts/toolchain/tests/test-build-lane-v2.py"
 python3 - "$source_root/.github/workflows/toolchain-release.yml" \
     "$source_root/.github/workflows/toolchain-release-recovery.yml" \
     "$source_root/.github/workflows/toolchain-compatibility-replay.yml" <<'PY'

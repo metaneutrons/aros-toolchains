@@ -34,6 +34,7 @@ MAX_METADATA = 16 * 1024 * 1024
 MAX_PAYLOAD = 32 * 1024 * 1024 * 1024
 MAX_FILES = 8192
 SEGMENT = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
+PROFILE = re.compile(r"[A-Za-z0-9._-]{1,128}\Z")
 
 
 class OriginError(Exception):
@@ -395,7 +396,10 @@ def verify_zip(path: Path, files: dict, digest: str, size: int | None = None) ->
 
 def selection(args: argparse.Namespace) -> dict:
     result = {key: getattr(args, key) for key in ("role", "group", "host", "profile", "copy")}
-    require(all(isinstance(value, str) and SEGMENT.fullmatch(value) for value in result.values()),
+    require(all(isinstance(value, str) and SEGMENT.fullmatch(value)
+                for key, value in result.items() if key != "profile")
+            and isinstance(result["profile"], str) and PROFILE.fullmatch(result["profile"])
+            and result["profile"] not in (".", ".."),
             "artifact lane selection is invalid")
     require(result["role"] in ("build", "comparison", "compatibility", "diagnostic")
             and result["copy"] in ("a", "b", "none"), "artifact role/copy is invalid")

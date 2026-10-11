@@ -208,6 +208,19 @@ def verify_fixture(root: Path, *, signed_digest: str | None = None,
     }
 
 
+class LaneSelectionTests(unittest.TestCase):
+    def test_native_profiles_preserve_case_and_punctuation_without_aliases(self) -> None:
+        for profile in ("RV32-Mixed", ".profile", "_profile", "-profile", "P" * 128):
+            with self.subTest(profile=profile):
+                self.assertEqual(origin.selection(lane_args(profile=profile))["profile"], profile)
+
+    def test_native_profile_identity_rejects_unsafe_and_oversize_values(self) -> None:
+        for profile in ("", ".", "..", "../profile", "profile/child", "profile\n", "p" * 129, 1):
+            with self.subTest(profile=profile):
+                with self.assertRaisesRegex(origin.OriginError, "artifact lane selection is invalid"):
+                    origin.selection(lane_args(profile=profile))
+
+
 class CanonicalMetadataTests(unittest.TestCase):
     def test_positive_accepts_only_canonical_exact_integers(self) -> None:
         self.assertEqual(origin.positive(1), 1)
