@@ -42,10 +42,24 @@ jobs:
           repository: ${{ env.AROS_SOURCE_REPOSITORY }}
           ref: ${{ env.AROS_SOURCE_COMMIT }}
           path: aros-source
+      - name: Select exact V2 source contract
+        id: v2-source
+        working-directory: producer
+        run: |
+          set -euo pipefail
+          commit=$(jq -er '.source_commit | select(type == "string" and test("^[0-9a-f]{40}$"))' toolchains/compiler-sdk-ci-selection-v2.json)
+          printf 'commit=%s\n' "$commit" >> "$GITHUB_OUTPUT"
+      - name: Checkout exact compiler and SDK source contract
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: ${{ env.AROS_SOURCE_REPOSITORY }}
+          ref: ${{ steps.v2-source.outputs.commit }}
+          path: aros-v2-source
       - name: Run complete offline producer contract suite
         working-directory: producer
         env:
           AROS_TEST_SOURCE_ROOT: ${{ github.workspace }}/aros-source
+          AROS_TEST_V2_SOURCE_ROOT: ${{ github.workspace }}/aros-v2-source
         run: scripts/toolchain/tests/test-producer.sh
 
   artifact-origin-probe:
