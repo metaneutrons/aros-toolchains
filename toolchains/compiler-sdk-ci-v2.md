@@ -1,7 +1,7 @@
 # Compiler and SDK diagnostic qualification
 
 The existing `toolchain-release.yml` workflow has one non-publishing
-`qualify-v2` mode. The first tier is Linux x86-64 only. Its compiler groups,
+`qualify-v2` mode. The narrowed tier is Linux x86-64 only. Its compiler groups,
 SDK product versions and source selections are declared in
 `compiler-sdk-ci-selection-v2.json`; source profiles and sealed consumer
 contracts remain owned by AROS-NX.
@@ -107,3 +107,18 @@ add `-f diagnostic_group=<exact-group-id-from-plan>`. The complete native plan
 is still validated before projection. A narrowed diagnostic is explicitly
 incomplete and cannot be used for a tag-triggered or full release selection.
 Omitting the selector keeps every group in the diagnostic host scope.
+
+For the complete native non-publishing matrix, explicitly select
+`mode=qualify-v2-full` and `scope=full` on a reviewed branch. The workflow rejects
+a diagnostic group in this mode, and the scheduler validates the entire native
+plan before selecting every host and compiler lane. It preserves the actual
+manual event identity; it does not simulate a tag push.
+
+Each selected host builds the exact development tools commit natively. Lanes
+consume only their own host runtime, verify its checksums and independently
+build both compiler copies before SDK generation. macOS Intel remains excluded.
+This full scheduling coverage is not release admission: the runtime is still a
+development build, and original-owner verification, complete native matrix
+readback, combined inventory, signatures and isolated release gates remain
+required. Do not dispatch the full matrix while a known compiler A/B defect
+still requires a narrowed diagnostic.

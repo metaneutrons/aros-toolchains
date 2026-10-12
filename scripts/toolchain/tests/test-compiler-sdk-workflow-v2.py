@@ -11,8 +11,11 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import os
 from pathlib import Path, PurePosixPath
 import re
+import subprocess
+import tempfile
 import tomllib
 import unittest
 from typing import Any
@@ -375,18 +378,20 @@ def validate_v2_policy(documents: Documents) -> dict[str, int]:
     require("- qualify-v2" in workflow, "workflow_dispatch must expose qualify-v2 mode")
     names = job_names(workflow)
     v2_names = {name for name in names if name.startswith("v2-")}
-    expected_names = {"v2-prepare", "v2-sources", "v2-qualify"}
+    expected_names = {"v2-prepare", "v2-sources", "v2-runtimes", "v2-qualify"}
     require(v2_names == expected_names, "workflow V2 diagnostic job set is not closed")
     prepare = workflow_job(workflow, "v2-prepare")
     sources = workflow_job(workflow, "v2-sources")
     qualify = workflow_job(workflow, "v2-qualify")
-    for name, job in (("v2-prepare", prepare), ("v2-sources", sources), ("v2-qualify", qualify)):
+    runtimes = workflow_job(workflow, "v2-runtimes")
+    for name, job in (("v2-prepare", prepare), ("v2-sources", sources),
+                      ("v2-runtimes", runtimes), ("v2-qualify", qualify)):
         require_read_only_job(job, name)
         require(re.search(r"(?m)^    timeout-minutes: [1-9][0-9]*$", job) is not None,
                 f"{name} must have a bounded job timeout")
 
     require(
-        "if: github.event_name == 'workflow_dispatch' && inputs.mode == 'qualify-v2'" in prepare,
+        "if: github.event_name == 'workflow_dispatch' && (inputs.mode == 'qualify-v2' || inputs.mode == 'qualify-v2-full')" in prepare,
         "V2 preparation must run only for an explicit qualify-v2 dispatch",
     )
     require(
@@ -394,14 +399,18 @@ def validate_v2_policy(documents: Documents) -> dict[str, int]:
         "V2 diagnostics must reject tag and non-dispatch refs",
     )
     require(
-        '[[ "$REQUESTED_SCOPE" == linux-x86_64 ]]' in prepare,
-        "V2 diagnostics must remain scoped to Linux x86-64",
+        'case "$REQUESTED_MODE:$REQUESTED_SCOPE" in' in prepare
+        and 'qualify-v2:linux-x86_64) ;;' in prepare
+        and 'qualify-v2-full:full) [[ -z "$REQUESTED_GROUP" ]] ;;' in prepare
+        and 'REQUESTED_MODE: ${{ inputs.mode }}' in prepare
+        and 'REQUESTED_SCOPE: ${{ inputs.scope }}' in prepare,
+        "V2 diagnostics must keep Linux x86-64 separate from explicit complete qualification",
     )
     require("uses: ./.github/actions/materialize-development-aros-tools" in prepare,
             "V2 preparation must use the local development-only tools helper")
     require("needs: v2-prepare" in sources, "V2 source preparation must depend on V2 preparation")
     require(
-        "needs: [v2-prepare, v2-sources]" in qualify,
+        "needs: [v2-prepare, v2-sources, v2-runtimes]" in qualify,
         "V2 qualification must depend on both preparation and verified caches",
     )
     require(
@@ -425,7 +434,7 @@ def validate_v2_policy(documents: Documents) -> dict[str, int]:
 
     plan = workflow_job(workflow, "plan")
     require(
-        "inputs.mode != 'qualify-v2'" in plan,
+        "inputs.mode != 'qualify-v2'" in plan and "inputs.mode != 'qualify-v2-full'" in plan,
         "diagnostic dispatch must not enter the legacy release graph",
     )
     for name in names:
@@ -440,8 +449,22 @@ def validate_v2_policy(documents: Documents) -> dict[str, int]:
     require(
         "prepare-compiler-sdk-inputs-v2.py" in prepare
         and "select-release-matrix-v2.py" in prepare
-        and "--event workflow_dispatch --scope linux-x86_64" in prepare,
-        "V2 matrix preparation must use the native plan and x86-64 scope selector",
+        and '--event workflow_dispatch --scope "$REQUESTED_SCOPE"' in prepare
+        and 'if [[ "$REQUESTED_MODE" == qualify-v2-full ]]; then' in prepare
+        and 'group_arguments+=(--full-qualification)' in prepare,
+        "V2 matrix preparation must use explicit native-plan full qualification without event spoofing",
+    )
+    require(
+        "host_matrix: ${{ steps.matrix.outputs.host_matrix }}" in prepare
+        and "matrix: ${{ fromJSON(needs.v2-prepare.outputs.host_matrix) }}" in runtimes
+        and "runs-on: ${{ matrix.runner }}" in runtimes
+        and "uses: ./.github/actions/materialize-development-aros-tools" in runtimes
+        and "commit: ${{ needs.v2-prepare.outputs.tools_commit }}" in runtimes
+        and "name: diagnostic-v2-native-runtime-${{ matrix.host }}" in runtimes
+        and "name: diagnostic-v2-native-runtime-${{ matrix.host }}" in qualify
+        and "if: runner.os == 'Linux'" in qualify
+        and 'shasum -a 256 -c SHA256SUMS' in qualify,
+        "every native lane must consume its own host runtime with portable readback",
     )
     require(
         'REQUESTED_GROUP: ${{ inputs.diagnostic_group }}' in prepare
@@ -571,7 +594,7 @@ def validate_v2_policy(documents: Documents) -> dict[str, int]:
         and 'test -z "$(git -C "$TOOLS_SOURCE" status --porcelain)"' in action
         and "GITHUB_EVENT_NAME" in action
         and "RUNNER_OS" in action,
-        "development tools helper must build only the clean, selected Linux dispatch checkout",
+        "development tools helper must build only the clean, selected native dispatch checkout",
     )
     require(
         not re.search(r"(?m)^\s*(?:gh\s+release|git\s+(?:tag|push)\b)", qualify_script),
@@ -598,6 +621,53 @@ class CompilerSdkWorkflowV2Tests(unittest.TestCase):
         selection = Documents().json(SELECTION)
         self.assertEqual(result["group_count"], len(selection["groups"]))
         self.assertEqual(result["sdk_count"], len(selection["sdks"]))
+
+    def test_actual_selection_shell_requires_explicit_non_publishing_full_mode(self) -> None:
+        prepare = workflow_job(Documents().text(WORKFLOW), "v2-prepare")
+        block = prepare.split("        run: |\n", 1)[1].split("      - ", 1)[0]
+        script = "\n".join(line[10:] for line in block.splitlines())
+        for mode, scope, group, event, ref_type, accepted in (
+            ("qualify-v2", "linux-x86_64", "", "workflow_dispatch", "branch", True),
+            ("qualify-v2-full", "full", "", "workflow_dispatch", "branch", True),
+            ("qualify-v2", "full", "", "workflow_dispatch", "branch", False),
+            ("qualify-v2-full", "linux-x86_64", "", "workflow_dispatch", "branch", False),
+            ("qualify-v2-full", "full", "gnu-rv32", "workflow_dispatch", "branch", False),
+            ("qualify-v2-full", "full", "", "push", "tag", False),
+            ("qualify-v2-full", "full", "", "workflow_dispatch", "tag", False),
+        ):
+            with self.subTest(mode=mode, scope=scope, group=group, event=event), \
+                    tempfile.TemporaryDirectory(prefix="v2-full-selector-") as directory:
+                output = Path(directory) / "output"
+                output.touch()
+                environment = {**os.environ, "GITHUB_OUTPUT": str(output),
+                               "GITHUB_EVENT_NAME": event, "GITHUB_REF_TYPE": ref_type,
+                               "REQUESTED_MODE": mode, "REQUESTED_SCOPE": scope,
+                               "REQUESTED_GROUP": group}
+                result = subprocess.run(["bash", "-c", script], cwd=ROOT, env=environment,
+                                        capture_output=True, text=True, timeout=10)
+                self.assertEqual(result.returncode == 0, accepted, result.stderr)
+                if accepted:
+                    selection = Documents().json(SELECTION)
+                    self.assertEqual(output.read_text(),
+                                     f"source_commit={selection['source_commit']}\n"
+                                     f"tools_commit={selection['tools_commit']}\n")
+                else:
+                    self.assertEqual(output.read_bytes(), b"")
+
+    def test_rejects_cross_host_runtime_download_and_full_mode_legacy_entry(self) -> None:
+        for job, original, replacement, reason in (
+            ("v2-qualify", "name: diagnostic-v2-native-runtime-${{ matrix.host }}",
+             "name: diagnostic-v2-runtime", "own host runtime"),
+            ("plan", " && inputs.mode != 'qualify-v2-full'", "", "legacy release graph"),
+            ("v2-prepare", "group_arguments+=(--full-qualification)",
+             "group_arguments+=()", "full qualification"),
+        ):
+            with self.subTest(job=job):
+                documents = self.new_documents()
+                documents.set_text(WORKFLOW, mutate_job(documents.text(WORKFLOW), job,
+                                                        original, replacement))
+                with self.assertRaisesRegex(PolicyViolation, reason):
+                    validate_v2_policy(documents)
 
     def test_rejects_diagnostic_permission_escalation(self) -> None:
         documents = self.new_documents()
@@ -663,8 +733,8 @@ class CompilerSdkWorkflowV2Tests(unittest.TestCase):
         workflow = mutate_job(
             workflow,
             "v2-prepare",
-            '[[ "$REQUESTED_SCOPE" == linux-x86_64 ]]',
-            '[[ "$REQUESTED_SCOPE" == linux || "$REQUESTED_SCOPE" == linux-x86_64 ]]',
+            'qualify-v2:linux-x86_64) ;;',
+            'qualify-v2:*) ;;',
         )
         documents.set_text(WORKFLOW, workflow)
         with self.assertRaisesRegex(PolicyViolation, "Linux x86-64"):

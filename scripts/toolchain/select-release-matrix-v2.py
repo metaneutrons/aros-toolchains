@@ -355,12 +355,14 @@ def _validate_plan(
     return lanes, group_ids, lane_count, sdk_values
 
 
-def _select_scope(event: str, scope: str) -> set[str]:
+def _select_scope(event: str, scope: str, full_qualification: bool = False) -> set[str]:
     if event not in {"push", "workflow_dispatch"} or scope not in {"full", "linux-x86_64", "linux"}:
         raise PlanError("event or scope is unsupported")
+    if full_qualification and (event != "workflow_dispatch" or scope != "full"):
+        raise PlanError("full qualification requires a complete manual dispatch scope")
     if event == "push" and scope != "full":
         raise PlanError("push events require the complete scope")
-    if event == "workflow_dispatch" and scope == "full":
+    if event == "workflow_dispatch" and scope == "full" and not full_qualification:
         raise PlanError("manual dispatch cannot select the complete scope")
     if scope == "full":
         return set(ACTIVE_HOSTS)
@@ -379,6 +381,7 @@ def project(
     tools_commit: str,
     event: str,
     scope: str,
+    full_qualification: bool = False,
     diagnostic_group: str | None = None,
 ) -> dict[str, Any]:
     actual_plan_sha256 = hashlib.sha256(raw).hexdigest()
@@ -393,7 +396,7 @@ def project(
         expected_producer_commit=expected_producer_commit,
         expected_tools_commit=expected_tools_commit,
     )
-    selected_hosts = _select_scope(event, scope)
+    selected_hosts = _select_scope(event, scope, full_qualification)
     if diagnostic_group is not None:
         if event != "workflow_dispatch" or scope == "full":
             raise PlanError("diagnostic group requires a non-full manual dispatch scope")
@@ -513,6 +516,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--tools-commit", required=True)
     parser.add_argument("--event", required=True, choices=("push", "workflow_dispatch"))
     parser.add_argument("--scope", required=True, choices=("full", "linux-x86_64", "linux"))
+    parser.add_argument("--full-qualification", action="store_true")
     parser.add_argument("--diagnostic-group")
     parser.add_argument("--github-output", type=Path)
     return parser
@@ -531,6 +535,7 @@ def main(argv: list[str] | None = None) -> int:
             tools_commit=args.tools_commit,
             event=args.event,
             scope=args.scope,
+            full_qualification=args.full_qualification,
             diagnostic_group=args.diagnostic_group,
         )
         if args.github_output is not None:

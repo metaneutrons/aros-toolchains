@@ -42,7 +42,7 @@ for name in aros runtime_sha inputs selection source producer tools cache upstre
     [[ -n "${!name}" ]] || fail "missing $name"
 done
 [[ "$runtime_sha" =~ ^[0-9a-f]{64}$ && "$jobs" =~ ^[1-9][0-9]*$ && "$deadline" =~ ^[1-9][0-9]*$ ]] || fail 'invalid digest or execution budget'
-[[ "$host" == linux-x86_64 || "$host" == linux-aarch64 ]] || fail 'diagnostic host must be Linux'
+case "$host" in linux-x86_64|linux-aarch64|macos-aarch64) ;; *) fail 'unsupported native diagnostic host';; esac
 [[ "$aros" == /* && -x "$aros" && -f "$aros" && ! -L "$aros" && "$(digest "$aros")" == "$runtime_sha" ]] || fail 'runtime bytes differ from selection'
 for directory in "$inputs" "$source" "$producer" "$tools" "$cache" "$upstream"; do
     [[ "$directory" == /* && -d "$directory" && ! -L "$directory" ]] || fail 'input roots must be absolute nonlinked directories'

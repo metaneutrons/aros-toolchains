@@ -104,6 +104,7 @@ class ReleaseMatrixV2Tests(unittest.TestCase):
         *,
         event: str = "push",
         scope: str = "full",
+        full_qualification: bool = False,
         diagnostic_group: str | None = None,
         github_output: Path | None = None,
         plan_path: Path | None = None,
@@ -137,6 +138,8 @@ class ReleaseMatrixV2Tests(unittest.TestCase):
         ]
         if diagnostic_group is not None:
             arguments.extend(("--diagnostic-group", diagnostic_group))
+        if full_qualification:
+            arguments.append("--full-qualification")
         if github_output is not None:
             arguments.extend(("--github-output", str(github_output)))
         return subprocess.run(arguments, capture_output=True, text=True, check=False)
@@ -273,6 +276,56 @@ class ReleaseMatrixV2Tests(unittest.TestCase):
         )
         native = self.run_cli(plan_bytes(native_profile_names))
         self.assertEqual(native.returncode, 0, native.stderr)
+
+    def test_explicit_manual_full_qualification_projects_the_complete_plan(self) -> None:
+        raw = plan_bytes(owner_plan())
+        result = self.run_cli(
+            raw,
+            event="workflow_dispatch",
+            scope="full",
+            full_qualification=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        projection = json.loads(result.stdout)
+        self.assertEqual(projection["event"], "workflow_dispatch")
+        self.assertEqual(projection["scope"], "full")
+        self.assertTrue(projection["complete_selection"])
+        self.assertEqual(projection["assurance"], "scheduling-only")
+        self.assertEqual(
+            {entry["host"] for entry in projection["host_matrix"]["include"]},
+            set(ACTIVE_HOSTS),
+        )
+        self.assertEqual(projection["lane_count"], 12)
+        self.assertEqual(projection["build_count"], 24)
+        self.assertEqual(
+            [entry["copy"] for entry in projection["build_matrix"]["include"]],
+            [copy for _ in range(12) for copy in ("a", "b")],
+        )
+        self.assertEqual(projection["sdk_count"], 2)
+
+    def test_manual_full_qualification_rejections_leave_github_output_unchanged(self) -> None:
+        raw = plan_bytes(owner_plan())
+        rejected_requests = (
+            {"event": "workflow_dispatch", "scope": "full"},
+            {
+                "event": "workflow_dispatch",
+                "scope": "full",
+                "full_qualification": True,
+                "diagnostic_group": "family-alpha",
+            },
+            {
+                "event": "workflow_dispatch",
+                "scope": "linux",
+                "full_qualification": True,
+            },
+            {"event": "push", "scope": "full", "full_qualification": True},
+        )
+        for request in rejected_requests:
+            with self.subTest(request=request):
+                destination = self.root / f"github-output-{self.serial + 1}"
+                destination.write_bytes(b"prior=content\n")
+                self.assert_rejected(raw, github_output=destination, **request)
+                self.assertEqual(destination.read_bytes(), b"prior=content\n")
 
     def test_manual_diagnostic_group_narrows_scheduling_and_keeps_sdk_identity(self) -> None:
         plan = owner_plan(

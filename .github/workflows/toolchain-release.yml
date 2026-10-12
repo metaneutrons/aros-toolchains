@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: Produce a host tier or recover a packaging-only failed run
+        description: Select non-publishing qualification or packaging recovery
         required: true
         default: produce
         type: choice
@@ -12,14 +12,16 @@ on:
           - produce
           - recover
           - qualify-v2
+          - qualify-v2-full
       scope:
-        description: Diagnostic host tier (manual runs never publish or exercise all hosts)
+        description: Host tier; full requires non-publishing qualify-v2-full mode
         required: true
         default: linux-x86_64
         type: choice
         options:
           - linux-x86_64
           - linux
+          - full
       source_run_id:
         description: Recovery only - qualified producer run ID
         required: false
@@ -61,13 +63,14 @@ env:
 jobs:
   v2-prepare:
     name: Prepare compiler and SDK diagnostic
-    if: github.event_name == 'workflow_dispatch' && inputs.mode == 'qualify-v2'
+    if: github.event_name == 'workflow_dispatch' && (inputs.mode == 'qualify-v2' || inputs.mode == 'qualify-v2-full')
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     permissions:
       contents: read
     outputs:
       matrix: ${{ steps.matrix.outputs.verify_matrix }}
+      host_matrix: ${{ steps.matrix.outputs.host_matrix }}
       source_commit: ${{ steps.selection.outputs.source_commit }}
       tools_commit: ${{ steps.selection.outputs.tools_commit }}
     steps:
@@ -79,10 +82,16 @@ jobs:
         name: Select committed diagnostic inputs; reject publishing and unsupported host scopes
         env:
           REQUESTED_SCOPE: ${{ inputs.scope }}
+          REQUESTED_MODE: ${{ inputs.mode }}
+          REQUESTED_GROUP: ${{ inputs.diagnostic_group }}
         run: |
           set -euo pipefail
           [[ "$GITHUB_EVENT_NAME" == workflow_dispatch && "$GITHUB_REF_TYPE" == branch ]]
-          [[ "$REQUESTED_SCOPE" == linux-x86_64 ]]
+          case "$REQUESTED_MODE:$REQUESTED_SCOPE" in
+            qualify-v2:linux-x86_64) ;;
+            qualify-v2-full:full) [[ -z "$REQUESTED_GROUP" ]] ;;
+            *) exit 1;;
+          esac
           selection=toolchains/compiler-sdk-ci-selection-v2.json
           jq -e '.schema == "aros-compiler-sdk-ci-selection-v2"' "$selection" >/dev/null
           for key in source_commit tools_commit; do
@@ -117,6 +126,8 @@ jobs:
         name: Bind native recipes, source SDK identities and compiler/SDK selections
         env:
           REQUESTED_GROUP: ${{ inputs.diagnostic_group }}
+          REQUESTED_SCOPE: ${{ inputs.scope }}
+          REQUESTED_MODE: ${{ inputs.mode }}
         run: |
           set -euo pipefail
           producer="$RUNNER_TEMP/diagnostic-producer"
@@ -131,6 +142,9 @@ jobs:
           inputs_sha=$(sha256sum "$RUNNER_TEMP/diagnostic-inputs/toolchain-release-inputs-v2.json" | awk '{print $1}')
           plan_sha=$(sha256sum "$RUNNER_TEMP/diagnostic-inputs/plan.json" | awk '{print $1}')
           group_arguments=()
+          if [[ "$REQUESTED_MODE" == qualify-v2-full ]]; then
+            group_arguments+=(--full-qualification)
+          fi
           if [[ -n "$REQUESTED_GROUP" ]]; then
             group_arguments+=(--diagnostic-group "$REQUESTED_GROUP")
           fi
@@ -138,7 +152,7 @@ jobs:
             --plan "$RUNNER_TEMP/diagnostic-inputs/plan.json" --plan-sha256 "$plan_sha" \
             --inputs-sha256 "$inputs_sha" --producer-commit "$GITHUB_SHA" \
             --tools-commit "${{ steps.selection.outputs.tools_commit }}" \
-            --event workflow_dispatch --scope linux-x86_64 --github-output "$GITHUB_OUTPUT" \
+            --event workflow_dispatch --scope "$REQUESTED_SCOPE" --github-output "$GITHUB_OUTPUT" \
             "${group_arguments[@]}" \
             > "$RUNNER_TEMP/diagnostic-inputs/matrix.json"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -228,9 +242,47 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  v2-runtimes:
+    name: Build native non-publishing tools (${{ matrix.host }})
+    needs: v2-prepare
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.v2-prepare.outputs.host_matrix) }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: metaneutrons/aros-tools
+          ref: ${{ needs.v2-prepare.outputs.tools_commit }}
+          fetch-depth: 0
+          persist-credentials: false
+          path: dependencies/aros-tools
+      - uses: ./.github/actions/select-native-rust-toolchain
+        with:
+          producer-dir: ${{ github.workspace }}
+      - id: runtime
+        uses: ./.github/actions/materialize-development-aros-tools
+        with:
+          source-dir: ${{ github.workspace }}/dependencies/aros-tools
+          commit: ${{ needs.v2-prepare.outputs.tools_commit }}
+          destination: ${{ runner.temp }}/diagnostic-runtime
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: diagnostic-v2-native-runtime-${{ matrix.host }}
+          path: ${{ steps.runtime.outputs.root }}/
+          if-no-files-found: error
+          retention-days: 7
+
   v2-qualify:
     name: Compiler A/B and SDK (${{ matrix.group_id }}, ${{ matrix.host }}, ${{ matrix.profile }})
-    needs: [v2-prepare, v2-sources]
+    needs: [v2-prepare, v2-sources, v2-runtimes]
     strategy:
       fail-fast: false
       max-parallel: 2
@@ -268,7 +320,7 @@ jobs:
           path: dependencies/aros-tools
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
-          name: diagnostic-v2-runtime
+          name: diagnostic-v2-native-runtime-${{ matrix.host }}
           path: ${{ runner.temp }}/diagnostic-runtime
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
@@ -279,6 +331,7 @@ jobs:
           name: diagnostic-v2-cache
           path: ${{ runner.temp }}/diagnostic-cache-input
       - uses: ./.github/actions/disable-google-chrome-apt-source
+        if: runner.os == 'Linux'
       - name: Install compiler and SDK consumer prerequisites
         run: bash dependencies/aros/scripts/ci/install-build-prerequisites.sh
       - id: rust
@@ -295,11 +348,11 @@ jobs:
         run: |
           set -euo pipefail
           runtime="$RUNNER_TEMP/diagnostic-runtime"
-          (cd "$runtime" && sha256sum -c SHA256SUMS)
+          (cd "$runtime" && shasum -a 256 -c SHA256SUMS)
           chmod +x "$runtime"/bin/*
           producer="$RUNNER_TEMP/diagnostic-producer"
           git worktree add --detach "$producer" "$GITHUB_SHA"
-          runtime_sha=$(sha256sum "$runtime/bin/aros" | awk '{print $1}')
+          runtime_sha=$(shasum -a 256 "$runtime/bin/aros" | awk '{print $1}')
           python3 -B scripts/toolchain/cache-archive-transport.py \
             --archive "$RUNNER_TEMP/diagnostic-cache-input/diagnostic-cache.tar.gz" \
             --archive-sha256 "$CACHE_ARCHIVE_SHA256" --output-dir "$RUNNER_TEMP/diagnostic-cache"
@@ -353,7 +406,7 @@ jobs:
           retention-days: 7
 
   plan:
-    if: github.event_name != 'workflow_dispatch' || (inputs.mode != 'recover' && inputs.mode != 'qualify-v2')
+    if: github.event_name != 'workflow_dispatch' || (inputs.mode != 'recover' && inputs.mode != 'qualify-v2' && inputs.mode != 'qualify-v2-full')
     runs-on: ubuntu-24.04
     outputs:
       host_matrix: ${{ steps.matrix.outputs.host_matrix }}
