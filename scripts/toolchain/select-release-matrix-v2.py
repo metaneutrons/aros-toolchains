@@ -379,6 +379,7 @@ def project(
     tools_commit: str,
     event: str,
     scope: str,
+    diagnostic_group: str | None = None,
 ) -> dict[str, Any]:
     actual_plan_sha256 = hashlib.sha256(raw).hexdigest()
     if _require_digest(plan_sha256, "selected plan digest") != actual_plan_sha256:
@@ -386,14 +387,24 @@ def project(
     expected_inputs_sha256 = _require_digest(inputs_sha256, "selected inputs digest")
     expected_producer_commit = _require_commit(producer_commit, "selected producer commit")
     expected_tools_commit = _require_commit(tools_commit, "selected tools commit")
-    lanes, _group_ids, owner_lane_count, sdks = _validate_plan(
+    lanes, group_ids, owner_lane_count, sdks = _validate_plan(
         plan,
         expected_inputs_sha256=expected_inputs_sha256,
         expected_producer_commit=expected_producer_commit,
         expected_tools_commit=expected_tools_commit,
     )
     selected_hosts = _select_scope(event, scope)
+    if diagnostic_group is not None:
+        if event != "workflow_dispatch" or scope == "full":
+            raise PlanError("diagnostic group requires a non-full manual dispatch scope")
+        diagnostic_group = _require_safe_id(diagnostic_group, "diagnostic group ID")
+        if diagnostic_group not in group_ids:
+            raise PlanError("diagnostic group is not present in the validated plan")
     selected_lanes = [lane for lane in lanes if lane["host"] in selected_hosts]
+    if diagnostic_group is not None:
+        selected_lanes = [
+            lane for lane in selected_lanes if lane["group_id"] == diagnostic_group
+        ]
     hosts = [host for host in ACTIVE_HOSTS if host in selected_hosts]
     host_entries = [{"host": host, "runner": RUNNERS[host]} for host in hosts]
     verify_entries = [
@@ -410,11 +421,21 @@ def project(
         for entry in verify_entries
         for copy in ("a", "b")
     ]
+    selected_sdks = sdks
+    if diagnostic_group is not None:
+        selected_sdks = [
+            sdk
+            for sdk in sdks
+            if any(
+                profile_reference["group_id"] == diagnostic_group
+                for profile_reference in sdk["compiler_profiles"]
+            )
+        ]
     if len(build_entries) > MAX_BUILD_ENTRIES:
         raise PlanError("projected build matrix exceeds 256 entries")
     if len(selected_lanes) > owner_lane_count:
         raise PlanError("projected lane count exceeds the validated owner lane count")
-    return {
+    result = {
         "schema": "aros-toolchain-producer-release-matrix-v2",
         "assurance": "scheduling-only",
         "inputs_sha256": expected_inputs_sha256,
@@ -423,15 +444,18 @@ def project(
         "tools_commit": expected_tools_commit,
         "event": event,
         "scope": scope,
-        "complete_selection": scope == "full",
+        "complete_selection": scope == "full" and diagnostic_group is None,
         "host_matrix": {"include": host_entries},
         "verify_matrix": {"include": verify_entries},
         "build_matrix": {"include": build_entries},
-        "sdk_matrix": {"include": sdks},
+        "sdk_matrix": {"include": selected_sdks},
         "build_count": len(build_entries),
         "lane_count": len(verify_entries),
-        "sdk_count": len(sdks),
+        "sdk_count": len(selected_sdks),
     }
+    if diagnostic_group is not None:
+        result["diagnostic_group"] = diagnostic_group
+    return result
 
 
 def _github_output_lines(result: dict[str, Any]) -> str:
@@ -489,6 +513,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--tools-commit", required=True)
     parser.add_argument("--event", required=True, choices=("push", "workflow_dispatch"))
     parser.add_argument("--scope", required=True, choices=("full", "linux-x86_64", "linux"))
+    parser.add_argument("--diagnostic-group")
     parser.add_argument("--github-output", type=Path)
     return parser
 
@@ -506,6 +531,7 @@ def main(argv: list[str] | None = None) -> int:
             tools_commit=args.tools_commit,
             event=args.event,
             scope=args.scope,
+            diagnostic_group=args.diagnostic_group,
         )
         if args.github_output is not None:
             _append_regular_no_follow(

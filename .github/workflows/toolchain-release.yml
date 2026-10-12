@@ -24,6 +24,10 @@ on:
         description: Recovery only - qualified producer run ID
         required: false
         type: string
+      diagnostic_group:
+        description: qualify-v2 only - exact plan group ID; omit for all compiler groups
+        required: false
+        type: string
       source_tag:
         description: Recovery only - immutable source release tag in qualification evidence
         required: false
@@ -111,6 +115,8 @@ jobs:
           destination: ${{ runner.temp }}/diagnostic-runtime
       - id: matrix
         name: Bind native recipes, source SDK identities and compiler/SDK selections
+        env:
+          REQUESTED_GROUP: ${{ inputs.diagnostic_group }}
         run: |
           set -euo pipefail
           producer="$RUNNER_TEMP/diagnostic-producer"
@@ -124,11 +130,16 @@ jobs:
             --projection-dir "$RUNNER_TEMP/diagnostic-source-projection"
           inputs_sha=$(sha256sum "$RUNNER_TEMP/diagnostic-inputs/toolchain-release-inputs-v2.json" | awk '{print $1}')
           plan_sha=$(sha256sum "$RUNNER_TEMP/diagnostic-inputs/plan.json" | awk '{print $1}')
+          group_arguments=()
+          if [[ -n "$REQUESTED_GROUP" ]]; then
+            group_arguments+=(--diagnostic-group "$REQUESTED_GROUP")
+          fi
           python3 -B scripts/toolchain/select-release-matrix-v2.py \
             --plan "$RUNNER_TEMP/diagnostic-inputs/plan.json" --plan-sha256 "$plan_sha" \
             --inputs-sha256 "$inputs_sha" --producer-commit "$GITHUB_SHA" \
             --tools-commit "${{ steps.selection.outputs.tools_commit }}" \
             --event workflow_dispatch --scope linux-x86_64 --github-output "$GITHUB_OUTPUT" \
+            "${group_arguments[@]}" \
             > "$RUNNER_TEMP/diagnostic-inputs/matrix.json"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:

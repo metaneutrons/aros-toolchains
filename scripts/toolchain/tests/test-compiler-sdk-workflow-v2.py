@@ -444,6 +444,12 @@ def validate_v2_policy(documents: Documents) -> dict[str, int]:
         "V2 matrix preparation must use the native plan and x86-64 scope selector",
     )
     require(
+        'REQUESTED_GROUP: ${{ inputs.diagnostic_group }}' in prepare
+        and 'group_arguments+=(--diagnostic-group "$REQUESTED_GROUP")' in prepare
+        and '"${group_arguments[@]}"' in prepare,
+        "V2 optional diagnostic group must be passed to the validated native-plan projection",
+    )
+    require(
         '"release-plan"' in prepare_script
         and '"verify-source"' in prepare_script
         and "materialize-engine-free-source" in prepare_script,
@@ -660,6 +666,19 @@ class CompilerSdkWorkflowV2Tests(unittest.TestCase):
         )
         documents.set_text(WORKFLOW, workflow)
         with self.assertRaisesRegex(PolicyViolation, "Linux x86-64"):
+            validate_v2_policy(documents)
+
+    def test_rejects_unbound_diagnostic_group_selector(self) -> None:
+        documents = self.new_documents()
+        workflow = documents.text(WORKFLOW)
+        workflow = mutate_job(
+            workflow,
+            "v2-prepare",
+            '"${group_arguments[@]}"',
+            '""',
+        )
+        documents.set_text(WORKFLOW, workflow)
+        with self.assertRaisesRegex(PolicyViolation, "optional diagnostic group"):
             validate_v2_policy(documents)
 
     def test_rejects_missing_development_runtime_helper(self) -> None:

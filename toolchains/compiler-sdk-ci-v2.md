@@ -93,3 +93,9 @@ ABI contracts or suppress a failed product check to make an older CLI pass.
 gh workflow run toolchain-release.yml --repo metaneutrons/aros-toolchains \
   --ref fix/compiler-sdk-ci-integration -f mode=qualify-v2 -f scope=linux-x86_64
 ```
+
+To investigate one compiler group without repeating unrelated native builds,
+add `-f diagnostic_group=<exact-group-id-from-plan>`. The complete native plan
+is still validated before projection. A narrowed diagnostic is explicitly
+incomplete and cannot be used for a tag-triggered or full release selection.
+Omitting the selector keeps every group in the diagnostic host scope.

@@ -104,6 +104,7 @@ class ReleaseMatrixV2Tests(unittest.TestCase):
         *,
         event: str = "push",
         scope: str = "full",
+        diagnostic_group: str | None = None,
         github_output: Path | None = None,
         plan_path: Path | None = None,
         plan_sha256: str | None = None,
@@ -134,6 +135,8 @@ class ReleaseMatrixV2Tests(unittest.TestCase):
             "--scope",
             scope,
         ]
+        if diagnostic_group is not None:
+            arguments.extend(("--diagnostic-group", diagnostic_group))
         if github_output is not None:
             arguments.extend(("--github-output", str(github_output)))
         return subprocess.run(arguments, capture_output=True, text=True, check=False)
@@ -152,6 +155,27 @@ class ReleaseMatrixV2Tests(unittest.TestCase):
         self.assertEqual(len(result.stdout.splitlines()), 1)
         self.assertNotIn(" ", result.stdout)
         projection = json.loads(result.stdout)
+        self.assertEqual(
+            set(projection),
+            {
+                "schema",
+                "assurance",
+                "inputs_sha256",
+                "plan_sha256",
+                "producer_commit",
+                "tools_commit",
+                "event",
+                "scope",
+                "complete_selection",
+                "host_matrix",
+                "verify_matrix",
+                "build_matrix",
+                "sdk_matrix",
+                "build_count",
+                "lane_count",
+                "sdk_count",
+            },
+        )
         self.assertEqual(projection["assurance"], "scheduling-only")
         self.assertTrue(projection["complete_selection"])
         self.assertEqual(projection["lane_count"], 12)
@@ -249,6 +273,117 @@ class ReleaseMatrixV2Tests(unittest.TestCase):
         )
         native = self.run_cli(plan_bytes(native_profile_names))
         self.assertEqual(native.returncode, 0, native.stderr)
+
+    def test_manual_diagnostic_group_narrows_scheduling_and_keeps_sdk_identity(self) -> None:
+        plan = owner_plan(
+            {
+                "gnu": ["gnu_riscv32"],
+                "llvm": ["llvm_riscv32"],
+            }
+        )
+        raw = plan_bytes(plan)
+        full = self.run_cli(raw)
+        self.assertEqual(full.returncode, 0, full.stderr)
+        full_projection = json.loads(full.stdout)
+        self.assertEqual(len(full_projection["host_matrix"]["include"]), 3)
+        self.assertEqual(full_projection["lane_count"], 6)
+        self.assertEqual(full_projection["build_count"], 12)
+        self.assertEqual(full_projection["sdk_count"], 2)
+
+        diagnostic = self.run_cli(
+            raw,
+            event="workflow_dispatch",
+            scope="linux-x86_64",
+            diagnostic_group="gnu",
+        )
+        self.assertEqual(diagnostic.returncode, 0, diagnostic.stderr)
+        projection = json.loads(diagnostic.stdout)
+        self.assertFalse(projection["complete_selection"])
+        self.assertEqual(projection["diagnostic_group"], "gnu")
+        self.assertEqual(projection["host_matrix"]["include"], [
+            {"host": "linux-x86_64", "runner": "ubuntu-24.04"}
+        ])
+        self.assertEqual(
+            projection["verify_matrix"]["include"],
+            [
+                {
+                    "group_id": "gnu",
+                    "host": "linux-x86_64",
+                    "runner": "ubuntu-24.04",
+                    "profile": "gnu_riscv32",
+                }
+            ],
+        )
+        self.assertEqual(projection["lane_count"], 1)
+        self.assertEqual(projection["build_count"], 2)
+        self.assertEqual(
+            [entry["copy"] for entry in projection["build_matrix"]["include"]],
+            ["a", "b"],
+        )
+        self.assertEqual(projection["sdk_count"], 1)
+        self.assertEqual(
+            projection["sdk_matrix"]["include"],
+            [plan["sdks"][0]],  # SDK identity and all compiler bindings remain intact.
+        )
+
+    def test_diagnostic_group_rejections_preserve_github_output(self) -> None:
+        raw = plan_bytes(owner_plan())
+        rejected_requests = (
+            {"event": "push", "scope": "full", "diagnostic_group": "family-alpha"},
+            {
+                "event": "workflow_dispatch",
+                "scope": "full",
+                "diagnostic_group": "family-alpha",
+            },
+            {
+                "event": "workflow_dispatch",
+                "scope": "linux-x86_64",
+                "diagnostic_group": "missing-group",
+            },
+            {
+                "event": "workflow_dispatch",
+                "scope": "linux-x86_64",
+                "diagnostic_group": "../family-alpha",
+            },
+        )
+        for request in rejected_requests:
+            with self.subTest(request=request):
+                destination = self.root / f"github-output-{self.serial + 1}"
+                destination.write_bytes(b"prior=content\n")
+                self.assert_rejected(raw, github_output=destination, **request)
+                self.assertEqual(destination.read_bytes(), b"prior=content\n")
+
+        malformed_unselected = owner_plan()
+        malformed_unselected["groups"][1]["source_lock"]["sha256"] = "invalid"  # type: ignore[index]
+        destination = self.root / f"github-output-{self.serial + 1}"
+        destination.write_bytes(b"prior=content\n")
+        self.assert_rejected(
+            plan_bytes(malformed_unselected),
+            event="workflow_dispatch",
+            scope="linux-x86_64",
+            diagnostic_group="family-alpha",
+            github_output=destination,
+        )
+        self.assertEqual(destination.read_bytes(), b"prior=content\n")
+
+    def test_group_diagnostic_preserves_shared_sdk_compiler_bindings(self) -> None:
+        plan = owner_plan({"gnu": ["gnu_riscv32"], "llvm": ["llvm_riscv32"]})
+        shared = plan["sdks"][0]
+        shared["compiler_profiles"].extend(plan["sdks"][1]["compiler_profiles"])
+        plan["sdks"] = [shared]
+        plan["sdk_count"] = 1
+        result = self.run_cli(
+            plan_bytes(plan),
+            event="workflow_dispatch",
+            scope="linux-x86_64",
+            diagnostic_group="gnu",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        projection = json.loads(result.stdout)
+        self.assertFalse(projection["complete_selection"])
+        self.assertEqual(projection["lane_count"], 1)
+        self.assertEqual(projection["sdk_matrix"]["include"], [shared])
+        self.assertEqual(len(projection["sdk_matrix"]["include"][0]["compiler_profiles"]), 2)
 
     def test_rejects_duplicate_unknown_and_incorrectly_bound_json(self) -> None:
         duplicate = b'{"schema":"aros-toolchain-producer-stage-v2","schema":"aros-toolchain-producer-stage-v2"}'
