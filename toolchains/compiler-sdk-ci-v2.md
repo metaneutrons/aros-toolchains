@@ -21,6 +21,10 @@ contracts remain owned by AROS-NX.
    consumers, relocation, generation evidence and package readback.
 5. Retain diagnostic packages and reports, including failure reports. These
    Actions artifacts are not authenticated release admission evidence.
+   Retain native compiler process logs, lifecycle receipts and source-use logs
+   even when packaging never starts, plus SDK CMake logs and configuration logs.
+   Do not upload complete build trees, compiler intermediates or source caches
+   as lane failure diagnostics.
 
 The current selection derives eight compiler builds, four comparisons and
 four SDK candidates on this host. The scheduler does not hardcode those counts.

@@ -510,6 +510,14 @@ def validate_v2_policy(documents: Documents) -> dict[str, int]:
         "V2 runtime, inputs and verified cache artifacts must have bounded retention",
     )
     require(
+        "compiler-*/work/native-lifecycle/logs/" in qualify
+        and "compiler-*/work/native-lifecycle/receipts/" in qualify
+        and "compiler-*/work/native-lifecycle/verified-source-usage.log" in qualify
+        and "sdk-*/cmake/**/*.log" in qualify
+        and "sdk-*/cmake/**/CMakeConfigureLog.yaml" in qualify,
+        "V2 diagnostic native compiler and SDK configuration failure logs must be retained",
+    )
+    require(
         "cargo build --manifest-path" in action
         and "--locked --release --workspace --bins" in action
         and 'test "$(git -C "$TOOLS_SOURCE" rev-parse HEAD)" = "$TOOLS_COMMIT"' in action
@@ -556,6 +564,22 @@ class CompilerSdkWorkflowV2Tests(unittest.TestCase):
         documents.set_text(WORKFLOW, workflow)
         with self.assertRaisesRegex(PolicyViolation, "permissions"):
             validate_v2_policy(documents)
+
+    def test_rejects_missing_native_failure_diagnostics(self) -> None:
+        for entry in (
+            "compiler-*/work/native-lifecycle/logs/",
+            "compiler-*/work/native-lifecycle/receipts/",
+            "compiler-*/work/native-lifecycle/verified-source-usage.log",
+            "sdk-*/cmake/**/*.log",
+            "sdk-*/cmake/**/CMakeConfigureLog.yaml",
+        ):
+            with self.subTest(entry=entry):
+                documents = self.new_documents()
+                workflow = documents.text(WORKFLOW)
+                workflow = mutate_job(workflow, "v2-qualify", entry, "removed-diagnostics/")
+                documents.set_text(WORKFLOW, workflow)
+                with self.assertRaisesRegex(PolicyViolation, "failure logs"):
+                    validate_v2_policy(documents)
 
     def test_rejects_widened_diagnostic_host_scope(self) -> None:
         documents = self.new_documents()

@@ -296,11 +296,16 @@ jobs:
           path: |
             ${{ runner.temp }}/diagnostic-lane/*.json
             ${{ runner.temp }}/diagnostic-lane/compiler-*/payload/
+            ${{ runner.temp }}/diagnostic-lane/compiler-*/work/native-lifecycle/logs/
+            ${{ runner.temp }}/diagnostic-lane/compiler-*/work/native-lifecycle/receipts/
+            ${{ runner.temp }}/diagnostic-lane/compiler-*/work/native-lifecycle/verified-source-usage.log
             ${{ runner.temp }}/diagnostic-lane/sdk-*/package/
             ${{ runner.temp }}/diagnostic-lane/sdk-*/reports/
             ${{ runner.temp }}/diagnostic-lane/sdk-*/local-evidence/
             ${{ runner.temp }}/diagnostic-lane/sdk-*/result.json
             ${{ runner.temp }}/diagnostic-lane/sdk-*/generation.json
+            ${{ runner.temp }}/diagnostic-lane/sdk-*/cmake/**/*.log
+            ${{ runner.temp }}/diagnostic-lane/sdk-*/cmake/**/CMakeConfigureLog.yaml
           include-hidden-files: true
           if-no-files-found: warn
           retention-days: 7
