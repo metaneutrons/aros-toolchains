@@ -429,6 +429,19 @@ class ArtifactSelectionTests(unittest.TestCase):
 
 
 class PayloadInventoryTests(unittest.TestCase):
+    def test_sdk_member_tokens_and_long_basenames_preserve_closed_zip_checks(self) -> None:
+        name = "sdk-+core/package/aros-sdk-" + "a" * 96 + "-" + "1.2.3-alpha." + "b" * 70 + ".tar.xz.manifest.json"
+        files = {name: measurement(b"SDK member")}
+        origin.require_portable_inventory(files)
+        with tempfile.TemporaryDirectory() as temporary:
+            archive = zip_file(Path(temporary), [(name, b"SDK member", None)])
+            origin.verify_zip(archive, files, archive_digest(archive), archive.stat().st_size)
+        for unsafe in ("../sdk/a", "sdk/../a", "sdk/./a", "sdk//a", "sdk/a\\b", "sdk/a:b", "sdk/" + "x" * 256):
+            with self.subTest(unsafe=unsafe), self.assertRaises(origin.OriginError):
+                origin.require_portable_inventory({unsafe: measurement(b"SDK member")})
+        with self.assertRaises(origin.OriginError):
+            origin.selection(lane_args(group="sdk+"))
+
     def test_empty_payload_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             with self.assertRaises(origin.OriginError):

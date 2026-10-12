@@ -142,8 +142,11 @@ def require_read_only_job(job: str, name: str) -> None:
                 permissions.append(lines[cursor].strip())
                 cursor += 1
             break
-    if permissions != ["contents: read"]:
-        raise PolicyViolation(f"{name} must have only job-scoped contents: read permissions")
+    expected_permissions = ["contents: read"]
+    if name == "v2-qualify":
+        expected_permissions += ["actions: read", "id-token: write", "attestations: write"]
+    if permissions != expected_permissions:
+        raise PolicyViolation(f"{name} permissions must exactly match its non-publishing job scope")
     if re.search(r"(?m)^\s*environment:", job):
         raise PolicyViolation(f"{name} must not use a publication environment")
     if re.search(r"\bsecrets\.", job) or "GH_TOKEN" in job or "GITHUB_TOKEN" in job:
@@ -404,6 +407,16 @@ def validate_v2_policy(documents: Documents) -> dict[str, int]:
     require(
         "matrix: ${{ fromJSON(needs.v2-prepare.outputs.matrix) }}" in qualify,
         "V2 qualification matrix must be derived from validated plan output",
+    )
+    require(
+        "uses: ./.github/actions/retain-sdk-owner-payload-v2" in qualify
+        and "'[.[].id] | sort | if length > 0 and . == unique then . else error(\"invalid SDK lane selection\") end'" in qualify
+        and '"$RUNNER_TEMP/diagnostic-lane/sdk-selections.jsonl"' in qualify
+        and "sdk-ids: ${{ steps.qualify.outputs.sdk-ids }}" in qualify
+        and "operation-root: ${{ runner.temp }}/diagnostic-lane" in qualify
+        and "job-name: Compiler A/B and SDK (${{ matrix.group_id }}, ${{ matrix.host }}, ${{ matrix.profile }})" in qualify
+        and qualify.index("qualify-compiler-sdk-lane-v2.sh") < qualify.index("uses: ./.github/actions/retain-sdk-owner-payload-v2"),
+        "successful SDK origin must bind this exact original owner and plan-selected SDK set",
     )
     require(
         "outputs:\n      matrix: ${{ steps.matrix.outputs.verify_matrix }}" in prepare,

@@ -228,6 +228,9 @@ jobs:
     timeout-minutes: 360
     permissions:
       contents: read
+      actions: read
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -271,7 +274,8 @@ jobs:
         uses: ./.github/actions/select-native-rust-toolchain
         with:
           producer-dir: ${{ github.workspace }}
-      - name: Execute fresh native compiler A/B and source-bound SDK qualification
+      - id: qualify
+        name: Execute fresh native compiler A/B and source-bound SDK qualification
         env:
           SELECTED_GROUP: ${{ matrix.group_id }}
           SELECTED_PRESET: ${{ matrix.profile }}
@@ -300,6 +304,21 @@ jobs:
             --upstream-source-dir "$GITHUB_WORKSPACE/dependencies/upstream-aros" \
             --group "$SELECTED_GROUP" --preset "$SELECTED_PRESET" --host "$SELECTED_HOST" \
             --root "$RUNNER_TEMP/diagnostic-lane" --jobs 3 --timeout-seconds 20000
+          sdk_ids=$(jq -cse '[.[].id] | sort | if length > 0 and . == unique then . else error("invalid SDK lane selection") end' \
+            "$RUNNER_TEMP/diagnostic-lane/sdk-selections.jsonl")
+          printf 'sdk-ids=%s\n' "$sdk_ids" >> "$GITHUB_OUTPUT"
+      - id: sdk-origin
+        name: Retain successful SDK payloads with original owning-job provenance
+        uses: ./.github/actions/retain-sdk-owner-payload-v2
+        with:
+          operation-root: ${{ runner.temp }}/diagnostic-lane
+          sdk-ids: ${{ steps.qualify.outputs.sdk-ids }}
+          group: ${{ matrix.group_id }}
+          preset: ${{ matrix.profile }}
+          host: ${{ matrix.host }}
+          root: ${{ runner.temp }}/diagnostic-sdk-origin
+          workflow: .github/workflows/toolchain-release.yml
+          job-name: Compiler A/B and SDK (${{ matrix.group_id }}, ${{ matrix.host }}, ${{ matrix.profile }})
       - name: Retain diagnostic results and failure logs; never release assets
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

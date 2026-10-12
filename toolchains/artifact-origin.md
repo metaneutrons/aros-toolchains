@@ -67,7 +67,17 @@ The `record` and `verify` commands consume the executing workflow's
 independently supplied `GITHUB_*` context. `verify-source` keeps that current
 caller context separate from an explicitly selected original run and attempt.
 Complete compiler-family production workflow integration remains separate work;
-the existing release workflow does not yet invoke this helper.
+the retained legacy production graph does not invoke this helper.
+
+The non-publishing `qualify-v2` SDK owner now uses the helper after successful
+native generation. `retain-sdk-owner-payload-v2` stages each explicitly selected
+product under a separate SDK-ID directory, uploads that one exact tree, records
+its origin in the same running job and uploads the signed proof separately.
+Its v1 origin lane role remains `diagnostic`; the closed signed per-product
+`aros-sdk-owner-payload-v2` selectors bind SDK IDs in addition to group, profile
+and host. Independent admission must compare those tuples to release inputs,
+not infer product membership from the signed record. Generic origin signature
+verification still grants neither SDK execution nor release authority.
 
 ## Explicit source-owner verification
 

@@ -34,6 +34,9 @@ MAX_METADATA = 16 * 1024 * 1024
 MAX_PAYLOAD = 32 * 1024 * 1024 * 1024
 MAX_FILES = 8192
 SEGMENT = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
+# Payload basenames include SDK IDs and independent SemVer strings. Provider
+# artifact names and origin selectors keep the narrower SEGMENT grammar.
+PAYLOAD_SEGMENT = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+-]{0,254}\Z")
 PROFILE = re.compile(r"[A-Za-z0-9._-]{1,128}\Z")
 
 
@@ -310,7 +313,7 @@ def normalized_file(path: Path, limit: int) -> tuple[dict, bytes | None]:
 
 def portable_path(name: str) -> bool:
     return isinstance(name, str) and 0 < len(name) <= 1024 and len(name.split("/")) <= 16 \
-        and all(SEGMENT.fullmatch(part) and part not in (".", "..") for part in name.split("/"))
+        and all(PAYLOAD_SEGMENT.fullmatch(part) and part not in (".", "..") for part in name.split("/"))
 
 
 def require_portable_inventory(files: dict) -> None:
