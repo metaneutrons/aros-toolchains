@@ -917,6 +917,36 @@ class CrossRunVerifySourceTests(unittest.TestCase):
             self.assertFalse(any(call[0][:1] == ["api"] and "/actions/artifacts/" in call[0][1]
                                  for call in data["gh_calls"]))
 
+    def test_compatibility_none_same_attempt_retains_only_a_distinct_completed_owner(self) -> None:
+        for use_reader_as_owner in (False, True):
+            with self.subTest(reader_as_owner=use_reader_as_owner), \
+                    tempfile.TemporaryDirectory() as temporary:
+                data = fixture(Path(temporary), same_attempt=True, lane=COMPATIBILITY_LANE)
+                self.prepare_same_attempt(data)
+                output = data["root"] / "same-attempt-compatibility-transport"
+                data["args"].verified_output_dir = output
+                if use_reader_as_owner:
+                    data["selection"]["job"]["id"] = CALLER_JOB_ID
+                    data["args"].source_selection.write_bytes(origin.canonical(data["selection"]))
+                    self.run_rejected(data)
+                    self.assertEqual(data["oidc_calls"], [CALLER])
+                    self.assertEqual(data["download_calls"], [])
+                    self.assertFalse(output.exists())
+                else:
+                    self.run_source_verification(data)
+                    self.assertEqual(data["oidc_calls"], [CALLER])
+                    self.assertEqual(data["selection"]["context"], CALLER)
+                    self.assertNotEqual(data["selection"]["job"]["id"], CALLER_JOB_ID)
+                    expected = {
+                        "payload.zip": data["payload_zip_bytes"],
+                        "origin.json": data["origin_bytes"],
+                        "origin.sigstore.json": data["bundle_bytes"],
+                        "selection.json": data["selection_path"].read_bytes(),
+                    }
+                    self.assertEqual({path.name for path in output.iterdir()}, set(expected))
+                    for name, raw in expected.items():
+                        self.assertEqual((output / name).read_bytes(), raw)
+
     def test_same_attempt_rejects_every_changed_source_context_field_before_oidc(self) -> None:
         mutations = {
             "repository": lambda ctx: ctx.__setitem__("repository", "other/project"),
