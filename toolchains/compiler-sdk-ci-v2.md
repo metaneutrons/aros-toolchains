@@ -15,6 +15,11 @@ contracts remain owned by AROS-NX.
    validates the collection before the bounded scheduler projects its matrix.
 3. Fetch and verify the selected compiler, compatibility, Python and Cargo
    inputs once. No native build phase is allowed to populate missing inputs.
+   Transfer this cache as one archive whose SHA-256 is retained by the source
+   job. Safe restoration preserves file modes and empty directories before
+   native verification: zipped directory artifacts normalize permissions,
+   which invalidates the mode-bound Cargo vendor receipt. Do not repair the
+   receipt or normalize the downloaded vendor files to bypass that failure.
 4. In each owning job, build and read back two independent Family-V2 compiler
    packages, compare their bytes, then run `aros sdk build` against the selected
    package. That command includes the source-owned SDK roots, ordinary C/C++

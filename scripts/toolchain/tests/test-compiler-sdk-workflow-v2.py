@@ -24,6 +24,7 @@ ACTION = ".github/actions/materialize-development-aros-tools/action.yml"
 PREPARE = "scripts/toolchain/prepare-compiler-sdk-inputs-v2.py"
 QUALIFY = "scripts/toolchain/qualify-compiler-sdk-lane-v2.sh"
 MATRIX = "scripts/toolchain/select-release-matrix-v2.py"
+CACHE_TRANSPORT = "scripts/toolchain/cache-archive-transport.py"
 SELECTION = "toolchains/compiler-sdk-ci-selection-v2.json"
 EXECUTOR = "toolchains/producer-executor-v1.toml"
 HEX40 = re.compile(r"[0-9a-f]{40}\Z")
@@ -465,6 +466,21 @@ def validate_v2_policy(documents: Documents) -> dict[str, int]:
         "V2 source preparation must populate and verify Cargo caches",
     )
     require(
+        'tar -C "$cache" -czf "$RUNNER_TEMP/diagnostic-cache.tar.gz" .' in sources
+        and 'cache_archive_sha256: ${{ steps.cache.outputs.cache_archive_sha256 }}' in sources
+        and 'name: diagnostic-v2-cache\n          path: ${{ runner.temp }}/diagnostic-cache.tar.gz' in sources,
+        "V2 cache transport must preserve the measured tree in an independently digest-bound archive",
+    )
+    documents.read(CACHE_TRANSPORT)
+    require(
+        'CACHE_ARCHIVE_SHA256: ${{ needs.v2-sources.outputs.cache_archive_sha256 }}' in qualify
+        and 'python3 -B scripts/toolchain/cache-archive-transport.py' in qualify
+        and '--archive-sha256 "$CACHE_ARCHIVE_SHA256" --output-dir "$RUNNER_TEMP/diagnostic-cache"' in qualify
+        and qualify.index('python3 -B scripts/toolchain/cache-archive-transport.py')
+        < qualify.index('"$runtime/bin/aros" cache cargo verify'),
+        "V2 qualification must safely restore the exact cache archive before native verification",
+    )
+    require(
         'for copy in a b; do' in qualify_script
         and 'build-lane-v2.sh' in qualify_script
         and 'compiler-$copy' in qualify_script,
@@ -564,6 +580,19 @@ class CompilerSdkWorkflowV2Tests(unittest.TestCase):
         documents.set_text(WORKFLOW, workflow)
         with self.assertRaisesRegex(PolicyViolation, "permissions"):
             validate_v2_policy(documents)
+
+    def test_rejects_raw_cache_transport_or_missing_digest_restore(self) -> None:
+        for job, original, replacement in (
+            ("v2-sources", "path: ${{ runner.temp }}/diagnostic-cache.tar.gz", "path: ${{ runner.temp }}/diagnostic-cache/"),
+            ("v2-sources", "cache_archive_sha256: ${{ steps.cache.outputs.cache_archive_sha256 }}", "cache_archive_sha256: unbound"),
+            ("v2-qualify", "CACHE_ARCHIVE_SHA256: ${{ needs.v2-sources.outputs.cache_archive_sha256 }}", "CACHE_ARCHIVE_SHA256: unbound"),
+            ("v2-qualify", "python3 -B scripts/toolchain/cache-archive-transport.py", "python3 -B missing.py"),
+        ):
+            with self.subTest(job=job, original=original):
+                documents = self.new_documents()
+                documents.set_text(WORKFLOW, mutate_job(documents.text(WORKFLOW), job, original, replacement))
+                with self.assertRaises(PolicyViolation):
+                    validate_v2_policy(documents)
 
     def test_rejects_missing_native_failure_diagnostics(self) -> None:
         for entry in (

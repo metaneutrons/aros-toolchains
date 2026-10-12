@@ -150,6 +150,8 @@ jobs:
     timeout-minutes: 60
     permissions:
       contents: read
+    outputs:
+      cache_archive_sha256: ${{ steps.cache.outputs.cache_archive_sha256 }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -170,7 +172,8 @@ jobs:
         uses: ./.github/actions/select-native-rust-toolchain
         with:
           producer-dir: ${{ github.workspace }}
-      - name: Verify runtime bytes and prepare every selected compiler/SDK cache
+      - id: cache
+        name: Verify runtime bytes and prepare every selected compiler/SDK cache
         run: |
           set -euo pipefail
           runtime="$RUNNER_TEMP/diagnostic-runtime"
@@ -201,11 +204,16 @@ jobs:
             --dir "$cache" --cargo "${{ steps.rust.outputs.cargo }}"
           "$aros" cache cargo verify --producer-dir "$producer" --tools-dir "$GITHUB_WORKSPACE/dependencies/aros-tools" \
             --dir "$cache" --cargo "${{ steps.rust.outputs.cargo }}"
+          # Directory artifacts normalize modes and omit empty directories.
+          # Preserve the vendor receipt's exact tree in one archive instead.
+          tar -C "$cache" -czf "$RUNNER_TEMP/diagnostic-cache.tar.gz" .
+          archive_sha=$(sha256sum "$RUNNER_TEMP/diagnostic-cache.tar.gz" | awk '{print $1}')
+          printf 'cache_archive_sha256=%s\n' "$archive_sha" >> "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: diagnostic-v2-cache
-          path: ${{ runner.temp }}/diagnostic-cache/
-          include-hidden-files: true
+          path: ${{ runner.temp }}/diagnostic-cache.tar.gz
+          compression-level: 0
           if-no-files-found: error
           retention-days: 7
 
@@ -255,7 +263,7 @@ jobs:
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
           name: diagnostic-v2-cache
-          path: ${{ runner.temp }}/diagnostic-cache
+          path: ${{ runner.temp }}/diagnostic-cache-input
       - uses: ./.github/actions/disable-google-chrome-apt-source
       - name: Install compiler and SDK consumer prerequisites
         run: bash dependencies/aros/scripts/ci/install-build-prerequisites.sh
@@ -268,6 +276,7 @@ jobs:
           SELECTED_GROUP: ${{ matrix.group_id }}
           SELECTED_PRESET: ${{ matrix.profile }}
           SELECTED_HOST: ${{ matrix.host }}
+          CACHE_ARCHIVE_SHA256: ${{ needs.v2-sources.outputs.cache_archive_sha256 }}
         run: |
           set -euo pipefail
           runtime="$RUNNER_TEMP/diagnostic-runtime"
@@ -276,6 +285,9 @@ jobs:
           producer="$RUNNER_TEMP/diagnostic-producer"
           git worktree add --detach "$producer" "$GITHUB_SHA"
           runtime_sha=$(sha256sum "$runtime/bin/aros" | awk '{print $1}')
+          python3 -B scripts/toolchain/cache-archive-transport.py \
+            --archive "$RUNNER_TEMP/diagnostic-cache-input/diagnostic-cache.tar.gz" \
+            --archive-sha256 "$CACHE_ARCHIVE_SHA256" --output-dir "$RUNNER_TEMP/diagnostic-cache"
           "$runtime/bin/aros" cache cargo verify --producer-dir "$producer" \
             --tools-dir "$GITHUB_WORKSPACE/dependencies/aros-tools" --dir "$RUNNER_TEMP/diagnostic-cache" \
             --cargo "${{ steps.rust.outputs.cargo }}"
