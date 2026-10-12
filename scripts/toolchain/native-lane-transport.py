@@ -101,7 +101,8 @@ def _validate_root(root: Path) -> tuple[dict[str, dict], dict[str, bytes], tuple
     return measurements, contents, _stat_identity(after_root), names
 
 
-def _validate_identity(selection_raw: bytes, origin_raw: bytes) -> tuple[dict, dict, dict]:
+def _validate_identity(selection_raw: bytes, origin_raw: bytes, *,
+                       required_role: str = "build") -> tuple[dict, dict, dict]:
     selected = origin.exact_keys(
         origin.parse_json(selection_raw),
         {"schema", "context", "selection", "job", "artifact", "proof"},
@@ -110,9 +111,11 @@ def _validate_identity(selection_raw: bytes, origin_raw: bytes) -> tuple[dict, d
              "retained source selection schema differs")
     context = origin.validate_context(selected["context"])
     lane = origin.exact_keys(selected["selection"], {"role", "group", "host", "profile", "copy"})
+    _require(required_role in ("build", "diagnostic"), "unsupported retained transport role")
     _require(origin.selection(argparse.Namespace(**lane)) == lane
-             and lane["role"] == "build" and lane["copy"] in ("a", "b"),
-             "retained lane is not a native build copy")
+             and lane["role"] == required_role
+             and lane["copy"] in (("a", "b") if required_role == "build" else ("none",)),
+             "retained lane does not match the independently selected transport role")
 
     planned_job = origin.exact_keys(selected["job"], {"id", "name"})
     _require(type(planned_job["id"]) is int and origin.positive(planned_job["id"]) == planned_job["id"]

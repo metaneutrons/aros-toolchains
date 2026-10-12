@@ -169,6 +169,25 @@ class NativeLaneTransportTests(unittest.TestCase):
     def bundle(self, name: str = "retained", **kwargs) -> dict:
         return make_bundle(self.base / name, **kwargs)
 
+    def test_shared_identity_join_requires_an_explicit_diagnostic_role(self) -> None:
+        lane = {**LANE, "role": "diagnostic", "copy": "none"}
+        bundle = self.bundle(selected_lane=lane, origin_lane=lane)
+        selected = (bundle["root"] / "selection.json").read_bytes()
+        signed = (bundle["root"] / "origin.json").read_bytes()
+        with self.assertRaisesRegex(origin.OriginError, "selected transport role"):
+            transport._validate_identity(selected, signed)
+        observed, record, artifact = transport._validate_identity(
+            selected, signed, required_role="diagnostic")
+        self.assertEqual(observed["selection"], lane)
+        self.assertEqual(record["selection"], lane)
+        self.assertEqual(artifact["id"], ARTIFACT_ID)
+        with self.assertRaisesRegex(origin.OriginError, "unsupported retained transport role"):
+            transport._validate_identity(selected, signed, required_role="compatibility")
+        # The native public extractor stays closed to diagnostic payloads.
+        with self.assertRaisesRegex(origin.OriginError, "selected transport role"):
+            transport.extract(bundle["root"], self.base / "must-not-extract")
+        self.assertFalse((self.base / "must-not-extract").exists())
+
     def output(self, name: str = "output") -> Path:
         return self.base / name
 

@@ -79,6 +79,16 @@ and host. Independent admission must compare those tuples to release inputs,
 not infer product membership from the signed record. Generic origin signature
 verification still grants neither SDK execution nor release authority.
 
+After `verify-source` succeeds, `sdk-owner-transport-v2.py` materializes the
+retained diagnostic ZIP into a fresh private directory. Supply the SDK IDs,
+group, profile, host and compiler family independently from the reviewed plan.
+The reader joins every product marker and metadata measurement to the exact
+outer inventory and emits the native CLI's `sdk_generations` selection rows.
+Its `--verify-output-dir` mode only reads back an existing output. Both modes
+report `transport-byte-readback-only`: neither authenticates signatures nor
+admits a release. Run the native SDK matrix verifier separately after transport
+authentication; production qualification and recovery admission remain required.
+
 ## Explicit source-owner verification
 
 `verify-source --workflow CALLER_WORKFLOW --job-name CALLER_JOB` requires

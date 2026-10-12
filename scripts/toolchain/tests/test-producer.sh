@@ -438,6 +438,7 @@ python3 -B "$source_root/scripts/toolchain/tests/test-prepare-compiler-sdk-input
 python3 -B "$source_root/scripts/toolchain/tests/test-compiler-sdk-workflow-v2.py"
 python3 -B "$source_root/scripts/toolchain/tests/test-sdk-owner-action-v2.py"
 python3 -B "$source_root/scripts/toolchain/tests/test-stage-sdk-owner-payload-v2.py"
+python3 -B "$source_root/scripts/toolchain/tests/test-sdk-owner-transport-v2.py"
 python3 -B "$source_root/scripts/toolchain/tests/test-cache-archive-transport.py"
 python3 -B "$source_root/scripts/toolchain/tests/test-build-lane-v2.py"
 python3 -B "$source_root/scripts/toolchain/tests/test-native-lane-transport.py"
