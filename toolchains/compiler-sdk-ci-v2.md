@@ -48,8 +48,13 @@ runtime, the complete three-host matrix, owning-job artifact admission, signed
 combined compiler/SDK inventory, isolated candidate validation and release
 immutability gates. A green diagnostic run does not satisfy those gates.
 
-Dispatch only after both exact tools and source commits are remotely available
-and their prerequisite checks are green:
+Dispatch only after both exact tools and source commits are remotely available,
+the selected tools checks and producer contracts are green, and the source
+SDK exporters, source-contract/hygiene and locked-source checks have passed.
+The diagnostic deliberately qualifies a development CLI/source combination;
+the ordinary AROS-NX product matrix must also pass before that source PR can
+merge, but it may first need a newer published CLI. Do not remove source-owned
+ABI contracts or suppress a failed product check to make an older CLI pass.
 
 ```sh
 gh workflow run toolchain-release.yml --repo metaneutrons/aros-toolchains \
