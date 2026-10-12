@@ -46,10 +46,11 @@ source changes must first be integrated and qualified on the selected source
 revision. Different compiler families may select different qualified source
 commits, but each group's source/profile/recipe binding must agree.
 
-The active workflow and executor still select the published LLVM/V1 runtime
-and inputs. Do not advance the executor or runtime lock with prospective
-versions, commit IDs, hashes or sizes. Activation requires an independently
-verified V2-capable runtime, committed source fixes, exact group recipes and the
-complete mixed three-host matrix. SDK headers, libraries and start objects must
-match the selected target ABI; SDK qualification remains separate from compiler
-packaging.
+The manual [compiler/SDK diagnostic](compiler-sdk-ci-v2.md) now uses the
+schema-2 executor with exactly pinned development tools and source revisions.
+The published runtime lock is unchanged. Legacy tag publication fails closed
+during migration; diagnostic artifacts are not release evidence. Production
+activation still requires an independently verified V2-capable runtime, exact
+group recipes and the complete mixed three-host matrix. SDK headers, libraries
+and start objects must match the selected target ABI; SDK qualification remains
+separate from compiler packaging.

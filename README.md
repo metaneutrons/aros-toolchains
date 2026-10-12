@@ -29,6 +29,10 @@ AROS and `aros-tools` source revisions. A new CLI version does not
 automatically publish new toolchains. Consumer locks change only through a
 separate reviewed update.
 
+The next compiler/SDK generation is being qualified through the existing
+workflow's [non-publishing V2 diagnostic](toolchains/compiler-sdk-ci-v2.md).
+Its development runtime and Actions artifacts are not release evidence.
+
 ## Install from a reviewed AROS checkout
 
 Install `aros-tools`, then run these commands inside an AROS checkout with a

@@ -1,4 +1,4 @@
-name: Deterministic AROS Toolchain Producer
+name: AROS Compiler and SDK Producer
 
 on:
   workflow_dispatch:
@@ -11,6 +11,7 @@ on:
         options:
           - produce
           - recover
+          - qualify-v2
       scope:
         description: Diagnostic host tier (manual runs never publish or exercise all hosts)
         required: true
@@ -54,8 +55,258 @@ env:
   TOOLS_RUNTIME_LOCK: toolchains/aros-tools-runtime-v1.json
 
 jobs:
+  v2-prepare:
+    name: Prepare compiler and SDK diagnostic
+    if: github.event_name == 'workflow_dispatch' && inputs.mode == 'qualify-v2'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    outputs:
+      matrix: ${{ steps.matrix.outputs.verify_matrix }}
+      source_commit: ${{ steps.selection.outputs.source_commit }}
+      tools_commit: ${{ steps.selection.outputs.tools_commit }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - id: selection
+        name: Select committed diagnostic inputs; reject publishing and unsupported host scopes
+        env:
+          REQUESTED_SCOPE: ${{ inputs.scope }}
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_EVENT_NAME" == workflow_dispatch && "$GITHUB_REF_TYPE" == branch ]]
+          [[ "$REQUESTED_SCOPE" == linux-x86_64 ]]
+          selection=toolchains/compiler-sdk-ci-selection-v2.json
+          jq -e '.schema == "aros-compiler-sdk-ci-selection-v2"' "$selection" >/dev/null
+          for key in source_commit tools_commit; do
+            value=$(jq -er --arg key "$key" '.[$key]' "$selection")
+            [[ "$value" =~ ^[0-9a-f]{40}$ ]]
+            printf '%s=%s\n' "$key" "$value" >> "$GITHUB_OUTPUT"
+          done
+      - uses: ./.github/actions/checkout-pinned-recursive-source
+        with:
+          repository: metaneutrons/AROS-NX
+          ref: ${{ steps.selection.outputs.source_commit }}
+          fetch-depth: 0
+          path: dependencies/aros
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: metaneutrons/aros-tools
+          ref: ${{ steps.selection.outputs.tools_commit }}
+          fetch-depth: 0
+          persist-credentials: false
+          path: dependencies/aros-tools
+      - id: rust
+        uses: ./.github/actions/select-native-rust-toolchain
+        with:
+          producer-dir: ${{ github.workspace }}
+      - id: runtime
+        uses: ./.github/actions/materialize-development-aros-tools
+        with:
+          source-dir: ${{ github.workspace }}/dependencies/aros-tools
+          commit: ${{ steps.selection.outputs.tools_commit }}
+          destination: ${{ runner.temp }}/diagnostic-runtime
+      - id: matrix
+        name: Bind native recipes, source SDK identities and compiler/SDK selections
+        run: |
+          set -euo pipefail
+          producer="$RUNNER_TEMP/diagnostic-producer"
+          git worktree add --detach "$producer" "$GITHUB_SHA"
+          python3 -B scripts/toolchain/prepare-compiler-sdk-inputs-v2.py \
+            --aros "${{ steps.runtime.outputs.root }}/bin/aros" \
+            --source-dir "$GITHUB_WORKSPACE/dependencies/aros" \
+            --producer-dir "$producer" --tools-dir "$GITHUB_WORKSPACE/dependencies/aros-tools" \
+            --selection "$producer/toolchains/compiler-sdk-ci-selection-v2.json" \
+            --output-dir "$RUNNER_TEMP/diagnostic-inputs" \
+            --projection-dir "$RUNNER_TEMP/diagnostic-source-projection"
+          inputs_sha=$(sha256sum "$RUNNER_TEMP/diagnostic-inputs/toolchain-release-inputs-v2.json" | awk '{print $1}')
+          plan_sha=$(sha256sum "$RUNNER_TEMP/diagnostic-inputs/plan.json" | awk '{print $1}')
+          python3 -B scripts/toolchain/select-release-matrix-v2.py \
+            --plan "$RUNNER_TEMP/diagnostic-inputs/plan.json" --plan-sha256 "$plan_sha" \
+            --inputs-sha256 "$inputs_sha" --producer-commit "$GITHUB_SHA" \
+            --tools-commit "${{ steps.selection.outputs.tools_commit }}" \
+            --event workflow_dispatch --scope linux-x86_64 --github-output "$GITHUB_OUTPUT" \
+            > "$RUNNER_TEMP/diagnostic-inputs/matrix.json"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: diagnostic-v2-runtime
+          path: ${{ steps.runtime.outputs.root }}/
+          if-no-files-found: error
+          retention-days: 7
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: diagnostic-v2-inputs
+          path: ${{ runner.temp }}/diagnostic-inputs/
+          if-no-files-found: error
+          retention-days: 7
+
+  v2-sources:
+    name: Prepare verified compiler and SDK sources
+    needs: v2-prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: metaneutrons/aros-tools
+          ref: ${{ needs.v2-prepare.outputs.tools_commit }}
+          fetch-depth: 0
+          persist-credentials: false
+          path: dependencies/aros-tools
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: diagnostic-v2-runtime
+          path: ${{ runner.temp }}/diagnostic-runtime
+      - id: rust
+        uses: ./.github/actions/select-native-rust-toolchain
+        with:
+          producer-dir: ${{ github.workspace }}
+      - name: Verify runtime bytes and prepare every selected compiler/SDK cache
+        run: |
+          set -euo pipefail
+          runtime="$RUNNER_TEMP/diagnostic-runtime"
+          (cd "$runtime" && sha256sum -c SHA256SUMS)
+          chmod +x "$runtime"/bin/*
+          aros="$runtime/bin/aros"
+          producer="$RUNNER_TEMP/diagnostic-producer"
+          git worktree add --detach "$producer" "$GITHUB_SHA"
+          cache="$RUNNER_TEMP/diagnostic-cache"
+          mkdir "$cache"
+          while IFS= read -r lock; do
+            "$aros" cache sources fetch --source-lock "$producer/$lock" --dir "$cache"
+            "$aros" cache sources fetch --source-lock "$producer/$lock" --dir "$cache" --offline
+            "$aros" cache sources verify --source-lock "$producer/$lock" --dir "$cache"
+          done < <(jq -r '.groups[].source_lock' "$producer/toolchains/compiler-sdk-ci-selection-v2.json")
+          while IFS= read -r lock; do
+            bash scripts/toolchain/seed-compatibility-zlib.sh "$producer/$lock" "$cache" \
+              "$producer/toolchains/source-seeds/chromium-zlib-da752eb2.tar.gz"
+            for attempt in 1 2 3; do
+              if "$aros" cache sources fetch --compatibility-ports-lock "$producer/$lock" --dir "$cache"; then break; fi
+              [[ "$attempt" != 3 ]] || exit 1
+              sleep "$((attempt * 10))"
+            done
+            "$aros" cache sources fetch --compatibility-ports-lock "$producer/$lock" --dir "$cache" --offline
+            "$aros" cache sources verify --compatibility-ports-lock "$producer/$lock" --dir "$cache"
+          done < <(jq -r '.groups[].ports_lock' "$producer/toolchains/compiler-sdk-ci-selection-v2.json" | sort -u)
+          "$aros" cache cargo fetch --producer-dir "$producer" --tools-dir "$GITHUB_WORKSPACE/dependencies/aros-tools" \
+            --dir "$cache" --cargo "${{ steps.rust.outputs.cargo }}"
+          "$aros" cache cargo verify --producer-dir "$producer" --tools-dir "$GITHUB_WORKSPACE/dependencies/aros-tools" \
+            --dir "$cache" --cargo "${{ steps.rust.outputs.cargo }}"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: diagnostic-v2-cache
+          path: ${{ runner.temp }}/diagnostic-cache/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 7
+
+  v2-qualify:
+    name: Compiler A/B and SDK (${{ matrix.group_id }}, ${{ matrix.host }}, ${{ matrix.profile }})
+    needs: [v2-prepare, v2-sources]
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix: ${{ fromJSON(needs.v2-prepare.outputs.matrix) }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 360
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: ./.github/actions/checkout-pinned-recursive-source
+        with:
+          repository: metaneutrons/AROS-NX
+          ref: ${{ needs.v2-prepare.outputs.source_commit }}
+          fetch-depth: 0
+          path: dependencies/aros
+      - uses: ./.github/actions/checkout-pinned-recursive-source
+        with:
+          repository: metaneutrons/AROS-NX
+          ref: ${{ needs.v2-prepare.outputs.source_commit }}
+          fetch-depth: 0
+          path: dependencies/upstream-aros
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: metaneutrons/aros-tools
+          ref: ${{ needs.v2-prepare.outputs.tools_commit }}
+          fetch-depth: 0
+          persist-credentials: false
+          path: dependencies/aros-tools
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: diagnostic-v2-runtime
+          path: ${{ runner.temp }}/diagnostic-runtime
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: diagnostic-v2-inputs
+          path: ${{ runner.temp }}/diagnostic-inputs
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: diagnostic-v2-cache
+          path: ${{ runner.temp }}/diagnostic-cache
+      - uses: ./.github/actions/disable-google-chrome-apt-source
+      - name: Install compiler and SDK consumer prerequisites
+        run: bash dependencies/aros/scripts/ci/install-build-prerequisites.sh
+      - id: rust
+        uses: ./.github/actions/select-native-rust-toolchain
+        with:
+          producer-dir: ${{ github.workspace }}
+      - name: Execute fresh native compiler A/B and source-bound SDK qualification
+        env:
+          SELECTED_GROUP: ${{ matrix.group_id }}
+          SELECTED_PRESET: ${{ matrix.profile }}
+          SELECTED_HOST: ${{ matrix.host }}
+        run: |
+          set -euo pipefail
+          runtime="$RUNNER_TEMP/diagnostic-runtime"
+          (cd "$runtime" && sha256sum -c SHA256SUMS)
+          chmod +x "$runtime"/bin/*
+          producer="$RUNNER_TEMP/diagnostic-producer"
+          git worktree add --detach "$producer" "$GITHUB_SHA"
+          runtime_sha=$(sha256sum "$runtime/bin/aros" | awk '{print $1}')
+          "$runtime/bin/aros" cache cargo verify --producer-dir "$producer" \
+            --tools-dir "$GITHUB_WORKSPACE/dependencies/aros-tools" --dir "$RUNNER_TEMP/diagnostic-cache" \
+            --cargo "${{ steps.rust.outputs.cargo }}"
+          bash scripts/toolchain/qualify-compiler-sdk-lane-v2.sh \
+            --aros "$runtime/bin/aros" --runtime-sha256 "$runtime_sha" \
+            --inputs-dir "$RUNNER_TEMP/diagnostic-inputs" \
+            --selection "$producer/toolchains/compiler-sdk-ci-selection-v2.json" \
+            --source-dir "$GITHUB_WORKSPACE/dependencies/aros" --producer-dir "$producer" \
+            --tools-dir "$GITHUB_WORKSPACE/dependencies/aros-tools" --cache-dir "$RUNNER_TEMP/diagnostic-cache" \
+            --upstream-source-dir "$GITHUB_WORKSPACE/dependencies/upstream-aros" \
+            --group "$SELECTED_GROUP" --preset "$SELECTED_PRESET" --host "$SELECTED_HOST" \
+            --root "$RUNNER_TEMP/diagnostic-lane" --jobs 3 --timeout-seconds 20000
+      - name: Retain diagnostic results and failure logs; never release assets
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: diagnostic-v2-${{ matrix.group_id }}-${{ matrix.host }}-${{ matrix.profile }}
+          path: |
+            ${{ runner.temp }}/diagnostic-lane/*.json
+            ${{ runner.temp }}/diagnostic-lane/compiler-*/payload/
+            ${{ runner.temp }}/diagnostic-lane/sdk-*/package/
+            ${{ runner.temp }}/diagnostic-lane/sdk-*/reports/
+            ${{ runner.temp }}/diagnostic-lane/sdk-*/local-evidence/
+            ${{ runner.temp }}/diagnostic-lane/sdk-*/result.json
+            ${{ runner.temp }}/diagnostic-lane/sdk-*/generation.json
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 7
+
   plan:
-    if: github.event_name != 'workflow_dispatch' || inputs.mode != 'recover'
+    if: github.event_name != 'workflow_dispatch' || (inputs.mode != 'recover' && inputs.mode != 'qualify-v2')
     runs-on: ubuntu-24.04
     outputs:
       host_matrix: ${{ steps.matrix.outputs.host_matrix }}
@@ -64,6 +315,11 @@ jobs:
       release_id: ${{ steps.matrix.outputs.release_id }}
       prerelease: ${{ steps.release_tag.outputs.prerelease || 'false' }}
     steps:
+      - name: Reject legacy publication during the V2 compiler and SDK migration
+        if: github.event_name == 'push'
+        run: |
+          echo 'Compiler and SDK V2 release admission is not qualified. Use the non-publishing qualify-v2 dispatch; no tag publication is permitted.' >&2
+          exit 1
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0

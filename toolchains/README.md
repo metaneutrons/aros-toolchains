@@ -7,6 +7,12 @@ toolchain implementation.
 
 ## Trust and bootstrap
 
+The [compiler/SDK V2 diagnostic](compiler-sdk-ci-v2.md) is now available in the
+existing workflow. It uses an exactly pinned development CLI on Linux x86-64;
+that exception is not a signed runtime or release qualification. Tag publication
+is blocked during migration. The published runtime lock and the historical V1
+contract described below remain unchanged.
+
 `llvm-11.0.0.sources.json` pins the exact bytes served by the official LLVM
 GitHub release, every external source reached by the producer's current AROS
 target-build closure, and the small pure-Python host runtime needed by upstream
@@ -41,7 +47,7 @@ alter that identity.
 
 The [staged GNU RV32 inputs](gnu-rv32-inputs.md) preserve the measured source
 closure and RV32-only target scope for the next compiler-family integration.
-They are not selected by the active LLVM/V1 release workflow.
+They are selected by the manual V2 diagnostic, not by a publication workflow.
 
 The [V2 scheduling boundary](release-matrix-v2.md) derives runner and A/B job
 matrices from the native release-input plan without a second target list. Its
