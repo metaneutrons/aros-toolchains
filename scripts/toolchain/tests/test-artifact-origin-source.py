@@ -396,9 +396,10 @@ class CrossRunVerifySourceTests(unittest.TestCase):
             data["stdout"] = captured_stdout.getvalue()
         return gh_calls, download_calls
 
-    def run_rejected(self, data: dict, **options) -> None:
-        with self.assertRaises(origin.OriginError):
+    def run_rejected(self, data: dict, **options) -> origin.OriginError:
+        with self.assertRaises(origin.OriginError) as raised:
             self.run_source_verification(data, **options)
+        return raised.exception
 
     def prepare_same_attempt(self, data: dict) -> list[dict]:
         return same_attempt_pages(data)
@@ -496,7 +497,7 @@ class CrossRunVerifySourceTests(unittest.TestCase):
                     selected["job"]["id"] += 1
                 data["args"].source_selection.write_bytes(origin.canonical(selected))
 
-                self.run_rejected(data)
+                failure = self.run_rejected(data)
                 self.assertFalse(output.exists())
                 self.assertNotIn(["gh", "api", f"repos/{REPOSITORY}/actions/artifacts/{PAYLOAD_ID}/zip"],
                                  data["download_calls"])
@@ -506,6 +507,9 @@ class CrossRunVerifySourceTests(unittest.TestCase):
                 elif case in ("context", "owner"):
                     self.assertEqual(data["oidc_calls"], [CALLER])
                     self.assertEqual(data["download_calls"], [])
+                    if case == "owner":
+                        self.assertIn("source job ID/name does not select one provider job",
+                                      str(failure))
                 else:
                     self.assertEqual(data["oidc_calls"], [CALLER])
                     self.assertEqual(data["download_calls"], [
@@ -927,16 +931,39 @@ class CrossRunVerifySourceTests(unittest.TestCase):
                 data["args"].verified_output_dir = output
                 if use_reader_as_owner:
                     data["selection"]["job"]["id"] = CALLER_JOB_ID
-                    data["args"].source_selection.write_bytes(origin.canonical(data["selection"]))
-                    self.run_rejected(data)
+                    data["selection"]["job"]["name"] = CALLER_JOB_NAME
+                    data["origin_record"]["job"] = {
+                        "id": CALLER_JOB_ID, "check_run_id": CALLER_CHECK_ID,
+                        "name": CALLER_JOB_NAME,
+                    }
+                    data["origin_bytes"] = origin.canonical(data["origin_record"])
+                    data["origin_path"].write_bytes(data["origin_bytes"])
+                    rebound = proof_zip_bytes([
+                        ("origin.json", data["origin_bytes"], None),
+                        ("origin.sigstore.json", data["bundle_bytes"], None),
+                    ])
+                    self.rebind_proof(data, rebound)
+                    failure = self.run_rejected(data)
+                    self.assertIn("same-attempt source owner must be a different job", str(failure))
                     self.assertEqual(data["oidc_calls"], [CALLER])
                     self.assertEqual(data["download_calls"], [])
                     self.assertFalse(output.exists())
                 else:
-                    self.run_source_verification(data)
+                    gh_calls, _ = self.run_source_verification(data)
                     self.assertEqual(data["oidc_calls"], [CALLER])
                     self.assertEqual(data["selection"]["context"], CALLER)
                     self.assertNotEqual(data["selection"]["job"]["id"], CALLER_JOB_ID)
+                    expected_owner = source_job(data["source"])
+                    self.assertEqual(data["selection"]["job"], {
+                        "id": expected_owner["id"], "name": expected_owner["name"],
+                    })
+                    self.assertEqual(expected_owner["status"], "completed")
+                    self.assertEqual(expected_owner["conclusion"], "success")
+                    endpoint = (f"repos/{REPOSITORY}/actions/runs/{CALLER['run_id']}"
+                                f"/attempts/{CALLER['run_attempt']}/jobs?per_page=100")
+                    queries = [call[0][3] for call in gh_calls
+                               if call[0][:3] == ["api", "--paginate", "--slurp"]]
+                    self.assertEqual(queries, [endpoint, endpoint, endpoint])
                     expected = {
                         "payload.zip": data["payload_zip_bytes"],
                         "origin.json": data["origin_bytes"],
