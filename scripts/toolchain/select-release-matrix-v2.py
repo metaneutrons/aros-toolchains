@@ -3,6 +3,7 @@
 
 This helper does not validate collection documents or qualify builds. Its
 input must be the exact JSON output of ``aros toolchain producer release-plan``.
+SDK selections stay host-independent; the workflow chooses their runner.
 """
 
 from __future__ import annotations
@@ -20,6 +21,8 @@ from typing import Any
 
 MAX_PLAN_BYTES = 1024 * 1024
 MAX_GROUPS = 32
+MAX_SDKS = 32
+MAX_SDK_COMPILER_PROFILES = 64
 MAX_BUILD_ENTRIES = 256
 ACTIVE_HOSTS = ("linux-aarch64", "linux-x86_64", "macos-aarch64")
 RUNNERS = {
@@ -39,6 +42,8 @@ TOP_LEVEL_FIELDS = {
     "groups",
     "lane_count",
     "lanes",
+    "sdks",
+    "sdk_count",
 }
 GROUP_FIELDS = {
     "group_id",
@@ -51,6 +56,8 @@ GROUP_FIELDS = {
 }
 REFERENCE_FIELDS = {"file", "sha256"}
 LANE_FIELDS = {"group_id", "host", "target_profile"}
+SDK_FIELDS = {"id", "identity", "source_preset", "compiler_profiles"}
+SDK_COMPILER_PROFILE_FIELDS = {"group_id", "profile"}
 RESERVED_FILES = {
     "SHA256SUMS",
     "toolchain-index-v1.json",
@@ -67,6 +74,8 @@ LOWER_HEX_40 = re.compile(r"[0-9a-f]{40}\Z")
 LOWER_HEX_64 = re.compile(r"[0-9a-f]{64}\Z")
 SAFE_ID = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?\Z")
 SAFE_PROFILE = re.compile(r"[A-Za-z0-9._-]{1,128}\Z")
+SAFE_SDK_ID = re.compile(r"[a-z0-9](?:[-._+a-z0-9]{0,94}[a-z0-9])?\Z")
+SAFE_SDK_PROFILE = re.compile(r"[a-z0-9](?:[-_a-z0-9]{0,126}[a-z0-9])?\Z")
 SAFE_FILE = re.compile(r"[a-z0-9_-]+(?:\.[a-z0-9_-]+)*\.json\Z")
 
 
@@ -173,6 +182,18 @@ def _require_profile_id(value: Any) -> str:
     return value
 
 
+def _require_sdk_id(value: Any) -> str:
+    if not isinstance(value, str) or SAFE_SDK_ID.fullmatch(value) is None:
+        raise PlanError("SDK ID is not a safe native SDK identifier")
+    return value
+
+
+def _require_sdk_profile_id(value: Any, description: str) -> str:
+    if not isinstance(value, str) or SAFE_SDK_PROFILE.fullmatch(value) is None:
+        raise PlanError(f"{description} is not a safe native SDK profile identifier")
+    return value
+
+
 def _validate_reference(value: Any, used_names: set[str]) -> None:
     reference = _require_exact_fields(value, REFERENCE_FIELDS, "document reference")
     filename = reference["file"]
@@ -196,7 +217,7 @@ def _validate_plan(
     expected_inputs_sha256: str,
     expected_producer_commit: str,
     expected_tools_commit: str,
-) -> tuple[list[dict[str, str]], list[str], int]:
+) -> tuple[list[dict[str, str]], list[str], int, list[dict[str, Any]]]:
     value = _require_exact_fields(plan, TOP_LEVEL_FIELDS, "plan")
     if value["schema"] != "aros-toolchain-producer-stage-v2":
         raise PlanError("plan schema is unsupported")
@@ -289,7 +310,49 @@ def _validate_plan(
             if actual_hosts != list(ACTIVE_HOSTS):
                 raise PlanError("each declared profile must be crossed with every active host")
 
-    return lanes, group_ids, lane_count
+    sdk_count = value["sdk_count"]
+    sdk_values = value["sdks"]
+    if (
+        type(sdk_count) is not int
+        or sdk_count < 0
+        or sdk_count > MAX_SDKS
+        or not isinstance(sdk_values, list)
+        or sdk_count != len(sdk_values)
+    ):
+        raise PlanError("SDK count must match the 0..32 SDK array")
+
+    previous_sdk_id: str | None = None
+    for sdk_value in sdk_values:
+        sdk = _require_exact_fields(sdk_value, SDK_FIELDS, "SDK selection")
+        sdk_id = _require_sdk_id(sdk["id"])
+        if previous_sdk_id is not None and sdk_id <= previous_sdk_id:
+            raise PlanError("SDK IDs must be sorted and unique")
+        previous_sdk_id = sdk_id
+        _validate_reference(sdk["identity"], used_files)
+        _require_sdk_profile_id(sdk["source_preset"], "SDK source preset")
+
+        compiler_profiles = sdk["compiler_profiles"]
+        if (
+            not isinstance(compiler_profiles, list)
+            or not 1 <= len(compiler_profiles) <= MAX_SDK_COMPILER_PROFILES
+        ):
+            raise PlanError("each SDK requires 1..64 compiler profile references")
+        profile_references: list[tuple[str, str]] = []
+        for profile_value in compiler_profiles:
+            profile_reference = _require_exact_fields(
+                profile_value, SDK_COMPILER_PROFILE_FIELDS, "SDK compiler profile reference"
+            )
+            group_id = _require_safe_id(profile_reference["group_id"], "SDK compiler group ID")
+            profile = _require_sdk_profile_id(
+                profile_reference["profile"], "SDK compiler profile"
+            )
+            if group_id not in profiles_by_group or profile not in profiles_by_group[group_id]:
+                raise PlanError("SDK compiler profile does not match a declared group/profile")
+            profile_references.append((group_id, profile))
+        if profile_references != sorted(set(profile_references)):
+            raise PlanError("SDK compiler profile references must be sorted and unique")
+
+    return lanes, group_ids, lane_count, sdk_values
 
 
 def _select_scope(event: str, scope: str) -> set[str]:
@@ -323,7 +386,7 @@ def project(
     expected_inputs_sha256 = _require_digest(inputs_sha256, "selected inputs digest")
     expected_producer_commit = _require_commit(producer_commit, "selected producer commit")
     expected_tools_commit = _require_commit(tools_commit, "selected tools commit")
-    lanes, _group_ids, owner_lane_count = _validate_plan(
+    lanes, _group_ids, owner_lane_count, sdks = _validate_plan(
         plan,
         expected_inputs_sha256=expected_inputs_sha256,
         expected_producer_commit=expected_producer_commit,
@@ -364,8 +427,10 @@ def project(
         "host_matrix": {"include": host_entries},
         "verify_matrix": {"include": verify_entries},
         "build_matrix": {"include": build_entries},
+        "sdk_matrix": {"include": sdks},
         "build_count": len(build_entries),
         "lane_count": len(verify_entries),
+        "sdk_count": len(sdks),
     }
 
 
@@ -374,12 +439,13 @@ def _github_output_lines(result: dict[str, Any]) -> str:
         ("host_matrix", "host_matrix"),
         ("verify_matrix", "verify_matrix"),
         ("build_matrix", "build_matrix"),
+        ("sdk_matrix", "sdk_matrix"),
     )
     lines = [
         f"{name}={json.dumps(result[field], separators=(',', ':'), ensure_ascii=True)}"
         for name, field in keys
     ]
-    for field in ("lane_count", "build_count"):
+    for field in ("lane_count", "build_count", "sdk_count"):
         lines.append(f"{field}={result[field]}")
     for field in ("plan_sha256", "inputs_sha256", "producer_commit", "tools_commit"):
         lines.append(f"{field}={result[field]}")

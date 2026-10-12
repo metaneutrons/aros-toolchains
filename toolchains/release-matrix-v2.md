@@ -39,6 +39,10 @@ Manual full selection and a partial push selection are rejected. Actual tag,
 protected workflow and publication checks remain separate workflow gates;
 the helper's event argument does not authenticate a GitHub event.
 
+`sdk_matrix` projects the native plan's validated SDK selections, including
+identity file/hash, source preset and compiler group/profile associations. SDKs
+are host-independent; a diagnostic host filter does not drop SDK selections.
+
 `host_matrix`, `verify_matrix` and `build_matrix` derive from the same validated
 lane list. Build entries add only copy `a` or `b`; counts are derived, not fixed
 at nine or twelve lanes. Optional `--github-output` appends compact matrix
@@ -53,9 +57,10 @@ assurance boundary.
 
 ## Integration boundary
 
-The offline producer contract suite exercises this helper. The active release
-workflow still selects the published LLVM/V1 runtime and nine-lane path; this
-helper does not activate V2 or change any runtime/source pin. Wiring its output
-into the complete V2 build, comparison, compatibility, provenance and recovery
-workflow requires the independently released V2-capable runtime and qualified
-input collection. No prospective runtime identity is admitted here.
+The offline producer contract suite exercises this helper. The manual
+[compiler/SDK diagnostic](compiler-sdk-ci-v2.md) consumes its bounded Linux
+projection using an exactly pinned development runtime. This is not production
+activation. The published runtime lock is unchanged and legacy tag publication
+is blocked during migration. The complete V2 provenance, release and recovery
+graph still requires the independently released V2-capable runtime and qualified
+input collection.

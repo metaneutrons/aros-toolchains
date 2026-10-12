@@ -10,6 +10,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tempfile
@@ -21,6 +22,7 @@ ACTIVE_HOSTS = ("linux-aarch64", "linux-x86_64", "macos-aarch64")
 INPUTS_SHA256 = "d" * 64
 PRODUCER_COMMIT = "a" * 40
 TOOLS_COMMIT = "b" * 40
+SDK_PROFILE_ID = re.compile(r"[a-z0-9](?:[-_a-z0-9]{0,126}[a-z0-9])?\Z")
 
 
 def _digest(value: str) -> str:
@@ -35,6 +37,7 @@ def owner_plan(profiles_by_group: dict[str, list[str]] | None = None) -> dict[st
         }
     groups: list[dict[str, object]] = []
     lanes: list[dict[str, str]] = []
+    sdks: list[dict[str, object]] = []
     for index, (group_id, profile_ids) in enumerate(sorted(profiles_by_group.items())):
         source_commit = f"{index + 1:040x}"
         group: dict[str, object] = {
@@ -50,6 +53,21 @@ def owner_plan(profiles_by_group: dict[str, list[str]] | None = None) -> dict[st
         for profile in profile_ids:
             for host in ACTIVE_HOSTS:
                 lanes.append({"group_id": group_id, "host": host, "target_profile": profile})
+        sdk_profiles = [profile for profile in profile_ids if SDK_PROFILE_ID.fullmatch(profile)]
+        if sdk_profiles:
+            sdk_id = f"sdk-{group_id}"
+            identity_file = f"{sdk_id}-identity.json"
+            sdks.append(
+                {
+                    "id": sdk_id,
+                    "identity": {"file": identity_file, "sha256": _digest(identity_file)},
+                    "source_preset": f"source-{group_id}",
+                    "compiler_profiles": [
+                        {"group_id": group_id, "profile": profile}
+                        for profile in sorted(sdk_profiles)
+                    ],
+                }
+            )
     return {
         "schema": "aros-toolchain-producer-stage-v2",
         "operation": "release-plan",
@@ -62,6 +80,8 @@ def owner_plan(profiles_by_group: dict[str, list[str]] | None = None) -> dict[st
         "groups": groups,
         "lane_count": len(lanes),
         "lanes": lanes,
+        "sdk_count": len(sdks),
+        "sdks": sdks,
     }
 
 
@@ -139,6 +159,11 @@ class ReleaseMatrixV2Tests(unittest.TestCase):
         self.assertEqual(len(projection["host_matrix"]["include"]), 3)
         self.assertEqual(len(projection["verify_matrix"]["include"]), 12)
         self.assertEqual(len(projection["build_matrix"]["include"]), 24)
+        self.assertEqual(projection["sdk_count"], 2)
+        self.assertEqual(
+            projection["sdk_matrix"]["include"],
+            owner_plan()["sdks"],
+        )
         self.assertEqual(
             [entry["copy"] for entry in projection["build_matrix"]["include"][:4]],
             ["a", "b", "a", "b"],
@@ -162,8 +187,10 @@ class ReleaseMatrixV2Tests(unittest.TestCase):
                 "host_matrix",
                 "verify_matrix",
                 "build_matrix",
+                "sdk_matrix",
                 "lane_count",
                 "build_count",
+                "sdk_count",
                 "plan_sha256",
                 "inputs_sha256",
                 "producer_commit",
@@ -174,6 +201,8 @@ class ReleaseMatrixV2Tests(unittest.TestCase):
         self.assertEqual(json.loads(outputs["verify_matrix"])["include"].__len__(), 12)
         self.assertEqual(outputs["lane_count"], "12")
         self.assertEqual(outputs["build_count"], "24")
+        self.assertEqual(outputs["sdk_count"], "2")
+        self.assertEqual(len(json.loads(outputs["sdk_matrix"])["include"]), 2)
 
     def test_manual_linux_scopes_are_subsets_and_profile_changes_are_derived(self) -> None:
         raw = plan_bytes(owner_plan())
@@ -197,6 +226,8 @@ class ReleaseMatrixV2Tests(unittest.TestCase):
             {entry["host"] for entry in x86_projection["verify_matrix"]["include"]},
             {"linux-x86_64"},
         )
+        self.assertEqual(linux_projection["sdk_matrix"], x86_projection["sdk_matrix"])
+        self.assertEqual(linux_projection["sdk_count"], x86_projection["sdk_count"])
 
         changed_profiles = owner_plan(
             {
@@ -246,6 +277,77 @@ class ReleaseMatrixV2Tests(unittest.TestCase):
         plan = owner_plan()
         plan["groups"][0]["source_commit"] = "f" * 40  # type: ignore[index]
         self.assert_rejected(plan_bytes(plan))
+
+    def test_rejects_invalid_sdk_count_fields_references_and_profile_joins(self) -> None:
+        plan = owner_plan()
+        plan["sdk_count"] = True
+        self.assert_rejected(plan_bytes(plan))
+
+        plan = owner_plan()
+        plan["sdk_count"] = 1
+        self.assert_rejected(plan_bytes(plan))
+
+        plan = owner_plan()
+        plan["sdks"][0]["unexpected"] = "field"  # type: ignore[index]
+        self.assert_rejected(plan_bytes(plan))
+
+        plan = owner_plan()
+        plan["sdks"][0]["source_preset"] = "../unsafe"  # type: ignore[index]
+        self.assert_rejected(plan_bytes(plan))
+
+        plan = owner_plan()
+        plan["sdks"][0]["identity"]["file"] = plan["groups"][0]["recipe"]["file"]  # type: ignore[index]
+        self.assert_rejected(plan_bytes(plan))
+
+        plan = owner_plan()
+        plan["sdks"][0]["identity"]["sha256"] = "invalid"  # type: ignore[index]
+        self.assert_rejected(plan_bytes(plan))
+
+        plan = owner_plan()
+        plan["sdks"][0]["compiler_profiles"][0]["group_id"] = "unknown-group"  # type: ignore[index]
+        self.assert_rejected(plan_bytes(plan))
+
+        plan = owner_plan()
+        plan["sdks"][0]["compiler_profiles"][0]["profile"] = "unknown-profile"  # type: ignore[index]
+        self.assert_rejected(plan_bytes(plan))
+
+        plan = owner_plan()
+        duplicate = dict(plan["sdks"][0]["compiler_profiles"][0])  # type: ignore[index]
+        plan["sdks"][0]["compiler_profiles"].append(duplicate)  # type: ignore[index]
+        self.assert_rejected(plan_bytes(plan))
+
+        plan = owner_plan()
+        plan["sdks"][0]["compiler_profiles"].reverse()  # type: ignore[index]
+        self.assert_rejected(plan_bytes(plan))
+
+        plan = owner_plan()
+        plan["sdks"].reverse()  # type: ignore[union-attr]
+        self.assert_rejected(plan_bytes(plan))
+
+        plan = owner_plan()
+        plan["sdks"][0]["id"] = "SDK-UPPER"  # type: ignore[index]
+        self.assert_rejected(plan_bytes(plan))
+
+        plan = owner_plan()
+        plan["sdks"][0]["compiler_profiles"] = []  # type: ignore[index]
+        self.assert_rejected(plan_bytes(plan))
+
+        plan = owner_plan()
+        plan["sdks"][0]["compiler_profiles"] = [
+            {"group_id": "family-alpha", "profile": "alpha-one"}
+            for _ in range(65)
+        ]  # type: ignore[index]
+        self.assert_rejected(plan_bytes(plan))
+
+    def test_empty_sdk_selection_is_a_valid_closed_projection(self) -> None:
+        plan = owner_plan()
+        plan["sdks"] = []
+        plan["sdk_count"] = 0
+        result = self.run_cli(plan_bytes(plan))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        projection = json.loads(result.stdout)
+        self.assertEqual(projection["sdk_count"], 0)
+        self.assertEqual(projection["sdk_matrix"], {"include": []})
 
     def test_rejects_lane_group_count_host_order_and_profile_violations(self) -> None:
         plan = owner_plan()
