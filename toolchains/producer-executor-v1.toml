@@ -1,7 +1,19 @@
-schema_version = 1
+schema_version = 2
 contract_id = "aros-toolchain-producer-v1"
 contract_path = "contracts/toolchain-producer-v1.toml"
-contract_sha256 = "d9707287ce1ab011e4272ce412640835eef7807890ec9720cc3f64abc71501e3"
-tools_commit = "ff08ff9df3556113a1eafc9733c3eb0f9445007c"
+contract_sha256 = "e02c04385e1f181f68dd8a20639834dcb56e7757e5f71846da89dac5165f5660"
+tools_commit = "976b27d41c6b575fb6485bc8d6c642f941382825"
+
+[[groups]]
+id = "gnu-rv32"
+source_lock = "toolchains/gnu-16.2.0.sources.json"
+source_lock_sha256 = "ced11b5c510c89a05fe3863be812f211362c08d550a8acdd46b6942b92c38c0b"
+profiles = "toolchains/profiles-sdk-gnu-v2.json"
+profiles_sha256 = "707956a8b9ff76c99fcc3e4d6940427088034b38c5a372c91a5d887537f4ac48"
+
+[[groups]]
+id = "llvm"
 source_lock = "toolchains/llvm-11.0.0.sources.json"
-profiles = "toolchains/profiles-v1.json"
+source_lock_sha256 = "88c89a65bba42a0d2f49fb5d193c03872307b9a46a4c6eb9f043aec0e4fd34d8"
+profiles = "toolchains/profiles-sdk-llvm-v2.json"
+profiles_sha256 = "99a69d8943c2011424853ba3ff2bd69b995a205e434e3dec824f7616523abba1"
