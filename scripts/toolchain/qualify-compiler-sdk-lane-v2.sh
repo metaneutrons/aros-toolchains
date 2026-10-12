@@ -5,6 +5,18 @@ set -euo pipefail
 set -C
 fail() { printf 'Compiler/SDK diagnostic: %s\n' "$*" >&2; exit 1; }
 digest() { shasum -a 256 "$1" | awk '{print $1}'; }
+observe_gcc_inputs() {
+    local compiler_root=$1 makefile='' manifest='' matches=()
+    manifest="$compiler_root/payload/evidence/gcc-makefiles.list"
+    find "$compiler_root/work/native-lifecycle/build" -type f \
+        -path '*/gcc/gcc/Makefile' -print0 > "$manifest"
+    while IFS= read -r -d '' makefile; do matches+=("$makefile"); done < "$manifest"
+    (( ${#matches[@]} == 1 )) || fail 'GNU checksum diagnostic requires exactly one generated GCC Makefile'
+    python3 -B "$producer/scripts/toolchain/observe-gcc-checksum-inputs.py" \
+        --gcc-build-dir "${matches[0]%/Makefile}" \
+        --allowed-root "$compiler_root/work/native-lifecycle" \
+        --output "$compiler_root/payload/evidence/gcc-checksum-inputs.json"
+}
 aros='' inputs='' selection='' source='' producer='' tools='' cache='' upstream=''
 group='' preset='' host='' root='' jobs='' deadline='' runtime_sha=''
 seen='|'
@@ -49,6 +61,7 @@ selected_group=$(jq -ce --arg group "$group" '.groups | map(select(.group_id == 
 jq -e --arg group "$group" --arg preset "$preset" --arg host "$host" 'any(.lanes[]; .group_id == $group and .target_profile == $preset and .host == $host)' "$root/plan.json" >/dev/null
 recipe="$inputs/$(jq -r '.recipe.file' <<< "$selected_group")"
 lock="$inputs/$(jq -r '.source_lock.file' <<< "$selected_group")"
+compiler_family=$(jq -er '.family' "$lock")
 profiles="$inputs/$(jq -r '.profiles.file' <<< "$selected_group")"
 ports_relative=$(jq -er --arg group "$group" '.groups | map(select(.id == $group)) | if length == 1 then .[0].ports_lock else error("ambiguous ports selection") end' "$selection")
 [[ "$ports_relative" =~ ^toolchains/[a-z0-9._-]+\.json$ ]] || fail 'unsafe ports selection'
@@ -62,6 +75,9 @@ for copy in a b; do
         --preset "$preset" --host "$host" --release-id "$release_id" \
         --jobs "$jobs" --timeout-seconds "$deadline" --root "$root/compiler-$copy" \
         --forbidden-prefix "$parent"
+    if [[ "$compiler_family" == gnu ]]; then
+        observe_gcc_inputs "$root/compiler-$copy"
+    fi
 done
 "$aros" toolchain producer compare --left "$root/compiler-a/payload/package" \
     --right "$root/compiler-b/payload/package" --output "$root/comparison.json" --format json > "$root/comparison-result.json"

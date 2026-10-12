@@ -506,6 +506,17 @@ def validate_v2_policy(documents: Documents) -> dict[str, int]:
         "V2 qualification must compare the two compiler packages",
     )
     require(
+        'compiler_family=$(jq -er \'.family\' "$lock")' in qualify_script
+        and 'if [[ "$compiler_family" == gnu ]]; then' in qualify_script
+        and 'observe_gcc_inputs "$root/compiler-$copy"' in qualify_script
+        and 'observe-gcc-checksum-inputs.py' in qualify_script
+        and 'gcc-checksum-inputs.json' in qualify_script
+        and 'exactly one generated GCC Makefile' in qualify_script
+        and qualify_script.index('observe_gcc_inputs "$root/compiler-$copy"')
+        < qualify_script.index('toolchain producer compare --left'),
+        "GNU diagnostics must retain the exact checksum input observations before A/B comparison",
+    )
+    require(
         '"$aros" sdk build --identity' in qualify_script
         and "--materialized-source-dir" in qualify_script
         and "--first-root" in qualify_script
@@ -621,6 +632,21 @@ class CompilerSdkWorkflowV2Tests(unittest.TestCase):
                 workflow = mutate_job(workflow, "v2-qualify", entry, "removed-diagnostics/")
                 documents.set_text(WORKFLOW, workflow)
                 with self.assertRaisesRegex(PolicyViolation, "failure logs"):
+                    validate_v2_policy(documents)
+
+    def test_rejects_missing_or_unbound_gnu_checksum_observation(self) -> None:
+        for original, replacement in (
+            ('observe_gcc_inputs "$root/compiler-$copy"', ':'),
+            ('if [[ "$compiler_family" == gnu ]]; then', 'if false; then'),
+            ('gcc-checksum-inputs.json', 'unselected.json'),
+            ('exactly one generated GCC Makefile', 'take first generated GCC Makefile'),
+        ):
+            with self.subTest(original=original):
+                documents = self.new_documents()
+                qualifier = documents.text(QUALIFY)
+                self.assertIn(original, qualifier)
+                documents.set_text(QUALIFY, qualifier.replace(original, replacement, 1))
+                with self.assertRaisesRegex(PolicyViolation, "checksum input observations"):
                     validate_v2_policy(documents)
 
     def test_rejects_widened_diagnostic_host_scope(self) -> None:
