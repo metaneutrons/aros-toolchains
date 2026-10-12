@@ -89,6 +89,21 @@ report `transport-byte-readback-only`: neither authenticates signatures nor
 admits a release. Run the native SDK matrix verifier separately after transport
 authentication; production qualification and recovery admission remain required.
 
+`read-sdk-owner-v2.sh` requires a fresh operation root and performs that origin
+verification itself before invoking the SDK reader. It never adopts an existing
+transport directory. Supply the original source workflow/ref/producer commit,
+numeric provider selection and its raw SHA-256 independently, together with the
+SDK IDs, compiler family and native lane from the reviewed plan. The current
+reader workflow/job is selected separately. The optional `--same-attempt` still
+requires a distinct completed original job.
+
+After extraction, the adapter repeats read-only transport verification and
+remeasures the selected input before writing `readback.json`. Its assurance is
+`authenticated-transport-and-sdk-payload-readback-only`, not native SDK package
+validation, compiler execution or release qualification. Pass its SDK selection
+rows to the complete native matrix verifier; never substitute this wrapper for
+the original provider proof or the complete release evidence.
+
 ## Explicit source-owner verification
 
 `verify-source --workflow CALLER_WORKFLOW --job-name CALLER_JOB` requires
