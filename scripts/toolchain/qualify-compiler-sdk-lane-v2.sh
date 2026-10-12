@@ -6,16 +6,17 @@ set -C
 fail() { printf 'Compiler/SDK diagnostic: %s\n' "$*" >&2; exit 1; }
 digest() { shasum -a 256 "$1" | awk '{print $1}'; }
 observe_gcc_inputs() {
-    local compiler_root=$1 makefile='' manifest='' matches=()
-    manifest="$compiler_root/payload/evidence/gcc-makefiles.list"
-    find "$compiler_root/work/native-lifecycle/build" -type f \
-        -path '*/gcc/gcc/Makefile' -print0 > "$manifest"
-    while IFS= read -r -d '' makefile; do matches+=("$makefile"); done < "$manifest"
+    local compiler_root=$1 makefile='' makefiles='' matches=()
+    makefiles=$(find "$compiler_root/work/native-lifecycle/build" -type f \
+        -path '*/gcc/gcc/Makefile' -print)
+    while IFS= read -r makefile; do
+        if [[ -n "$makefile" ]]; then matches+=("$makefile"); fi
+    done <<< "$makefiles"
     (( ${#matches[@]} == 1 )) || fail 'GNU checksum diagnostic requires exactly one generated GCC Makefile'
     python3 -B "$producer/scripts/toolchain/observe-gcc-checksum-inputs.py" \
         --gcc-build-dir "${matches[0]%/Makefile}" \
         --allowed-root "$compiler_root/work/native-lifecycle" \
-        --output "$compiler_root/payload/evidence/gcc-checksum-inputs.json"
+        --output "${compiler_root%/*}/gcc-checksum-inputs-${compiler_root##*/}.json"
 }
 aros='' inputs='' selection='' source='' producer='' tools='' cache='' upstream=''
 group='' preset='' host='' root='' jobs='' deadline='' runtime_sha=''

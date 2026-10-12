@@ -39,13 +39,16 @@ contracts remain owned by AROS-NX.
    Do not upload complete build trees, compiler intermediates or source caches
    as lane failure diagnostics.
 
-GNU lanes also retain `payload/evidence/gcc-checksum-inputs.json` before the
+GNU lanes also retain `gcc-checksum-inputs-compiler-{a,b}.json` before the
 A/B comparison. The observer selects exactly one generated GCC Makefile and
 records its ordered C++ checksum inputs, whole-file hashes and hashes after
 the 16-byte prefix skipped by GCC's `genchecksum`. Bounded checksum-options
 and generated checksum text accompany those observations. This metadata can
 identify an intermediate input that differs even when the linked code matches;
 it neither normalizes compiler bytes nor qualifies a release.
+These diagnostic files remain outside each compiler's closed `payload/`
+inventory and are retained through the operation root's JSON upload. They must
+not be added to an owning-job compiler transport or its admitted evidence set.
 
 The current selection derives eight compiler builds, four comparisons and
 four SDK candidates on this host. The scheduler does not hardcode those counts.

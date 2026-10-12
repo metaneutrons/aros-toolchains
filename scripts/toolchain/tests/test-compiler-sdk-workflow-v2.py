@@ -516,7 +516,8 @@ def validate_v2_policy(documents: Documents) -> dict[str, int]:
         and 'if [[ "$compiler_family" == gnu ]]; then' in qualify_script
         and 'observe_gcc_inputs "$root/compiler-$copy"' in qualify_script
         and 'observe-gcc-checksum-inputs.py' in qualify_script
-        and 'gcc-checksum-inputs.json' in qualify_script
+        and '--output "${compiler_root%/*}/gcc-checksum-inputs-${compiler_root##*/}.json"' in qualify_script
+        and 'gcc-makefiles.list' not in qualify_script
         and 'exactly one generated GCC Makefile' in qualify_script
         and qualify_script.index('observe_gcc_inputs "$root/compiler-$copy"')
         < qualify_script.index('toolchain producer compare --left'),
@@ -644,7 +645,8 @@ class CompilerSdkWorkflowV2Tests(unittest.TestCase):
         for original, replacement in (
             ('observe_gcc_inputs "$root/compiler-$copy"', ':'),
             ('if [[ "$compiler_family" == gnu ]]; then', 'if false; then'),
-            ('gcc-checksum-inputs.json', 'unselected.json'),
+            ('--output "${compiler_root%/*}/gcc-checksum-inputs-${compiler_root##*/}.json"',
+             '--output "$compiler_root/payload/evidence/gcc-checksum-inputs.json"'),
             ('exactly one generated GCC Makefile', 'take first generated GCC Makefile'),
         ):
             with self.subTest(original=original):
