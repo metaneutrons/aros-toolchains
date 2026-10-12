@@ -72,6 +72,17 @@ class PreparationPolicyTests(unittest.TestCase):
                 MODULE.absolute_existing(str(linked), "source", "directory")
             self.assertEqual(MODULE.absent_destination(str(root / "fresh"), "output"), root / "fresh")
 
+    def test_recipe_self_digest_is_not_the_raw_document_digest(self):
+        path = Path("/selected/recipe.json")
+        raw = json.dumps({"schema": "aros-toolchain-recipe-v2", "recipe_sha256": "a" * 64}).encode()
+        stage = {"path": str(path), "sha256": "a" * 64}
+        self.assertNotEqual(MODULE.digest(raw), stage["sha256"])
+        MODULE.verify_recipe_stage(stage, path, raw)
+        with self.assertRaises(MODULE.PreparationError):
+            MODULE.verify_recipe_stage({"path": str(path), "sha256": MODULE.digest(raw)}, path, raw)
+        with self.assertRaises(MODULE.PreparationError):
+            MODULE.verify_recipe_stage({"path": "/other/recipe.json", "sha256": "a" * 64}, path, raw)
+
 
 if __name__ == "__main__":
     unittest.main()

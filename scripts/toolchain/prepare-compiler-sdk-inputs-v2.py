@@ -479,6 +479,21 @@ def projected_target(projection: Path, source_preset: str) -> tuple[dict[str, An
     return target, digest(contract_bytes), contract_bytes
 
 
+def verify_recipe_stage(stage: dict[str, Any], path: Path, raw: bytes) -> None:
+    # CLI recipe.sha256 is the canonical self-digest, excluding its own field.
+    # Collection document references separately bind SHA-256 of the raw bytes.
+    recipe = parse_json(raw, "native recipe document")
+    if (
+        not isinstance(recipe, dict)
+        or recipe.get("schema") != "aros-toolchain-recipe-v2"
+        or not isinstance(recipe.get("recipe_sha256"), str)
+        or not HEX64.fullmatch(recipe["recipe_sha256"])
+        or stage.get("path") != str(path)
+        or stage.get("sha256") != recipe["recipe_sha256"]
+    ):
+        fail("native recipe stage differs from its selected recipe self-digest")
+
+
 def validate_source_relative_reference(value: str) -> tuple[str, ...]:
     if value.startswith("/") or "\\" in value or ":" in value:
         fail("consumer contract path is not portable source-relative syntax")
@@ -704,8 +719,7 @@ def prepare(args: argparse.Namespace) -> None:
         )
         recipe_bytes = read_regular_file(recipe_path, MAX_DOCUMENT_BYTES, f"recipe {group_id}")
         recipe_sha = digest(recipe_bytes)
-        if recipe_stage["path"] != str(recipe_path) or recipe_stage["sha256"] != recipe_sha:
-            fail(f"native recipe stage for group {group_id} does not bind its output bytes")
+        verify_recipe_stage(recipe_stage, recipe_path, recipe_bytes)
         source_lock_bytes = group_documents[group_id]["source_lock"]
         profiles_bytes = group_documents[group_id]["profiles"]
         write_new(output / source_lock_name, source_lock_bytes, f"source lock for {group_id}")
