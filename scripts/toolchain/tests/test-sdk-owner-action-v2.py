@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -26,10 +27,12 @@ def validate(text: str) -> None:
     if len(parts) != 6:
         raise ValueError("owner transport must retain six ordered stages")
     needles = (
-        ("id: stage", "stage-sdk-owner-payload-v2.py", "ACTIONS_ID_TOKEN_REQUEST_URL", "ACTIONS_ID_TOKEN_REQUEST_TOKEN", "SDK_IDS"),
+        ("id: stage", "stage-sdk-owner-payload-v2.py", "ACTIONS_ID_TOKEN_REQUEST_URL", "ACTIONS_ID_TOKEN_REQUEST_TOKEN", "SDK_IDS",
+         "SDK_OWNER_ROLE: ${{ inputs.owner-role }}", 'case "$SDK_OWNER_ROLE" in diagnostic|sdk) ;; *) exit 1;; esac'),
         ("id: payload", "path: ${{ inputs.root }}/payload/", "if-no-files-found: error", "include-hidden-files: true"),
         ('artifact-origin.py" record', "steps.payload.outputs.artifact-id", "steps.payload.outputs.artifact-digest",
-         '--role diagnostic', '--copy none', '--payload-dir "$SDK_ROOT/payload"', '--output "$SDK_ROOT/proof/origin.json"'),
+         "SDK_OWNER_ROLE: ${{ inputs.owner-role }}", '--role "$SDK_OWNER_ROLE"',
+         '--copy none', '--payload-dir "$SDK_ROOT/payload"', '--output "$SDK_ROOT/proof/origin.json"'),
         ("id: signature", "actions/attest-build-provenance@", "subject-path: ${{ inputs.root }}/proof/origin.json"),
         ("steps.signature.outputs.bundle-path", '"$SDK_ROOT/proof/origin.sigstore.json"'),
         ("id: proof", "path: ${{ inputs.root }}/proof/", "if-no-files-found: error", "include-hidden-files: true"),
@@ -39,6 +42,10 @@ def validate(text: str) -> None:
             raise ValueError("SDK owner stage lost a required transport boundary")
         if "run: |" in part and "${{ inputs." in part.split("run: |", 1)[1]:
             raise ValueError("caller selector interpolated directly into shell")
+    owner_role = re.search(r"(?ms)^  owner-role:\n(?P<block>.*?)(?=^  [a-z][a-z-]*:\n|^outputs:)", text)
+    if owner_role is None or not all(needle in owner_role.group("block") for needle in (
+            "required: false", "default: diagnostic")):
+        raise ValueError("owner role must remain optional and default to diagnostic")
     if "continue-on-error" in text or re.search(r"(?m)^\s+(?:-\s+)?if:", text):
         raise ValueError("required owner gates must not be skipped or suppressed")
     used = re.findall(r"(?m)^\s+uses: (\S+)", text)
@@ -66,7 +73,7 @@ class OwnerContractTests(unittest.TestCase):
     def test_rejects_missing_selectors_shadow_payload_and_suppressed_gates(self):
         valid = ACTION.read_text()
         for needle, replacement in (
-            ("--role diagnostic", "--role build"),
+            ('--role "$SDK_OWNER_ROLE"', "--role diagnostic"),
             ("steps.payload.outputs.artifact-id", "steps.other.outputs.artifact-id"),
             ("steps.payload.outputs.artifact-digest", "steps.other.outputs.artifact-digest"),
             ("path: ${{ inputs.root }}/payload/", "path: ${{ inputs.root }}/other/"),
@@ -76,6 +83,25 @@ class OwnerContractTests(unittest.TestCase):
         ):
             with self.subTest(needle=needle), self.assertRaises(ValueError):
                 validate(valid.replace(needle, replacement, 1))
+
+    def test_rejects_invalid_owner_role_choice_and_disconnected_default(self):
+        valid = ACTION.read_text()
+        invalid_choice = valid.replace("diagnostic|sdk) ;; *) exit 1;; esac",
+                                       "diagnostic|other) ;; *) exit 1;; esac", 1)
+        with self.assertRaises(ValueError):
+            validate(invalid_choice)
+
+        invalid_default = valid.replace("    default: diagnostic", "    default: sdk", 1)
+        with self.assertRaises(ValueError):
+            validate(invalid_default)
+
+        record_step = "    - name: Bind the upload to this still-running original SDK owning job"
+        prefix, separator, tail = valid.partition(record_step)
+        self.assertTrue(separator)
+        disconnected = (prefix + separator + tail.replace(
+            "SDK_OWNER_ROLE: ${{ inputs.owner-role }}", "SDK_OWNER_ROLE: diagnostic", 1))
+        with self.assertRaises(ValueError):
+            validate(disconnected)
 
     def execute_stage(self, overrides=None):
         with tempfile.TemporaryDirectory(prefix="sdk-owner-action-") as temporary:
@@ -111,6 +137,7 @@ out.mkdir(mode=0o700)
                 "SDK_OPERATION_ROOT": str(root / "lane"), "SDK_ROOT": str(root / "owner"),
                 "SDK_WORKFLOW": ".github/workflows/toolchain-release.yml",
                 "SDK_JOB_NAME": "Synthetic SDK owner", "GITHUB_RUN_ID": "123",
+                "SDK_OWNER_ROLE": "diagnostic",
                 "GITHUB_RUN_ATTEMPT": "2", "GITHUB_ACTION_PATH": str(ACTION.parent),
                 "GITHUB_OUTPUT": str(root / "outputs"), "MOCK_CALLS": str(root / "calls"),
                 "ACTIONS_ID_TOKEN_REQUEST_URL": "https://example.invalid/fixture",
@@ -141,9 +168,35 @@ out.mkdir(mode=0o700)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual([call["--sdk-id"] for call in calls], ["+sdk", "sdk+"])
 
+    def test_sdk_owner_role_stages_successfully_and_uses_a_distinct_artifact_name(self):
+        diagnostic, diagnostic_calls, diagnostic_output, _ = self.execute_stage()
+        sdk, sdk_calls, sdk_output, _ = self.execute_stage({"SDK_OWNER_ROLE": "sdk"})
+        self.assertEqual(diagnostic.returncode, 0, diagnostic.stderr)
+        self.assertEqual(sdk.returncode, 0, sdk.stderr)
+        self.assertEqual([call["--sdk-id"] for call in diagnostic_calls],
+                         ["arm-raspi", "pc-x86_64"])
+        self.assertEqual([call["--sdk-id"] for call in sdk_calls],
+                         ["arm-raspi", "pc-x86_64"])
+
+        selected_ids = '["arm-raspi","pc-x86_64"]'
+
+        def lane_sha(parts):
+            return hashlib.sha256(("\0".join(parts) + "\0").encode()).hexdigest()
+
+        diagnostic_sha = lane_sha([selected_ids, "llvm", "linux-x86_64", "fixture"])
+        sdk_sha = lane_sha(["sdk", selected_ids, "llvm", "linux-x86_64", "fixture"])
+        self.assertEqual(diagnostic_output,
+                         f"payload-name=sdk-v2-{diagnostic_sha}-123-2\n"
+                         f"proof-name=sdk-v2-proof-{diagnostic_sha}-123-2\n")
+        self.assertEqual(sdk_output,
+                         f"payload-name=sdk-v2-{sdk_sha}-123-2\n"
+                         f"proof-name=sdk-v2-proof-{sdk_sha}-123-2\n")
+        self.assertNotEqual(diagnostic_sha, sdk_sha)
+
     def test_invalid_independent_selectors_fail_before_stage_or_output(self):
         for override in (
             {"SDK_IDS": "[]"}, {"SDK_IDS": '["x","x"]'}, {"SDK_IDS": '["z","a"]'},
+            {"SDK_OWNER_ROLE": "other"},
             {"SDK_IDS": '["."]'}, {"SDK_IDS": '[".."]'},
             {"SDK_IDS": '["../x"]'}, {"SDK_IDS": '["A"]'}, {"SDK_IDS": "{}"},
             {"SDK_IDS": '[null]'}, {"SDK_IDS": '["x/y"]'}, {"SDK_IDS": '["a\nb"]'},

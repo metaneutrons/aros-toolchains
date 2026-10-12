@@ -73,14 +73,17 @@ The non-publishing `qualify-v2` SDK owner now uses the helper after successful
 native generation. `retain-sdk-owner-payload-v2` stages each explicitly selected
 product under a separate SDK-ID directory, uploads that one exact tree, records
 its origin in the same running job and uploads the signed proof separately.
-Its v1 origin lane role remains `diagnostic`; the closed signed per-product
+The existing diagnostic workflow keeps the v1 origin lane role `diagnostic`.
+The action also accepts an independently selected `owner-role: sdk` for SDK
+owners; this label grants no execution, qualification or publication authority.
+The closed signed per-product
 `aros-sdk-owner-payload-v2` selectors bind SDK IDs in addition to group, profile
 and host. Independent admission must compare those tuples to release inputs,
 not infer product membership from the signed record. Generic origin signature
 verification still grants neither SDK execution nor release authority.
 
 After `verify-source` succeeds, `sdk-owner-transport-v2.py` materializes the
-retained diagnostic ZIP into a fresh private directory. Supply the SDK IDs,
+retained SDK-owner ZIP into a fresh private directory. Supply the SDK IDs,
 group, profile, host and compiler family independently from the reviewed plan.
 The reader joins every product marker and metadata measurement to the exact
 outer inventory and emits the native CLI's `sdk_generations` selection rows.
@@ -96,6 +99,14 @@ numeric provider selection and its raw SHA-256 independently, together with the
 SDK IDs, compiler family and native lane from the reviewed plan. The current
 reader workflow/job is selected separately. The optional `--same-attempt` still
 requires a distinct completed original job.
+
+Both readers accept `--owner-role diagnostic|sdk`, defaulting to `diagnostic`.
+Select the expected role independently from the reviewed workflow; readers
+never infer it from a signed record or fall back to another role. A mismatch
+fails before extraction (and before authentication or operation-root creation
+in the shell adapter). Default diagnostic result fields remain unchanged;
+SDK-role results explicitly record `owner_role`. The native compiler reader
+continues to require `build` with copy `a` or `b` and its closed compiler inventory.
 
 After extraction, the adapter repeats read-only transport verification and
 remeasures the selected input before writing `readback.json`. Its assurance is

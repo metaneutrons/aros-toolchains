@@ -96,6 +96,7 @@ def option(name):
 
 args = sys.argv[1:]
 retained = Path(option("--retained-dir"))
+owner_role = option("--owner-role") if "--owner-role" in args else "diagnostic"
 if "--output-dir" in args:
     record("extract", args)
     if os.environ.get("FAKE_TRANSPORT_MODE") == "extract-failure":
@@ -131,11 +132,15 @@ if "--output-dir" in args:
         "raw_zip_sha256": "b" * 64,
         "sdk_generations": products,
     }
+    if owner_role != "diagnostic":
+        result["owner_role"] = owner_role
     mode = os.environ.get("FAKE_TRANSPORT_MODE")
     if mode == "wrong-record-path":
         products[0]["record"]["path"] = str(output / ("sdk-" + sdk_ids[0]) / "package" / "generation.json")
     elif mode == "wrong-native-policy":
         products[0]["compatibility"]["native_sdk_required"] = family != "gnu"
+    elif mode == "spoofed-owner-role":
+        result["owner_role"] = "diagnostic"
     encoded = json.dumps(result, sort_keys=True, separators=(",", ":")) + "\n"
     Path(os.environ["FAKE_TRANSPORT_RESULT"]).write_text(encoded, encoding="utf-8")
     if os.environ.get("FAKE_TRANSPORT_MODE") == "change-selection-extract":
@@ -206,11 +211,11 @@ class ReadSdkOwnerProcessTests(unittest.TestCase):
         return sha256(raw)
 
     def base_args(self, *, sdk_ids: list[str] | None = None, family: str = "gnu",
-                  digest: str | None = None) -> list[str]:
+                  digest: str | None = None, owner_role: str | None = None) -> list[str]:
         selection_sha = self.selection_path.read_bytes()
         digest = sha256(selection_sha) if digest is None else digest
         sdk_ids = ["sdk-a"] if sdk_ids is None else sdk_ids
-        return [
+        args = [
             "--source-selection", str(self.selection_path),
             "--source-selection-sha256", digest,
             "--source-producer-commit", PRODUCER,
@@ -225,6 +230,9 @@ class ReadSdkOwnerProcessTests(unittest.TestCase):
             "--compiler-family", family,
             "--root", str(self.root),
         ]
+        if owner_role is not None:
+            args.extend(["--owner-role", owner_role])
+        return args
 
     def run_reader(self, args: list[str], *, origin_mode: str = "success",
                    transport_mode: str = "success") -> subprocess.CompletedProcess[str]:
@@ -273,6 +281,11 @@ class ReadSdkOwnerProcessTests(unittest.TestCase):
                 self.assertIn("--verified-output-dir", origin_args)
                 self.assertEqual("--same-attempt" in origin_args, same_attempt)
                 extraction = self.stages()[1]["args"]
+                self.assertIn("--owner-role", extraction)
+                self.assertEqual(extraction[extraction.index("--owner-role") + 1], "diagnostic")
+                readback_args = self.stages()[2]["args"]
+                self.assertIn("--owner-role", readback_args)
+                self.assertEqual(readback_args[readback_args.index("--owner-role") + 1], "diagnostic")
                 self.assertEqual(extraction[extraction.index("--sdk-ids") + 1],
                                  json.dumps(sdk_ids, separators=(",", ":")))
                 wrapper = json.loads((self.root / "readback.json").read_text(encoding="utf-8"))
@@ -290,9 +303,34 @@ class ReadSdkOwnerProcessTests(unittest.TestCase):
                     "sdk_ids": sdk_ids, "group": GROUP, "profile": PROFILE,
                     "host": HOST, "compiler_family": family,
                 })
+                self.assertNotIn("owner_role", wrapper["independent_selection"])
                 self.assertEqual([item["sdk_id"] for item in
                                   wrapper["sdk_owner_transport"]["sdk_generations"]], sdk_ids)
                 self.assertEqual((self.root.stat().st_mode & 0o777), 0o700)
+
+    def test_sdk_owner_role_reaches_both_transport_processes_and_wrapper(self) -> None:
+        self.write_selection(lane={"role": "sdk", "group": GROUP, "host": HOST,
+                                   "profile": PROFILE, "copy": "none"})
+        result = self.run_reader(self.base_args(owner_role="sdk"))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        stages = self.stages()
+        self.assertEqual([item["stage"] for item in stages], ["origin", "extract", "readback"])
+        for stage in stages[1:]:
+            args = stage["args"]
+            self.assertIn("--owner-role", args)
+            self.assertEqual(args[args.index("--owner-role") + 1], "sdk")
+        wrapper = json.loads((self.root / "readback.json").read_text(encoding="utf-8"))
+        self.assertEqual(wrapper["independent_selection"]["owner_role"], "sdk")
+        self.assertEqual(wrapper["sdk_owner_transport"]["owner_role"], "sdk")
+
+    def test_source_and_independent_owner_role_mismatches_fail_before_root_or_authentication(self) -> None:
+        sdk_lane = {"role": "sdk", "group": GROUP, "host": HOST,
+                    "profile": PROFILE, "copy": "none"}
+        self.write_selection(lane=sdk_lane)
+        self.reject_before_root(self.base_args())
+        self.reject_before_root(self.base_args(owner_role="diagnostic"))
+        self.write_selection()
+        self.reject_before_root(self.base_args(owner_role="sdk"))
 
     def test_wrong_source_lane_and_digest_reject_before_operation_creation(self) -> None:
         self.write_selection(workflow=".github/workflows/other.yml")
@@ -324,6 +362,7 @@ class ReadSdkOwnerProcessTests(unittest.TestCase):
                 self.reject_before_root(self.base_args(sdk_ids=sdk_ids))
         args = self.base_args() + ["--unrecognized", "x"]
         self.reject_before_root(args)
+        self.reject_before_root(self.base_args(owner_role="other"))
         args = self.base_args() + ["--group", GROUP]
         self.reject_before_root(args)
         args = self.base_args()
@@ -363,6 +402,16 @@ class ReadSdkOwnerProcessTests(unittest.TestCase):
                 self.assertNotEqual(result.returncode, 0)
                 self.assertEqual([item["stage"] for item in self.stages()], expected_stages)
                 self.assertFalse((self.root / "readback.json").exists())
+
+    def test_sdk_result_with_spoofed_owner_role_never_writes_wrapper(self) -> None:
+        self.write_selection(lane={"role": "sdk", "group": GROUP, "host": HOST,
+                                   "profile": PROFILE, "copy": "none"})
+        result = self.run_reader(self.base_args(owner_role="sdk"),
+                                 transport_mode="spoofed-owner-role")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual([item["stage"] for item in self.stages()],
+                         ["origin", "extract", "readback"])
+        self.assertFalse((self.root / "readback.json").exists())
 
     def test_identical_readback_with_wrong_record_path_or_native_policy_rejects(self) -> None:
         for index, mode in enumerate(("wrong-record-path", "wrong-native-policy")):

@@ -223,11 +223,12 @@ class SdkOwnerTransportTests(unittest.TestCase):
 
     def extract(self, bundle: dict, output: Path | None = None, *, sdk_ids: list[str] | None = None,
                 group: str = GROUP, profile: str = PROFILE, host: str = HOST,
-                compiler_family: str = "gnu") -> dict:
+                compiler_family: str = "gnu", owner_role: str = "diagnostic") -> dict:
         return transport.extract(
             bundle["root"], self.output() if output is None else output,
             sdk_ids=["sdk-a"] if sdk_ids is None else sdk_ids,
             group=group, profile=profile, host=host, compiler_family=compiler_family,
+            owner_role=owner_role,
         )
 
     def assert_rejected(self, bundle: dict, **kwargs: object) -> None:
@@ -246,6 +247,7 @@ class SdkOwnerTransportTests(unittest.TestCase):
                 self.assertEqual(extracted, verified)
                 self.assertEqual(extracted["schema"], "aros-sdk-owner-transport-v2")
                 self.assertEqual(extracted["assurance"], "transport-byte-readback-only")
+                self.assertNotIn("owner_role", extracted)
                 self.assertEqual(extracted["raw_zip_sha256"], digest(bundle["raw_zip"]))
                 self.assertEqual([item["sdk_id"] for item in extracted["sdk_generations"]], sdk_ids)
                 for item in extracted["sdk_generations"]:
@@ -282,12 +284,59 @@ class SdkOwnerTransportTests(unittest.TestCase):
         self.assertEqual(verified.returncode, 0, verified.stderr)
         self.assertEqual(json.loads(extracted.stdout), json.loads(verified.stdout))
         self.assertEqual(extracted.stdout, verified.stdout)
+        self.assertNotIn("owner_role", json.loads(extracted.stdout))
 
         invalid = subprocess.run(base + ["--output-dir", str(output),
                                          "--verify-output-dir", str(output)],
                                  capture_output=True, text=True, check=False)
         self.assertNotEqual(invalid.returncode, 0)
         self.assertEqual(invalid.stdout, "")
+
+        sdk_bundle = self.bundle(
+            "sdk-role-cli",
+            sdk_ids=["sdk-a", "sdk-b"], family="llvm",
+            selection={"role": "sdk", "group": GROUP, "host": HOST,
+                       "profile": PROFILE, "copy": "none"},
+        )
+        sdk_output = self.output("sdk-role-cli-output")
+        sdk_base = [sys.executable, str(SCRIPT), "--retained-dir", str(sdk_bundle["root"]),
+                    "--sdk-ids", json.dumps(["sdk-a", "sdk-b"]), "--group", GROUP,
+                    "--profile", PROFILE, "--host", HOST, "--compiler-family", "llvm",
+                    "--owner-role", "sdk"]
+        sdk_extracted = subprocess.run(sdk_base + ["--output-dir", str(sdk_output)],
+                                       capture_output=True, text=True, check=False)
+        self.assertEqual(sdk_extracted.returncode, 0, sdk_extracted.stderr)
+        sdk_verified = subprocess.run(sdk_base + ["--verify-output-dir", str(sdk_output)],
+                                      capture_output=True, text=True, check=False)
+        self.assertEqual(sdk_verified.returncode, 0, sdk_verified.stderr)
+        self.assertEqual(json.loads(sdk_extracted.stdout), json.loads(sdk_verified.stdout))
+        self.assertEqual(json.loads(sdk_extracted.stdout)["owner_role"], "sdk")
+
+    def test_sdk_owner_role_is_explicit_and_bound_through_extract_and_verify(self) -> None:
+        lane = {"role": "sdk", "group": GROUP, "host": HOST,
+                "profile": PROFILE, "copy": "none"}
+        bundle = self.bundle("sdk-role-api", selection=lane, signed_selection=lane)
+        output = self.output("sdk-role-api-output")
+        extracted = self.extract(bundle, output, owner_role="sdk")
+        verified = transport.verify_output(
+            bundle["root"], output, sdk_ids=["sdk-a"], group=GROUP, profile=PROFILE,
+            host=HOST, compiler_family="gnu", owner_role="sdk")
+        self.assertEqual(extracted, verified)
+        self.assertEqual(extracted["owner_role"], "sdk")
+
+    def test_owner_role_mismatches_reject_before_output_creation(self) -> None:
+        sdk_lane = {"role": "sdk", "group": GROUP, "host": HOST,
+                    "profile": PROFILE, "copy": "none"}
+        sdk_bundle = self.bundle("sdk-role-default-diagnostic", selection=sdk_lane,
+                                 signed_selection=sdk_lane)
+        sdk_output = self.output("sdk-role-default-diagnostic-output")
+        self.assert_rejected(sdk_bundle, output=sdk_output)
+        self.assertFalse(sdk_output.exists())
+
+        diagnostic_bundle = self.bundle("diagnostic-role-sdk-request")
+        diagnostic_output = self.output("diagnostic-role-sdk-request-output")
+        self.assert_rejected(diagnostic_bundle, output=diagnostic_output, owner_role="sdk")
+        self.assertFalse(diagnostic_output.exists())
 
     def test_independent_sdk_set_and_family_are_enforced(self) -> None:
         bundle = self.bundle(sdk_ids=["sdk-a", "sdk-b"])

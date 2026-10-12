@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Authenticate the selected original SDK diagnostic owner, then read back its
+# Authenticate the explicitly selected original SDK owner, then read back its
 # independently selected SDK payload bytes. This grants no SDK qualification.
 set -euo pipefail
 set -C
@@ -11,6 +11,7 @@ digest() { shasum -a 256 "$1" | awk '{print $1}'; }
 selection='' selection_sha='' source_producer='' source_workflow='' source_ref=''
 workflow='' job_name='' sdk_ids='' group='' profile='' host='' compiler_family=''
 root='' same_attempt=false seen='|'
+owner_role=diagnostic
 while (( $# )); do
     key=$1
     if [[ "$key" == --same-attempt ]]; then
@@ -37,6 +38,7 @@ while (( $# )); do
         --preset) profile=$value;;
         --host) host=$value;;
         --compiler-family) compiler_family=$value;;
+        --owner-role) owner_role=$value;;
         --root) root=$value;;
         *) fail "unknown option $key";;
     esac
@@ -60,6 +62,7 @@ case "$host" in
     *) fail 'host is not a native SDK host';;
 esac
 case "$compiler_family" in gnu|llvm) ;; *) fail 'compiler family must be gnu or llvm';; esac
+case "$owner_role" in diagnostic|sdk) ;; *) fail 'SDK owner role must be diagnostic or sdk';; esac
 
 # Match Git's ref-name constraints for the selected heads/tags namespace.
 [[ "$source_ref" =~ ^refs/(heads|tags)/[A-Za-z0-9._/-]+$ ]] || fail 'source ref is invalid'
@@ -92,16 +95,16 @@ check_selection_digest() {
         fail 'source selection bytes changed or differ from the selected digest'
 }
 check_selection_digest
-# The source workflow/ref/producer and the diagnostic lane are independently
+# The source workflow/ref/producer and the SDK owner role are independently
 # selected by the caller before any operation directory is created.
 jq -e --arg workflow "$source_workflow" --arg ref "$source_ref" \
     --arg producer "$source_producer" --arg group "$group" --arg host "$host" \
-    --arg profile "$profile" '
+    --arg profile "$profile" --arg owner_role "$owner_role" '
     .schema == "aros-toolchain-artifact-selection-v1" and
     .context.workflow == $workflow and .context.source_ref == $ref and
     .context.producer_commit == $producer and
-    .selection == {role:"diagnostic",group:$group,host:$host,profile:$profile,copy:"none"}
-    ' "$selection" >/dev/null || fail 'source selection differs from the independent diagnostic selector'
+    .selection == {role:$owner_role,group:$group,host:$host,profile:$profile,copy:"none"}
+    ' "$selection" >/dev/null || fail 'source selection differs from the independent SDK owner selector'
 check_selection_digest
 
 [[ "$root" == /* && ! -e "$root" && ! -L "$root" ]] || fail 'operation root must be absent and absolute'
@@ -121,11 +124,12 @@ origin_args=(verify-source --workflow "$workflow" --job-name "$job_name"
     --source-selection "$selection" --verified-output-dir "$root/transport")
 if [[ "$same_attempt" == true ]]; then origin_args+=(--same-attempt); fi
 python3 -B "$script_dir/artifact-origin.py" "${origin_args[@]}" \
-    > "$root/origin-verification.log" || fail 'original SDK diagnostic owner authentication failed'
+    > "$root/origin-verification.log" || fail 'original SDK owner authentication failed'
 check_selection_digest
 
 transport_args=(--retained-dir "$root/transport" --sdk-ids "$sdk_ids"
-    --group "$group" --profile "$profile" --host "$host" --compiler-family "$compiler_family")
+    --group "$group" --profile "$profile" --host "$host" --compiler-family "$compiler_family"
+    --owner-role "$owner_role")
 python3 -B "$script_dir/sdk-owner-transport-v2.py" "${transport_args[@]}" \
     --output-dir "$root/payload" > "$root/transport-result.json" || fail 'SDK payload extraction failed'
 python3 -B "$script_dir/sdk-owner-transport-v2.py" "${transport_args[@]}" \
@@ -138,10 +142,13 @@ check_selection_digest
 # deliberately narrow byte-readback wrapper. The helper has no Rust semantics.
 jq -se --argjson ids "$sdk_ids" --arg group "$group" --arg profile "$profile" \
     --arg host "$host" --arg compiler_family "$compiler_family" \
-    --arg selection_sha "$selection_sha" --arg payload "$root/payload" '
+    --arg selection_sha "$selection_sha" --arg payload "$root/payload" --arg owner_role "$owner_role" '
     length == 1 and (.[0] |
       .schema == "aros-sdk-owner-transport-v2" and
       .assurance == "transport-byte-readback-only" and
+      (if $owner_role == "diagnostic" then
+         ((has("owner_role") | not) or .owner_role == $owner_role)
+       else .owner_role == $owner_role end) and
       (.origin_sha256 | type == "string" and test("^[0-9a-f]{64}$")) and
       (.raw_zip_sha256 | type == "string" and test("^[0-9a-f]{64}$")) and
       .selection_sha256 == $selection_sha and
@@ -168,7 +175,7 @@ jq -n --arg workflow "$source_workflow" --arg ref "$source_ref" \
     --arg producer "$source_producer" --arg selection_sha "$selection_sha" \
     --arg group "$group" --arg profile "$profile" --arg host "$host" \
     --arg compiler_family "$compiler_family" --argjson sdk_ids "$sdk_ids" \
-    --slurpfile sdk_owner "$root/transport-result.json" '{
+    --arg owner_role "$owner_role" --slurpfile sdk_owner "$root/transport-result.json" '{
     schema:"aros-sdk-owner-readback-v2",
     assurance:"authenticated-transport-and-sdk-payload-readback-only",
     source_workflow:$workflow,
@@ -178,6 +185,7 @@ jq -n --arg workflow "$source_workflow" --arg ref "$source_ref" \
     independent_selection:{sdk_ids:$sdk_ids,group:$group,profile:$profile,host:$host,
                            compiler_family:$compiler_family},
     sdk_owner_transport:$sdk_owner[0]
-    }' > "$readback_tmp" || fail 'SDK readback wrapper generation failed'
+    } | if $owner_role == "sdk" then .independent_selection.owner_role = $owner_role else . end' \
+    > "$readback_tmp" || fail 'SDK readback wrapper generation failed'
 
-printf 'Authenticated original SDK diagnostic owner and read back selected payload bytes; no SDK qualification or release authority.\n'
+printf 'Authenticated original SDK owner and read back selected payload bytes; no SDK qualification or release authority.\n'

@@ -191,6 +191,22 @@ class NativeLaneTransportTests(unittest.TestCase):
     def output(self, name: str = "output") -> Path:
         return self.base / name
 
+    def test_sdk_identity_requires_explicit_role_and_cannot_enter_compiler_extractor(self) -> None:
+        lane = {**LANE, "role": "sdk", "copy": "none"}
+        bundle = self.bundle(selected_lane=lane, origin_lane=lane)
+        selected = (bundle["root"] / "selection.json").read_bytes()
+        signed = (bundle["root"] / "origin.json").read_bytes()
+        observed, _, _ = transport._validate_identity(selected, signed, required_role="sdk")
+        self.assertEqual(observed["selection"], lane)
+        for role in ("build", "diagnostic"):
+            with self.subTest(role=role), self.assertRaisesRegex(
+                    origin.OriginError, "selected transport role"):
+                transport._validate_identity(selected, signed, required_role=role)
+        output = self.output()
+        with self.assertRaisesRegex(origin.OriginError, "selected transport role"):
+            transport.extract(bundle["root"], output)
+        self.assertFalse(output.exists())
+
     def assert_rejected(self, bundle: dict, *, output: Path | None = None) -> None:
         with self.assertRaises(origin.OriginError):
             transport.extract(bundle["root"], self.output() if output is None else output)

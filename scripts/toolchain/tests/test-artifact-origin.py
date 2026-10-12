@@ -211,6 +211,17 @@ def verify_fixture(root: Path, *, signed_digest: str | None = None,
 
 
 class LaneSelectionTests(unittest.TestCase):
+    def test_sdk_owner_role_accepts_only_the_no_copy_lane(self) -> None:
+        selected = origin.selection(lane_args(role="sdk", copy="none"))
+        self.assertEqual(selected, {
+            "role": "sdk", "group": "rv32", "host": "linux",
+            "profile": "release", "copy": "none",
+        })
+        for copy in ("a", "b"):
+            with self.subTest(copy=copy), self.assertRaisesRegex(
+                    origin.OriginError, "artifact copy does not match its role"):
+                origin.selection(lane_args(role="sdk", copy=copy))
+
     def test_native_profiles_preserve_case_and_punctuation_without_aliases(self) -> None:
         for profile in ("RV32-Mixed", ".profile", "_profile", "-profile", "P" * 128):
             with self.subTest(profile=profile):

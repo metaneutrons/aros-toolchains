@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Materialize a retained diagnostic SDK-owner ZIP as bounded private bytes.
+"""Materialize a retained SDK-owner ZIP as bounded private bytes.
 
 The caller must independently verify the artifact origin before invoking this
 helper. This module checks joins and byte consistency only; it does not verify
-signatures, authenticate a job, or grant qualification or release authority.
+signatures, authenticate a job, or grant qualification, release, or execution
+authority. The selected owner role only identifies the retained lane to verify.
 Retained and output roots are expected to be quiescent and owned by the caller.
 Readback checks do not isolate against a hostile concurrent writer.
 """
@@ -78,7 +79,10 @@ def _private_file(entry: os.stat_result) -> bool:
 
 
 def _validate_request(*, sdk_ids: list[str], group: str, profile: str,
-                      host: str, compiler_family: str) -> None:
+                      host: str, compiler_family: str,
+                      owner_role: str = "diagnostic") -> None:
+    _require(isinstance(owner_role, str) and owner_role in ("diagnostic", "sdk"),
+             "SDK owner role must be diagnostic or sdk")
     _require(isinstance(sdk_ids, list) and 1 <= len(sdk_ids) <= 32,
              "independent SDK selection must contain one to 32 IDs")
     _require(all(isinstance(sdk_id, str) and bool(SDK_ID.fullmatch(sdk_id))
@@ -275,16 +279,17 @@ def _validate_markers(archive_path: Path, files: dict[str, dict], sdk_ids: list[
 
 
 def _verified_transport(retained: Path, *, sdk_ids: list[str], group: str, profile: str,
-                        host: str, compiler_family: str) -> tuple[dict, dict, dict, dict]:
+                        host: str, compiler_family: str,
+                        owner_role: str = "diagnostic") -> tuple[dict, dict, dict, dict]:
     _require(isinstance(retained, Path) and retained.is_absolute() and ".." not in retained.parts,
              "retained directory must be absolute and normalized")
     inputs, contents, root_identity, names = native._validate_root(retained)
     selected, signed, artifact = native._validate_identity(
-        contents["selection.json"], contents["origin.json"], required_role="diagnostic")
+        contents["selection.json"], contents["origin.json"], required_role=owner_role)
     lane = selected["selection"]
     _require(lane["group"] == group and lane["host"] == host and lane["profile"] == profile
-             and lane["role"] == "diagnostic" and lane["copy"] == "none",
-             "retained diagnostic selector differs from the independent native selection")
+             and lane["role"] == owner_role and lane["copy"] == "none",
+             "retained SDK owner selector differs from the independent native selection")
     files = _validate_signed_inventory(signed["files"], sdk_ids)
     origin.verify_zip(retained / "payload.zip", files,
                       artifact["sha256"], artifact["size_in_bytes"])
@@ -298,11 +303,12 @@ def _verified_transport(retained: Path, *, sdk_ids: list[str], group: str, profi
 
 def _assert_retained_same(retained: Path, before: tuple[dict, dict, dict, dict], *,
                           sdk_ids: list[str], group: str, profile: str,
-                          host: str, compiler_family: str) -> None:
+                          host: str, compiler_family: str,
+                          owner_role: str = "diagnostic") -> None:
     inputs_before, _, _, state_before = before
     inputs_after, _, _, state_after = _verified_transport(
         retained, sdk_ids=sdk_ids, group=group, profile=profile, host=host,
-        compiler_family=compiler_family)
+        compiler_family=compiler_family, owner_role=owner_role)
     _require(inputs_before == inputs_after
              and state_before["root_identity"] == state_after["root_identity"]
              and state_before["names"] == state_after["names"],
@@ -424,7 +430,7 @@ def _result(output: Path, inputs: dict, transport: dict, output_measurements: di
                  and markers["compatibility_measurement"] == transport["products"][sdk_id][
                      "compatibility/compatibility-measurement.json"],
                  "SDK result marker identity changed")
-    return {
+    result = {
         "schema": SCHEMA,
         "assurance": ASSURANCE,
         "origin_sha256": inputs["origin.json"]["sha256"],
@@ -432,15 +438,21 @@ def _result(output: Path, inputs: dict, transport: dict, output_measurements: di
         "raw_zip_sha256": inputs["payload.zip"]["sha256"],
         "sdk_generations": sdk_generations,
     }
+    owner_role = transport["selected"]["selection"]["role"]
+    if owner_role != "diagnostic":
+        result["owner_role"] = owner_role
+    return result
 
 
 def _extract(retained: Path, output: Path, *, sdk_ids: list[str], group: str,
-             profile: str, host: str, compiler_family: str) -> dict:
+             profile: str, host: str, compiler_family: str,
+             owner_role: str = "diagnostic") -> dict:
     _validate_request(sdk_ids=sdk_ids, group=group, profile=profile,
-                      host=host, compiler_family=compiler_family)
+                      host=host, compiler_family=compiler_family,
+                      owner_role=owner_role)
     retained_before = _verified_transport(
         retained, sdk_ids=sdk_ids, group=group, profile=profile, host=host,
-        compiler_family=compiler_family)
+        compiler_family=compiler_family, owner_role=owner_role)
     inputs, _, transport, _ = retained_before
     files = transport["files"]
     output, parent_before = native._output_preflight(retained, output)
@@ -515,7 +527,7 @@ def _extract(retained: Path, output: Path, *, sdk_ids: list[str], group: str,
                  "SDK output readback differs from streamed archive members")
         _assert_retained_same(
             retained, retained_before, sdk_ids=sdk_ids, group=group, profile=profile,
-            host=host, compiler_family=compiler_family)
+            host=host, compiler_family=compiler_family, owner_role=owner_role)
         parent_final = output.parent.lstat()
         root_final = os.stat(output.name, dir_fd=parent_fd, follow_symlinks=False)
         _require(output.parent == output.parent.resolve()
@@ -533,11 +545,13 @@ def _extract(retained: Path, output: Path, *, sdk_ids: list[str], group: str,
 
 
 def extract(retained: Path, output: Path, *, sdk_ids: list[str], group: str,
-            profile: str, host: str, compiler_family: str) -> dict:
-    """Verify a diagnostic retained bundle and stream its exact SDK closure."""
+            profile: str, host: str, compiler_family: str,
+            owner_role: str = "diagnostic") -> dict:
+    """Verify the selected retained bundle and stream its exact SDK closure."""
     try:
         return _extract(retained, output, sdk_ids=sdk_ids, group=group, profile=profile,
-                        host=host, compiler_family=compiler_family)
+                        host=host, compiler_family=compiler_family,
+                        owner_role=owner_role)
     except origin.OriginError:
         raise
     except stage.StageError as error:
@@ -547,12 +561,14 @@ def extract(retained: Path, output: Path, *, sdk_ids: list[str], group: str,
 
 
 def _verify_output(retained: Path, output: Path, *, sdk_ids: list[str], group: str,
-                   profile: str, host: str, compiler_family: str) -> dict:
+                   profile: str, host: str, compiler_family: str,
+                   owner_role: str = "diagnostic") -> dict:
     _validate_request(sdk_ids=sdk_ids, group=group, profile=profile,
-                      host=host, compiler_family=compiler_family)
+                      host=host, compiler_family=compiler_family,
+                      owner_role=owner_role)
     retained_before = _verified_transport(
         retained, sdk_ids=sdk_ids, group=group, profile=profile, host=host,
-        compiler_family=compiler_family)
+        compiler_family=compiler_family, owner_role=owner_role)
     inputs, _, transport, _ = retained_before
     _require(isinstance(output, Path) and output.is_absolute() and ".." not in output.parts
              and output == output.resolve() and output != retained
@@ -564,17 +580,19 @@ def _verify_output(retained: Path, output: Path, *, sdk_ids: list[str], group: s
     output_measurements, _ = _scan_output(output, transport["files"], sdk_ids)
     _assert_retained_same(
         retained, retained_before, sdk_ids=sdk_ids, group=group, profile=profile,
-        host=host, compiler_family=compiler_family)
+        host=host, compiler_family=compiler_family, owner_role=owner_role)
     return _result(output, inputs, transport, output_measurements, sdk_ids, group, profile,
                    host, compiler_family)
 
 
 def verify_output(retained: Path, output: Path, *, sdk_ids: list[str], group: str,
-                  profile: str, host: str, compiler_family: str) -> dict:
+                  profile: str, host: str, compiler_family: str,
+                  owner_role: str = "diagnostic") -> dict:
     """Read back a prior output and retained transport without writing anything."""
     try:
         return _verify_output(retained, output, sdk_ids=sdk_ids, group=group, profile=profile,
-                              host=host, compiler_family=compiler_family)
+                              host=host, compiler_family=compiler_family,
+                              owner_role=owner_role)
     except origin.OriginError:
         raise
     except stage.StageError as error:
@@ -605,10 +623,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--profile", required=True)
     parser.add_argument("--host", required=True)
     parser.add_argument("--compiler-family", choices=("gnu", "llvm"), required=True)
+    parser.add_argument("--owner-role", choices=("diagnostic", "sdk"), default="diagnostic")
     args = parser.parse_args(argv)
     try:
         options = {"sdk_ids": args.sdk_ids, "group": args.group, "profile": args.profile,
-                   "host": args.host, "compiler_family": args.compiler_family}
+                   "host": args.host, "compiler_family": args.compiler_family,
+                   "owner_role": args.owner_role}
         result = (extract(args.retained_dir, args.output_dir, **options)
                   if args.output_dir is not None
                   else verify_output(args.retained_dir, args.verify_output_dir, **options))

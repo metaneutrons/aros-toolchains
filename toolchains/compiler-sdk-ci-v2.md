@@ -84,6 +84,11 @@ compiler/SDK matrix. None of those reader or release-admission gates is replaced
 by a signed `sdk-lane.json` claim or a package-only summary. See
 [owning-job artifact transport](artifact-origin.md).
 
+The SDK action and readers support an explicitly selected `sdk` transport role
+for future complete SDK owners. The current diagnostic workflow still selects
+`diagnostic`; no role is inferred or promoted from a signed payload. Neither
+role substitutes for the complete native SDK matrix and release-admission gates.
+
 Dispatch only after both exact tools and source commits are remotely available,
 the selected tools checks and producer contracts are green, and the source
 SDK exporters, source-contract/hygiene and locked-source checks have passed.

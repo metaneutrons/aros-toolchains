@@ -26,6 +26,10 @@ inputs:
   job-name:
     description: Exact executing provider job name selected by the caller.
     required: true
+  owner-role:
+    description: Independently selected transport role (diagnostic or sdk); neither grants release authority.
+    required: false
+    default: diagnostic
 
 outputs:
   payload-id:
@@ -56,6 +60,7 @@ runs:
         SDK_ROOT: ${{ inputs.root }}
         SDK_WORKFLOW: ${{ inputs.workflow }}
         SDK_JOB_NAME: ${{ inputs.job-name }}
+        SDK_OWNER_ROLE: ${{ inputs.owner-role }}
       run: |
         set -euo pipefail
         test -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}"
@@ -63,6 +68,7 @@ runs:
         [[ "$SDK_GROUP" =~ ^[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?$ ]]
         [[ "$SDK_PRESET" =~ ^[A-Za-z0-9._-]{1,128}$ && "$SDK_PRESET" != . && "$SDK_PRESET" != .. ]]
         case "$SDK_HOST" in linux-x86_64|linux-aarch64|macos-aarch64) ;; *) exit 1;; esac
+        case "$SDK_OWNER_ROLE" in diagnostic|sdk) ;; *) exit 1;; esac
         [[ "$SDK_WORKFLOW" =~ ^\.github/workflows/[A-Za-z0-9_-]+\.yml$ ]]
         [[ -n "$SDK_JOB_NAME" && "$SDK_JOB_NAME" != *$'\n'* && "$SDK_JOB_NAME" != *$'\r'* ]]
         [[ "$GITHUB_RUN_ID" =~ ^[1-9][0-9]{0,19}$ && "$GITHUB_RUN_ATTEMPT" =~ ^[1-9][0-9]{0,19}$ ]]
@@ -81,6 +87,9 @@ runs:
             --profile="$SDK_PRESET" --host "$SDK_HOST" --output-dir "$SDK_ROOT/payload/sdk-$sdk_id"
         done <<< "$(jq -r '.[]' <<< "$SDK_IDS")"
         lane_sha=$(printf '%s\0' "$SDK_IDS" "$SDK_GROUP" "$SDK_HOST" "$SDK_PRESET" | shasum -a 256 | awk '{print $1}')
+        if [[ "$SDK_OWNER_ROLE" == sdk ]]; then
+          lane_sha=$(printf '%s\0' "$SDK_OWNER_ROLE" "$SDK_IDS" "$SDK_GROUP" "$SDK_HOST" "$SDK_PRESET" | shasum -a 256 | awk '{print $1}')
+        fi
         printf 'payload-name=sdk-v2-%s-%s-%s\n' "$lane_sha" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
         printf 'proof-name=sdk-v2-proof-%s-%s-%s\n' "$lane_sha" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
 
@@ -107,6 +116,7 @@ runs:
         SDK_GROUP: ${{ inputs.group }}
         SDK_HOST: ${{ inputs.host }}
         SDK_PRESET: ${{ inputs.preset }}
+        SDK_OWNER_ROLE: ${{ inputs.owner-role }}
       run: |
         set -euo pipefail
         mkdir -m 700 "$SDK_ROOT/proof"
@@ -114,7 +124,7 @@ runs:
           --workflow "$SDK_WORKFLOW" --job-name "$SDK_JOB_NAME" \
           --artifact-id "$PAYLOAD_ID" --artifact-name "$PAYLOAD_NAME" \
           --artifact-sha256 "$PAYLOAD_SHA256" --payload-dir "$SDK_ROOT/payload" \
-          --role diagnostic --group "$SDK_GROUP" --host "$SDK_HOST" \
+          --role "$SDK_OWNER_ROLE" --group "$SDK_GROUP" --host "$SDK_HOST" \
           --profile="$SDK_PRESET" --copy none --output "$SDK_ROOT/proof/origin.json"
 
     - id: signature

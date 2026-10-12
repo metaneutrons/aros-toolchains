@@ -404,7 +404,7 @@ def selection(args: argparse.Namespace) -> dict:
             and isinstance(result["profile"], str) and PROFILE.fullmatch(result["profile"])
             and result["profile"] not in (".", ".."),
             "artifact lane selection is invalid")
-    require(result["role"] in ("build", "comparison", "compatibility", "diagnostic")
+    require(result["role"] in ("build", "comparison", "compatibility", "diagnostic", "sdk")
             and result["copy"] in ("a", "b", "none"), "artifact role/copy is invalid")
     require((result["role"] == "build") == (result["copy"] in ("a", "b")), "artifact copy does not match its role")
     return result

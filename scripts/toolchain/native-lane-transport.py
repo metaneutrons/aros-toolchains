@@ -111,7 +111,7 @@ def _validate_identity(selection_raw: bytes, origin_raw: bytes, *,
              "retained source selection schema differs")
     context = origin.validate_context(selected["context"])
     lane = origin.exact_keys(selected["selection"], {"role", "group", "host", "profile", "copy"})
-    _require(required_role in ("build", "diagnostic"), "unsupported retained transport role")
+    _require(required_role in ("build", "diagnostic", "sdk"), "unsupported retained transport role")
     _require(origin.selection(argparse.Namespace(**lane)) == lane
              and lane["role"] == required_role
              and lane["copy"] in (("a", "b") if required_role == "build" else ("none",)),
