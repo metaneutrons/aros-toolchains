@@ -177,6 +177,27 @@ This is package-byte selection only. Run it after authenticated collection in
 the same invocation; its output cannot replace original-owner authentication,
 native SDK package verification or complete generation/compatibility readback.
 
+The same readback invocation runs `assemble-compiler-candidate-v2.py` after
+deriving an independent required-payload selection from the committed policy
+and its fresh native plan. It rechecks retained original compiler transports,
+invokes native portable `verify-package` for both copies, and invokes native
+`compare` for each complete plan lane. Only unchanged copy-A package members
+are staged. The generated compiler index-lane selection and evidence fragment
+remain partial: SDK compatibility, SDK package staging, the combined signed
+inventory and complete native release qualification are separate gates.
+The diagnostic upload retains summaries and reports, not a publishable package
+set. No build, original transport, package or receipt is normalized or replaced.
+
+`assemble-sdk-candidate-v2.py` repeats the complete authenticated SDK byte
+selection before and after native verification. Each explicitly selected
+host-independent package must pass `aros sdk verify-package` against its
+plan-bound identity and independently measured archive and tree digests before
+its three unchanged members are staged. Its partial summary preserves the
+native-index package expectations and verification-result selectors. This
+package staging does not replace the complete twelve-generation readback,
+ordinary and relocated link evidence, signed combined inventory or final
+native release factory.
+
 This full scheduling coverage is not release admission: the runtime is still a
 development build, and original-owner verification, complete native matrix
 readback, combined inventory, signatures and isolated release gates remain

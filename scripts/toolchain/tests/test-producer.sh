@@ -447,6 +447,8 @@ python3 -B "$source_root/scripts/toolchain/tests/test-development-runtime-hosts.
 python3 -B "$source_root/scripts/toolchain/tests/test-select-owner-artifacts-v2.py"
 python3 -B "$source_root/scripts/toolchain/tests/test-sdk-owner-matrix-v2.py"
 python3 -B "$source_root/scripts/toolchain/tests/test-sdk-package-inputs-v2.py"
+python3 -B "$source_root/scripts/toolchain/tests/test-compiler-candidate-assembly-v2.py"
+python3 -B "$source_root/scripts/toolchain/tests/test-sdk-candidate-assembly-v2.py"
 python3 -B "$source_root/scripts/toolchain/tests/test-compiler-owner-matrix-v2.py"
 python3 -B "$source_root/scripts/toolchain/tests/test-collect-compiler-owners-v2.py"
 bash -n "$source_root/scripts/toolchain/collect-compiler-owners-v2.sh"

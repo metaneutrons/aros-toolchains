@@ -13,8 +13,9 @@ proves builds, comparisons, SDK execution, provenance or release qualification.
 The final adapter must join its selections to native-derived archive identities
 and independently retained owner environments before invoking the native index
 writer. CI preparation checks and retains this complete selection before
-scheduling native builds. The final index adapter remains to be integrated;
-the preparation gate does not establish package contents or release admission.
+scheduling native builds. The authenticated readback job derives the policy
+selection again against its fresh native plan, then binds it to the compiler
+candidate assembler. Neither selection grants package or release admission.
 
 ## Policy basis
 

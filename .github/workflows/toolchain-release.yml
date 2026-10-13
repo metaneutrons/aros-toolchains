@@ -675,6 +675,42 @@ jobs:
             --producer-commit "$GITHUB_SHA" --tools-commit "$EXPECTED_TOOLS" \
             --fragment "$fragment" --fragment-sha256 "$fragment_sha" \
             --owner-root "$RUNNER_TEMP/complete-sdk-readback" > "$package_inputs"
+          required_paths="$RUNNER_TEMP/compiler-candidate-required-paths.json"
+          compiler_summary="$RUNNER_TEMP/compiler-candidate-summary.json"
+          test ! -e "$required_paths" && test ! -L "$required_paths"
+          test ! -e "$compiler_summary" && test ! -L "$compiler_summary"
+          policy="$GITHUB_WORKSPACE/toolchains/compiler-required-payload-v1.json"
+          policy_sha=$(shasum -a 256 "$policy" | awk '{print $1}')
+          python3 -B scripts/toolchain/required-compiler-payload-v2.py \
+            --policy "$policy" --policy-sha256 "$policy_sha" \
+            --plan "$plan" --plan-sha256 "$plan_sha" \
+            --inputs-sha256 "$inputs_sha" --producer-commit "$GITHUB_SHA" \
+            --tools-commit "$EXPECTED_TOOLS" > "$required_paths"
+          required_paths_sha=$(shasum -a 256 "$required_paths" | awk '{print $1}')
+          compiler_fragment="$RUNNER_TEMP/complete-compiler-readback/selection-fragment.json"
+          compiler_fragment_sha=$(shasum -a 256 "$compiler_fragment" | awk '{print $1}')
+          python3 -B scripts/toolchain/assemble-compiler-candidate-v2.py \
+            --aros "$runtime/bin/aros" --aros-sha256 "$runtime_sha" \
+            --plan "$plan" --plan-sha256 "$plan_sha" \
+            --inputs-dir "$RUNNER_TEMP/diagnostic-inputs" --inputs-sha256 "$inputs_sha" \
+            --producer-commit "$GITHUB_SHA" --tools-commit "$EXPECTED_TOOLS" \
+            --fragment "$compiler_fragment" --fragment-sha256 "$compiler_fragment_sha" \
+            --owner-root "$RUNNER_TEMP/complete-compiler-readback" \
+            --required-paths "$required_paths" --required-paths-sha256 "$required_paths_sha" \
+            --release-id "toolchain-dev-${GITHUB_SHA:0:12}" \
+            --forbidden-prefix "$GITHUB_WORKSPACE" --forbidden-prefix "$RUNNER_TEMP" \
+            --root "$RUNNER_TEMP/compiler-candidate" > "$compiler_summary"
+          sdk_summary="$RUNNER_TEMP/sdk-candidate-summary.json"
+          test ! -e "$sdk_summary" && test ! -L "$sdk_summary"
+          python3 -B scripts/toolchain/assemble-sdk-candidate-v2.py \
+            --aros "$runtime/bin/aros" --aros-sha256 "$runtime_sha" \
+            --plan "$plan" --plan-sha256 "$plan_sha" \
+            --inputs-dir "$RUNNER_TEMP/diagnostic-inputs" --inputs-sha256 "$inputs_sha" \
+            --producer-commit "$GITHUB_SHA" --tools-commit "$EXPECTED_TOOLS" \
+            --fragment "$fragment" --fragment-sha256 "$fragment_sha" \
+            --owner-root "$RUNNER_TEMP/complete-sdk-readback" \
+            --forbidden-prefix "$GITHUB_WORKSPACE" --forbidden-prefix "$RUNNER_TEMP" \
+            --root "$RUNNER_TEMP/sdk-candidate" > "$sdk_summary"
       - name: Retain diagnostic selection metadata only
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -684,6 +720,14 @@ jobs:
             ${{ runner.temp }}/sdk-owner-context/
             ${{ runner.temp }}/sdk-index-native-plan.json
             ${{ runner.temp }}/sdk-package-inputs.json
+            ${{ runner.temp }}/compiler-candidate-required-paths.json
+            ${{ runner.temp }}/compiler-candidate-summary.json
+            ${{ runner.temp }}/compiler-candidate/compiler-index-lanes.json
+            ${{ runner.temp }}/compiler-candidate/compiler-evidence-fragment.json
+            ${{ runner.temp }}/compiler-candidate/reports/
+            ${{ runner.temp }}/compiler-candidate/native/
+            ${{ runner.temp }}/sdk-candidate-summary.json
+            ${{ runner.temp }}/sdk-candidate/native/
             ${{ runner.temp }}/complete-compiler-readback/matrix.json
             ${{ runner.temp }}/complete-compiler-readback/selection-fragment.json
             ${{ runner.temp }}/complete-compiler-readback/owners/*/selection.json
