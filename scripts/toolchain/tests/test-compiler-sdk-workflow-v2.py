@@ -142,14 +142,15 @@ def require_read_only_job(job: str, name: str) -> None:
             permissions = []
             cursor = index + 1
             while cursor < len(lines) and lines[cursor].startswith("      "):
-                permissions.append(lines[cursor].strip())
+                if not lines[cursor].lstrip().startswith("#"):
+                    permissions.append(lines[cursor].strip())
                 cursor += 1
             break
     expected_permissions = ["contents: read"]
     if name in {"v2-qualify", "v2-build", "v2-sdk"}:
         expected_permissions += ["actions: read", "id-token: write", "attestations: write"]
     if name == "v2-readback":
-        expected_permissions += ["actions: read", "id-token: write", "attestations: read"]
+        expected_permissions += ["actions: read", "id-token: write", "attestations: write"]
     if permissions != expected_permissions:
         raise PolicyViolation(f"{name} permissions must exactly match its non-publishing job scope")
     if re.search(r"(?m)^\s*environment:", job):
@@ -169,6 +170,8 @@ def require_read_only_job(job: str, name: str) -> None:
             "actions/download-artifact",
             "actions/upload-artifact",
         }
+        if name == "v2-readback" and action == "actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373":
+            continue
         name_and_ref = action.split("@", 1)
         if (
             len(name_and_ref) != 2
@@ -617,6 +620,67 @@ def validate_v2_policy(documents: Documents) -> dict[str, int]:
         "native evidence selection must bind complete original-owner evidence to the measured candidate index",
     )
     documents.read("scripts/toolchain/select-native-release-evidence-v2.py")
+    attest = "name: Attest closed combined diagnostic subjects"
+    final_gate = "name: Verify genuine combined candidate provenance and final native evidence"
+    require(
+        readback.count(attest) == 1 and readback.count(final_gate) == 1
+        and readback.index(evidence_selector) < readback.index(attest) < readback.index(final_gate)
+        and "id: candidate-provenance" in readback
+        and "subject-checksums: ${{ runner.temp }}/release-candidate/subject-manifest.json" in readback,
+        "final diagnostic attestation must follow complete candidate/evidence assembly",
+    )
+    final_shell = readback.split(final_gate, 1)[1].split("      - name:", 1)[0]
+    verifier_commands = [part.split("--output", 1)[0] for part in final_shell.split("bash scripts/toolchain/verify-provenance-attestation.sh")[1:]]
+    require(
+        "PROVENANCE_BUNDLE: ${{ steps.candidate-provenance.outputs.bundle-path }}" in final_shell
+        and all(binding in final_shell for binding in (
+            "EXPECTED_INDEX_SHA: ${{ steps.candidate.outputs.index_sha256 }}",
+            "EXPECTED_SUBJECT_SHA: ${{ steps.candidate.outputs.subject_sha256 }}",
+            "EXPECTED_SELECTION_SHA: ${{ steps.candidate.outputs.selection_sha256 }}",
+            "EXPECTED_SUMMARY_SHA: ${{ steps.candidate.outputs.summary_sha256 }}",
+            "EXPECTED_INPUTS_SHA: ${{ steps.candidate.outputs.inputs_sha256 }}",
+            "EXPECTED_RUNTIME_SHA: ${{ steps.candidate.outputs.runtime_sha256 }}",
+        ))
+        and final_shell.count("bash scripts/toolchain/verify-provenance-attestation.sh") == 2
+        and all(all(argument in command for argument in (
+            '--subject-manifest "$subject" --subject-manifest-sha256 "$EXPECTED_SUBJECT_SHA"',
+            '--subject-dir "$release"',
+            '--repository "$GITHUB_REPOSITORY"',
+            '--signer-workflow "$GITHUB_REPOSITORY/.github/workflows/toolchain-release.yml"',
+            '--source-digest "$GITHUB_SHA" --source-ref "$GITHUB_REF"',
+            '--run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT"',
+        )) for command in verifier_commands)
+        and "os.O_EXCL | os.O_NOFOLLOW" in final_shell
+        and "toolchain producer record-qualification" not in final_shell
+        and "ulimit -f 8192; timeout --signal=KILL" in final_shell,
+        "final diagnostic provenance must use real bundle verification and independent held selectors without fake tag recording",
+    )
+    require(
+        '"$runtime" toolchain producer index' in final_shell
+        and '"$runtime" toolchain producer verify-release-evidence' in final_shell,
+        "final native diagnostic must call both current native stages",
+    )
+    final_index_command = final_shell.split('"$runtime" toolchain producer index', 1)[1].split('> "$final_index"', 1)[0]
+    final_evidence_command = final_shell.split('"$runtime" toolchain producer verify-release-evidence', 1)[1].split('> "$final_evidence"', 1)[0]
+    require(
+        final_shell.index("--output \"$RUNNER_TEMP/verified-staged-combined-provenance.json\"") < final_shell.index('"$runtime" toolchain producer index')
+        < final_shell.index('"$runtime" toolchain producer verify-release-evidence')
+        and all(argument in final_index_command for argument in (
+            '--directory "$release"', '--release-format family-v2 --lane-inputs "$candidate/lane-inputs.json"',
+            '--subject-manifest "$subject" --subject-manifest-sha256 "$EXPECTED_SUBJECT_SHA"',
+            '--stage final --format json',
+        ))
+        and all(argument in final_evidence_command for argument in (
+            '--inputs-sha256 "$EXPECTED_INPUTS_SHA" --index-sha256 "$EXPECTED_INDEX_SHA"',
+            '--selection "$selection" --selection-sha256 "$EXPECTED_SELECTION_SHA"',
+            '--subject-manifest "$subject" --subject-manifest-sha256 "$EXPECTED_SUBJECT_SHA"',
+            '--forbidden-prefix "$GITHUB_WORKSPACE" --forbidden-prefix "$RUNNER_TEMP"',
+        ))
+        and '([$selected[0].sdk_generations[] | [.sdk_id,.group_id,.target_profile,.host]] | sort)' in final_shell
+        and '($selected[0].lanes | keys | sort)' in final_shell
+        and '($selected[0].sdk_packages | keys | sort)' in final_shell,
+        "final native diagnostic must close complete compiler and SDK evidence after genuine staged provenance verification",
+    )
     require(
         "repository: metaneutrons/aros-tools\n          ref: ${{ needs.v2-prepare.outputs.tools_commit }}\n          persist-credentials: false\n          path: dependencies/aros-tools-fixtures" in readback
         and 'support="$GITHUB_WORKSPACE/dependencies/aros-tools-fixtures/crates/aros-common/tests/fixtures"' in readback
@@ -1037,10 +1101,10 @@ class CompilerSdkWorkflowV2Tests(unittest.TestCase):
                 with self.assertRaisesRegex(PolicyViolation, "fresh native plan"):
                     validate_v2_policy(documents)
 
-    def test_rejects_sdk_collector_attestation_write_permission(self) -> None:
+    def test_rejects_missing_candidate_attestation_write_permission(self) -> None:
         documents = self.new_documents()
         documents.set_text(WORKFLOW, mutate_job(
-            documents.text(WORKFLOW), "v2-readback", "attestations: read", "attestations: write",
+            documents.text(WORKFLOW), "v2-readback", "attestations: write", "attestations: read",
         ))
         with self.assertRaisesRegex(PolicyViolation, "non-publishing job scope"):
             validate_v2_policy(documents)
@@ -1135,6 +1199,24 @@ class CompilerSdkWorkflowV2Tests(unittest.TestCase):
                 documents = self.new_documents()
                 documents.set_text(WORKFLOW, mutate_job(documents.text(WORKFLOW), "v2-readback", before, after))
                 with self.assertRaisesRegex(PolicyViolation, "native evidence selection"):
+                    validate_v2_policy(documents)
+
+    def test_rejects_disconnected_final_native_diagnostic(self) -> None:
+        for before, after in (
+            ('subject-checksums: ${{ runner.temp }}/release-candidate/subject-manifest.json', 'subject-checksums: unbound.sha256'),
+            ('--source-digest "$GITHUB_SHA" --source-ref "$GITHUB_REF"', '--source-digest "$GITHUB_SHA" --source-ref refs/tags/fake'),
+            ('--run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT"', '--run-id "$GITHUB_RUN_ID"'),
+            ('--selection-sha256 "$EXPECTED_SELECTION_SHA"', '--selection-sha256 stale'),
+            ('--subject-manifest-sha256 "$EXPECTED_SUBJECT_SHA"', '--subject-manifest-sha256 stale'),
+            ('"$runtime" toolchain producer verify-release-evidence', '"$runtime" toolchain producer record-qualification'),
+            ('--stage final --format json', '--stage pre-attestation --format json'),
+            ('($selected[0].lanes | keys | sort)', '[]'),
+            ('([$selected[0].sdk_generations[] | [.sdk_id,.group_id,.target_profile,.host]] | sort)', '[]'),
+        ):
+            with self.subTest(before=before):
+                documents = self.new_documents()
+                documents.set_text(WORKFLOW, mutate_job(documents.text(WORKFLOW), "v2-readback", before, after))
+                with self.assertRaisesRegex(PolicyViolation, "final (diagnostic|native)"):
                     validate_v2_policy(documents)
 
     def test_rejects_missing_development_runtime_helper(self) -> None:

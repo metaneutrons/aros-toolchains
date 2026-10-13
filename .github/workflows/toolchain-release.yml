@@ -601,7 +601,9 @@ jobs:
       contents: read
       actions: read
       id-token: write
-      attestations: read
+      # This job also signs only the closed combined diagnostic candidate.
+      # It cannot create tags, drafts or releases (contents remains read-only).
+      attestations: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -621,6 +623,7 @@ jobs:
           persist-credentials: false
           path: dependencies/aros-tools-fixtures
       - name: Authenticate the complete SDK owner matrix
+        id: candidate
         env:
           GH_TOKEN: ${{ github.token }}
           EXPECTED_TOOLS: ${{ needs.v2-prepare.outputs.tools_commit }}
@@ -731,6 +734,200 @@ jobs:
             --sdk-fragment "$fragment" --sdk-fragment-sha256 "$fragment_sha" \
             --sdk-owner-root "$RUNNER_TEMP/complete-sdk-readback" \
             --index "$candidate_index" --index-sha256 "$candidate_index_sha" > "$evidence_selection"
+          subject_manifest="$RUNNER_TEMP/release-candidate/subject-manifest.json"
+          held_index_sha=$(jq -er '.outputs.index.sha256 | select(type == "string" and test("^[0-9a-f]{64}$"))' "$candidate_summary")
+          subject_sha=$(jq -er '.outputs.subject_manifest.sha256 | select(type == "string" and test("^[0-9a-f]{64}$"))' "$candidate_summary")
+          measured_subject_sha=$(shasum -a 256 "$subject_manifest" | awk '{print $1}')
+          [[ "$candidate_index_sha" == "$held_index_sha" && "$measured_subject_sha" == "$subject_sha" ]]
+          evidence_sha=$(shasum -a 256 "$evidence_selection" | awk '{print $1}')
+          summary_sha=$(shasum -a 256 "$candidate_summary" | awk '{print $1}')
+          printf 'index_sha256=%s\nsubject_sha256=%s\nselection_sha256=%s\nsummary_sha256=%s\ninputs_sha256=%s\nruntime_sha256=%s\n' \
+            "$held_index_sha" "$subject_sha" "$evidence_sha" "$summary_sha" "$inputs_sha" "$runtime_sha" >> "$GITHUB_OUTPUT"
+      - name: Attest closed combined diagnostic subjects
+        id: candidate-provenance
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373
+        with:
+          subject-checksums: ${{ runner.temp }}/release-candidate/subject-manifest.json
+      - name: Verify genuine combined candidate provenance and final native evidence
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PROVENANCE_BUNDLE: ${{ steps.candidate-provenance.outputs.bundle-path }}
+          EXPECTED_INDEX_SHA: ${{ steps.candidate.outputs.index_sha256 }}
+          EXPECTED_SUBJECT_SHA: ${{ steps.candidate.outputs.subject_sha256 }}
+          EXPECTED_SELECTION_SHA: ${{ steps.candidate.outputs.selection_sha256 }}
+          EXPECTED_SUMMARY_SHA: ${{ steps.candidate.outputs.summary_sha256 }}
+          EXPECTED_INPUTS_SHA: ${{ steps.candidate.outputs.inputs_sha256 }}
+          EXPECTED_RUNTIME_SHA: ${{ steps.candidate.outputs.runtime_sha256 }}
+        run: |
+          set -euo pipefail
+          set -C
+          runtime="$RUNNER_TEMP/diagnostic-runtime/bin/aros"
+          candidate="$RUNNER_TEMP/release-candidate"
+          release="$candidate/release"
+          subject="$candidate/subject-manifest.json"
+          selection="$RUNNER_TEMP/native-release-evidence-selection.json"
+          summary="$RUNNER_TEMP/release-candidate-summary.json"
+          verified="$RUNNER_TEMP/verified-combined-provenance.json"
+          final_index="$RUNNER_TEMP/final-combined-index.json"
+          final_evidence="$RUNNER_TEMP/final-combined-evidence.json"
+          for digest in "$EXPECTED_INDEX_SHA" "$EXPECTED_SUBJECT_SHA" "$EXPECTED_SELECTION_SHA" "$EXPECTED_SUMMARY_SHA" "$EXPECTED_INPUTS_SHA" "$EXPECTED_RUNTIME_SHA"; do
+            [[ "$digest" =~ ^[0-9a-f]{64}$ ]]
+          done
+          check_sha() {
+            local actual
+            actual=$(shasum -a 256 "$1" | awk '{print $1}')
+            [[ "$actual" == "$2" ]]
+          }
+          check_sha "$runtime" "$EXPECTED_RUNTIME_SHA"
+          check_sha "$summary" "$EXPECTED_SUMMARY_SHA"
+          check_sha "$selection" "$EXPECTED_SELECTION_SHA"
+          check_sha "$release/toolchain-index-v2.json" "$EXPECTED_INDEX_SHA"
+          check_sha "$subject" "$EXPECTED_SUBJECT_SHA"
+          check_sha "$release/toolchain-release-inputs-v2.json" "$EXPECTED_INPUTS_SHA"
+          # Reject oversized/nonregular input before hashing or external parsing.
+          bundle_sha=$(python3 -B - "$PROVENANCE_BUNDLE" <<'PY'
+          import hashlib
+          import os
+          from pathlib import Path
+          import stat
+          import sys
+          source = Path(sys.argv[1])
+          if not source.is_absolute() or '..' in source.parts or source.resolve(strict=True) != source or any(parent.is_symlink() for parent in (source, *source.parents)):
+              raise SystemExit('noncanonical provenance source')
+          with os.fdopen(os.open(source, os.O_RDONLY | os.O_NOFOLLOW), 'rb') as handle:
+              before = os.fstat(handle.fileno())
+              if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1 or before.st_uid != os.geteuid() or not 0 < before.st_size <= 16 * 1024 * 1024:
+                  raise SystemExit('invalid provenance bundle file')
+              raw = handle.read(16 * 1024 * 1024 + 1)
+              after = os.fstat(handle.fileno())
+          def fingerprint(value):
+              return (value.st_dev, value.st_ino, value.st_mode, value.st_nlink, value.st_uid, value.st_size, value.st_mtime_ns, value.st_ctime_ns)
+          if fingerprint(before) != fingerprint(after) or len(raw) != before.st_size:
+              raise SystemExit('provenance source changed during bounded read')
+          print(hashlib.sha256(raw).hexdigest())
+          PY
+          )
+          bash scripts/toolchain/verify-provenance-attestation.sh \
+            --subject-manifest "$subject" --subject-manifest-sha256 "$EXPECTED_SUBJECT_SHA" \
+            --subject-dir "$release" --bundle "$PROVENANCE_BUNDLE" \
+            --repository "$GITHUB_REPOSITORY" \
+            --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/toolchain-release.yml" \
+            --source-digest "$GITHUB_SHA" --source-ref "$GITHUB_REF" \
+            --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --output "$verified"
+          # Exclusive bounded copy. A diagnostic never fabricates provenance.
+          check_sha "$PROVENANCE_BUNDLE" "$bundle_sha"
+          python3 -B - "$PROVENANCE_BUNDLE" "$release/toolchain-provenance.sigstore.json" "$bundle_sha" <<'PY'
+          import hashlib
+          import os
+          from pathlib import Path
+          import stat
+          import sys
+          source, target, expected = sys.argv[1:]
+          for selected in (Path(source), Path(target).parent):
+              if not selected.is_absolute() or '..' in selected.parts or selected.resolve(strict=True) != selected or any(parent.is_symlink() for parent in (selected, *selected.parents)):
+                  raise SystemExit('noncanonical provenance path')
+          def fingerprint(value):
+              return (value.st_dev, value.st_ino, value.st_mode, value.st_nlink, value.st_uid, value.st_size, value.st_mtime_ns, value.st_ctime_ns)
+          flags = os.O_RDONLY | os.O_NOFOLLOW
+          with os.fdopen(os.open(source, flags), 'rb') as handle:
+              before = os.fstat(handle.fileno())
+              if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1 or before.st_uid != os.geteuid() or not 0 < before.st_size <= 16 * 1024 * 1024:
+                  raise SystemExit('invalid provenance bundle file')
+              raw = handle.read(16 * 1024 * 1024 + 1)
+              after = os.fstat(handle.fileno())
+          if fingerprint(before) != fingerprint(after) or len(raw) != before.st_size or hashlib.sha256(raw).hexdigest() != expected:
+              raise SystemExit('provenance bundle changed during copy')
+          with os.fdopen(os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600), 'wb') as handle:
+              handle.write(raw)
+              handle.flush()
+              os.fsync(handle.fileno())
+          PY
+          bash scripts/toolchain/verify-provenance-attestation.sh \
+            --subject-manifest "$subject" --subject-manifest-sha256 "$EXPECTED_SUBJECT_SHA" \
+            --subject-dir "$release" --bundle "$release/toolchain-provenance.sigstore.json" \
+            --repository "$GITHUB_REPOSITORY" \
+            --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/toolchain-release.yml" \
+            --source-digest "$GITHUB_SHA" --source-ref "$GITHUB_REF" \
+            --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --output "$RUNNER_TEMP/verified-staged-combined-provenance.json"
+          check_sha "$runtime" "$EXPECTED_RUNTIME_SHA"
+          (ulimit -f 8192; timeout --signal=KILL 3600 "$runtime" toolchain producer index \
+            --directory "$release" --release-id "toolchain-dev-${GITHUB_SHA:0:12}" \
+            --base-url "https://github.com/$GITHUB_REPOSITORY/releases/download/toolchain-dev-${GITHUB_SHA:0:12}" \
+            --release-format family-v2 --lane-inputs "$candidate/lane-inputs.json" \
+            --subject-manifest "$subject" --subject-manifest-sha256 "$EXPECTED_SUBJECT_SHA" \
+            --forbidden-prefix "$GITHUB_WORKSPACE" --forbidden-prefix "$RUNNER_TEMP" \
+            --stage final --format json) > "$final_index" 2> "$RUNNER_TEMP/final-combined-index.stderr.log"
+          check_sha "$runtime" "$EXPECTED_RUNTIME_SHA"
+          check_sha "$selection" "$EXPECTED_SELECTION_SHA"
+          (ulimit -f 8192; timeout --signal=KILL 5400 "$runtime" toolchain producer verify-release-evidence \
+            --directory "$release" --release-id "toolchain-dev-${GITHUB_SHA:0:12}" \
+            --base-url "https://github.com/$GITHUB_REPOSITORY/releases/download/toolchain-dev-${GITHUB_SHA:0:12}" \
+            --inputs-sha256 "$EXPECTED_INPUTS_SHA" --index-sha256 "$EXPECTED_INDEX_SHA" \
+            --selection "$selection" --selection-sha256 "$EXPECTED_SELECTION_SHA" \
+            --subject-manifest "$subject" --subject-manifest-sha256 "$EXPECTED_SUBJECT_SHA" \
+            --forbidden-prefix "$GITHUB_WORKSPACE" --forbidden-prefix "$RUNNER_TEMP" \
+            --format json) > "$final_evidence" 2> "$RUNNER_TEMP/final-combined-evidence.stderr.log"
+          check_sha "$runtime" "$EXPECTED_RUNTIME_SHA"
+          check_sha "$summary" "$EXPECTED_SUMMARY_SHA"
+          check_sha "$selection" "$EXPECTED_SELECTION_SHA"
+          check_sha "$release/toolchain-index-v2.json" "$EXPECTED_INDEX_SHA"
+          check_sha "$subject" "$EXPECTED_SUBJECT_SHA"
+          checksums_sha=$(shasum -a 256 "$release/SHA256SUMS" | awk '{print $1}')
+          staged_bundle_sha=$(shasum -a 256 "$release/toolchain-provenance.sigstore.json" | awk '{print $1}')
+          staged_bundle_size=$(wc -c < "$release/toolchain-provenance.sigstore.json" | tr -d '[:space:]')
+          [[ "$staged_bundle_sha" == "$bundle_sha" ]]
+          jq -e --arg index "$EXPECTED_INDEX_SHA" --arg subject "$EXPECTED_SUBJECT_SHA" \
+            --arg release_id "toolchain-dev-${GITHUB_SHA:0:12}" --arg index_path "$release/toolchain-index-v2.json" \
+            --arg subject_path "$subject" --arg checksums_path "$release/SHA256SUMS" \
+            --arg checksums "$checksums_sha" --arg provenance "$staged_bundle_sha" \
+            --argjson provenance_size "$staged_bundle_size" \
+            --slurpfile summary "$summary" '
+            .schema == "aros-toolchain-producer-stage-v2" and .operation == "index" and
+            .release_format == "family-v2" and .stage == "final" and
+            .release_id == $release_id and .index == $index_path and .subject_manifest == $subject_path and
+            .index_sha256 == $index and .subject_manifest_sha256 == $subject and
+            .checksums == $checksums_path and .checksums_sha256 == $checksums and .provenance_sha256 == $provenance and
+            .provenance_size == $provenance_size and
+            .subject_manifest_size == $summary[0].outputs.subject_manifest.size and
+            .subject_count == $summary[0].counts.subject_count and
+            .inventory_count == $summary[0].counts.inventory_count and
+            .lane_count == $summary[0].counts.lane_count and .sdk_count == $summary[0].counts.sdk_count
+          ' "$final_index" >/dev/null
+          jq -e --arg inputs "$EXPECTED_INPUTS_SHA" --arg index "$EXPECTED_INDEX_SHA" \
+            --arg selection "$EXPECTED_SELECTION_SHA" --arg subject "$EXPECTED_SUBJECT_SHA" \
+            --arg release_id "toolchain-dev-${GITHUB_SHA:0:12}" --arg checksums "$checksums_sha" --arg provenance "$staged_bundle_sha" \
+            --slurpfile summary "$summary" --slurpfile selected "$selection" '
+            .schema == "aros-toolchain-producer-stage-v2" and .operation == "verify-release-evidence" and
+            .release_format == "family-v2" and .assurance == "byte-consistency-only" and
+            .release_id == $release_id and .checksums_sha256 == $checksums and .provenance_sha256 == $provenance and
+            .inputs_sha256 == $inputs and .index_sha256 == $index and
+            .selection_sha256 == $selection and .subject_manifest_sha256 == $subject and
+            .lane_count == $summary[0].counts.lane_count and .build_count == (.lane_count * 2) and
+            (.lanes | length) == .lane_count and .sdk_count == $summary[0].counts.sdk_count and
+            (.sdks | length) == .sdk_count and
+            .sdk_generation_count == ($selected[0].sdk_generations | length) and
+            (.sdk_generations | length) == .sdk_generation_count and
+            ([.lanes[].asset] | sort) == ($selected[0].lanes | keys | sort) and
+            ([.sdks[].sdk_id] | sort) == ($selected[0].sdk_packages | keys | sort) and
+            ([.sdk_generations[] | [.sdk_id,.group_id,.target_profile,.host]] | sort) ==
+              ([$selected[0].sdk_generations[] | [.sdk_id,.group_id,.target_profile,.host]] | sort) and
+            all(.lanes[]; . as $lane | $selected[0].lanes[$lane.asset] as $expected |
+              $lane.comparison_sha256 == $expected.comparison.sha256 and
+              $lane.compatibility_inputs_sha256 == $expected.compatibility.inputs.sha256 and
+              $lane.compatibility_manifest_sha256 == $expected.compatibility.manifest_sha256) and
+            all(.sdks[]; . as $sdk | $selected[0].sdk_packages[$sdk.sdk_id] as $expected |
+              $sdk.tree_sha256 == $expected.tree_sha256 and $sdk.archive_sha256 == $expected.archive_sha256 and
+              $sdk.archive_size == $expected.archive_size) and
+            all(.sdk_generations[]; . as $generation |
+              any($selected[0].sdk_generations[]; .sdk_id == $generation.sdk_id and .group_id == $generation.group_id and
+                .target_profile == $generation.target_profile and .host == $generation.host and
+                .record.sha256 == $generation.generation_record_sha256 and
+                .compatibility.manifest_sha256 == $generation.compatibility_manifest_sha256))
+          ' "$final_evidence" >/dev/null
+          # Branch attestation and complete byte readback are diagnostic evidence,
+          # never a tagged qualification record or permission to publish.
       - name: Retain diagnostic selection metadata only
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -743,6 +940,12 @@ jobs:
             ${{ runner.temp }}/compiler-candidate-required-paths.json
             ${{ runner.temp }}/release-candidate-summary.json
             ${{ runner.temp }}/native-release-evidence-selection.json
+            ${{ runner.temp }}/verified-combined-provenance.json
+            ${{ runner.temp }}/verified-staged-combined-provenance.json
+            ${{ runner.temp }}/final-combined-index.json
+            ${{ runner.temp }}/final-combined-index.stderr.log
+            ${{ runner.temp }}/final-combined-evidence.json
+            ${{ runner.temp }}/final-combined-evidence.stderr.log
             ${{ runner.temp }}/release-candidate/lane-inputs.json
             ${{ runner.temp }}/release-candidate/subject-manifest.json
             ${{ runner.temp }}/release-candidate/release/toolchain-index-v2.json
