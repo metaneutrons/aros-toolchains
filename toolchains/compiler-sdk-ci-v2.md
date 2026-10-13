@@ -92,6 +92,15 @@ repeat this check with contents-write visibility before creating anything.
 The adapter is not wired into a workflow while that start boundary, released
 runtime qualification and complete publication path remain unfinished.
 
+`check-v2-runtime-interface.py` checks the declared critical native producer and
+SDK command interfaces of an independently SHA-selected executable. It checks
+the expected version, required options, and unchanged bytes before writing an
+interface-only receipt. A version match alone is insufficient: a development
+V2 binary can expose interfaces absent from an older published binary with the
+same version string. Runtime publication authenticity, native behavior and the
+complete compiler/SDK qualification remain separate requirements. This helper
+is not yet a protected release-start or publication gate.
+
 Preparation jobs have only `contents: read`. SDK owning jobs additionally need
 `actions: read`, `id-token: write` and `attestations: write` for original artifact
 observation and keyless transport signing. They have no publication environment,
