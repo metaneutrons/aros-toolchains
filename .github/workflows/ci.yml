@@ -224,36 +224,25 @@ jobs:
           origin = importlib.util.module_from_spec(spec)
           spec.loader.exec_module(origin)
           context = origin.context_from_environment('.github/workflows/ci.yml')
-          pages = origin.jobs_for(context)
-          jobs = origin.complete_jobs(pages)
-          owners = [job for job in jobs if job['name'] == 'Artifact origin probe']
-          origin.require(len(owners) == 1, 'diagnostic owner is not unique')
-          owner = {'id': owners[0]['id'], 'name': 'Artifact origin probe'}
-          origin.select_source_job(pages, context, owner)
-          artifacts = {}
-          for key, prefix, variable in (
-              ('artifact', 'artifact-origin-payload', 'PAYLOAD_ID'),
-              ('proof', 'artifact-origin-proof', 'PROOF_ID'),
-          ):
-              identity = origin.positive(os.environ[variable])
-              name = f'{prefix}-{context["run_id"]}-{context["run_attempt"]}'
-              observed = origin.gh_json(['api', f'repos/{context["repository"]}/actions/artifacts/{identity}'])
-              digest = observed.get('digest', '')
-              origin.require(isinstance(digest, str) and digest.startswith('sha256:'),
-                             'provider upload has no SHA-256 digest')
-              artifacts[key] = origin.select_artifact(observed, context, identity, name, digest[7:])
-          selected = {
-              'schema': origin.SELECTION_SCHEMA, 'context': context,
-              'selection': {'role': 'diagnostic', 'group': 'probe',
-                  'host': 'linux-x86_64', 'profile': 'fixture', 'copy': 'none'},
-              'job': owner, **artifacts,
-          }
-          origin.source_selection(selected, context, same_attempt=True)
           root = Path(os.environ['RUNNER_TEMP']).resolve() / 'same-attempt-origin'
           root.mkdir(mode=0o700)
-          with (root / 'selection.json').open('xb') as handle:
-              handle.write(origin.canonical(selected))
+          with (root / 'source-context.json').open('xb') as handle:
+              handle.write(origin.canonical(context))
           PY
+          root="$RUNNER_TEMP/same-attempt-origin"
+          context_sha=$(shasum -a 256 "$root/source-context.json" | awk '{print $1}')
+          python3 -B scripts/toolchain/select-owner-artifacts-v2.py \
+            --source-context "$root/source-context.json" --source-context-sha256 "$context_sha" \
+            --job-name 'Artifact origin probe' \
+            --payload-name "artifact-origin-payload-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" \
+            --proof-name "artifact-origin-proof-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" \
+            --role diagnostic --group probe --host linux-x86_64 --profile fixture --copy none \
+            > "$root/selection.tmp.json"
+          jq -e --argjson payload_id "$PAYLOAD_ID" --argjson proof_id "$PROOF_ID" \
+            '.artifact.id == $payload_id and .proof.id == $proof_id' \
+            "$root/selection.tmp.json" >/dev/null
+          test ! -e "$root/selection.json" && test ! -L "$root/selection.json"
+          mv "$root/selection.tmp.json" "$root/selection.json"
       - name: Authenticate and retain raw transport without extraction
         run: |
           set -euo pipefail

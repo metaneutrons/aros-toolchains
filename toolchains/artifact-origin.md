@@ -117,6 +117,23 @@ the original provider proof or the complete release evidence.
 
 ## Explicit source-owner verification
 
+`select-owner-artifacts-v2.py` constructs the source selection from current
+provider metadata, before any origin record or payload is read. Independently
+select the canonical source context and its raw SHA-256, exact successful job
+name, lane and exact payload/proof artifact names. The selector requires
+complete attempt-specific job pages and complete run artifact pages; duplicate
+matches, failed jobs, expired artifacts and mismatched provider identities fail
+closed. It emits the numeric IDs, digests and sizes for the existing selection
+schema, and rechecks the source context before emitting any result.
+
+This is metadata selection only. GitHub artifact metadata does not expose an
+owning-job identity or attempt, and this helper does not invent one. The signed
+origin and its original job/check join must still be authenticated by
+`artifact-origin.py verify-source` in the actual reader invocation. Do not use
+the selection alone to admit a compiler, SDK or release. Payload/proof names
+come from the independently reviewed workflow contract, not a signed record,
+listing order or creation timestamp.
+
 `verify-source --workflow CALLER_WORKFLOW --job-name CALLER_JOB` requires
 an absolute `--source-selection` file path. It never
 overrides `GITHUB_*` to impersonate the original run. The current caller's

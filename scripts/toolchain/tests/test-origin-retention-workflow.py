@@ -56,10 +56,8 @@ fixture = json.loads(Path(os.environ['MOCK_PROVIDER']).read_text())
 endpoint = sys.argv[-1]
 if endpoint.endswith('/jobs?per_page=100'):
     selected = fixture['jobs']
-elif endpoint.endswith('/artifacts/101'):
-    selected = fixture['payload']
-elif endpoint.endswith('/artifacts/102'):
-    selected = fixture['proof']
+elif endpoint.endswith('/artifacts?per_page=100'):
+    selected = [{'total_count': 2, 'artifacts': [fixture['payload'], fixture['proof']]}]
 else:
     raise SystemExit('unexpected mocked provider request')
 print(json.dumps(selected))
@@ -91,7 +89,7 @@ print(json.dumps(selected))
         fixture["jobs"][0] = {"total_count": 2, "jobs": [fixture["jobs"][0]["jobs"][0], duplicate]}
         completed, selected = self.execute(fixture)
         self.assertNotEqual(completed.returncode, 0)
-        self.assertIn("diagnostic owner is not unique", completed.stderr)
+        self.assertIn("source job name does not select exactly one attempt job", completed.stderr)
         self.assertIsNone(selected)
 
     def test_unsuccessful_owner_is_rejected_without_selection(self):
@@ -113,6 +111,13 @@ print(json.dumps(selected))
                 completed, selected = self.execute(fixture)
                 self.assertNotEqual(completed.returncode, 0)
                 self.assertIsNone(selected)
+
+    def test_provider_selection_must_match_original_job_output_ids(self):
+        fixture = observations()
+        fixture["payload"]["id"] = 103
+        completed, selected = self.execute(fixture)
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertIsNone(selected)
 
 
 if __name__ == "__main__":
