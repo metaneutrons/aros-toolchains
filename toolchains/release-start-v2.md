@@ -337,6 +337,18 @@ this composition does not replace that publication-authentication gate. It has
 no CLI/workflow entry point, dispatches nothing and reports only authenticated
 claim-upload assurance, not native qualification or publication authority.
 
+`scripts/toolchain/construct-compiler-sdk-start-v2.py` is an inactive unsigned
+record constructor. Its current supported start host is the fixed hosted
+`ubuntu-24.04` Linux x64 job. It derives the original context from runner
+environment/OIDC and provider jobs; binds captured completion-event and source
+CI repository IDs, exact CI attempt, clean checkout and frozen Git inputs;
+derives runtime digests from retained files and rechecks candidate, runtime,
+source and own job before returning. The signed-start reader independently
+checks that fixed provider runner label in both job snapshots. Construction
+does not create candidates, authenticate publication on behalf of the caller,
+sign or retain records, consume claims, or activate workflows. Those genuine
+provider, admission/runtime-authentication and publication gates remain open.
+
 The released V2 runtime, source qualification and complete compiler/SDK matrix
 remain prerequisites. This design neither changes source pins nor waives
 missing source authorization. It creates no environments, grants, tags,
