@@ -128,3 +128,29 @@ Supplied tag-object metadata and a binary hash do not establish those properties
 This adapter neither creates tags/releases nor grants publication authority.
 Its synthetic process-boundary tests exercise sequencing and rejection, not a
 real signed-production invocation or successful compiler/SDK qualification.
+
+## Independently observed V2 recovery request
+
+`prepare-recovery-request-v2.py` accepts separate, hash-selected run, annotated
+tag and attestation observations. It does not derive those observations from
+the qualification document. The protected caller must first authenticate them
+against the provider, Git repository and signature verifier.
+
+Only `packaging-recovery` after `packaging`, or `compatibility-replay` after
+`compatibility-harness`, is eligible. Compiler, configure, comparison, actual
+compatibility and attestation failures are not recoverable through this route.
+Packaging requires an independently observed absent handoff with a fresh
+SemVer tag object peeling to the original producer commit. Replay forbids a
+handoff. The adapter creates no tags and performs no recovery or publication.
+
+The adapter invokes native `producer verify-recovery` on the original complete
+compiler and SDK closure. It exposes the unchanged request only after the
+native decision, selected digests and late input readbacks agree. Its synthetic
+process-boundary tests establish rejection and sequencing, not authentication
+or a successful production recovery. A published runtime, authenticated
+original owners and complete isolated release audit remain separate gates.
+
+The adapter joins selected package digests, product IDs, generation tuples and
+qualification receipts. Additional detailed fields in `native_result` are
+reported from the hash-selected native runtime, not independently re-derived
+or authenticated by the Python adapter. They are not a publication decision.
