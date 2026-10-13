@@ -1,7 +1,8 @@
 # Compiler and SDK diagnostic qualification
 
-The existing `toolchain-release.yml` workflow has one non-publishing
-`qualify-v2` mode. The narrowed tier is Linux x86-64 only. Its compiler groups,
+The `toolchain-release.yml` workflow has a narrowed `qualify-v2` mode and a
+complete `qualify-v2-full` mode; both are nonpublishing. The narrowed tier is
+Linux x86-64 only. Its compiler groups,
 SDK product versions and source selections are declared in
 `compiler-sdk-ci-selection-v2.json`; source profiles and sealed consumer
 contracts remain owned by AROS-NX.
@@ -20,8 +21,10 @@ contracts remain owned by AROS-NX.
    native verification: zipped directory artifacts normalize permissions,
    which invalidates the mode-bound Cargo vendor receipt. Do not repair the
    receipt or normalize the downloaded vendor files to bypass that failure.
-4. In each owning job, build and read back two independent Family-V2 compiler
-   packages, compare their bytes, then run `aros sdk build` against the selected
+4. Narrow diagnostics build both Family-V2 compiler copies in one job. Full
+   qualification builds each copy in its own original job; the SDK job
+   authenticates and reads back both owners without rebuilding. Compare their
+   bytes, then run `aros sdk build` against the selected
    package. That command includes the source-owned SDK roots, ordinary C/C++
    consumers, relocation, generation evidence and package readback.
 5. After successful generation, stage every plan-selected SDK product as a
