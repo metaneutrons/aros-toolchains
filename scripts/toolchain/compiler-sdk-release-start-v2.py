@@ -133,9 +133,8 @@ def observe_start_run(context: dict) -> dict:
     return run
 
 
-def observe_candidate(record: dict) -> None:
-    ADMISSION.require_active_repository()
-    tag, draft = record["tag"], record["draft"]
+def observe_tag(tag: dict) -> None:
+    """Reobserve the exact annotated ref/object; not candidate authority."""
     ref = ADMISSION.api(f'repos/{ADMISSION.REPOSITORY}/git/ref/tags/{tag["name"]}')
     require(type(ref) is dict and ref.get("ref") == f'refs/tags/{tag["name"]}'
             and ref.get("object") == {"type": "tag", "sha": tag["object"],
@@ -157,6 +156,12 @@ def observe_candidate(record: dict) -> None:
     except (ValueError, OverflowError):
         raise StartError("remote tag timestamp is malformed") from None
     require(epoch == tag["epoch"], "remote tag timestamp differs from the start")
+
+
+def observe_candidate(record: dict) -> None:
+    ADMISSION.require_active_repository()
+    tag, draft = record["tag"], record["draft"]
+    observe_tag(tag)
     release = ADMISSION.api(f'repos/{ADMISSION.REPOSITORY}/releases/{draft["id"]}')
     require(type(release) is dict and type(release.get("id")) is int and release["id"] == draft["id"]
             and release.get("tag_name") == tag["name"] and release.get("target_commitish") == tag["commit"]

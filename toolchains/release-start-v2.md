@@ -294,6 +294,22 @@ and the start before using it, then bind one confirmed HTTP 201 and numeric
 asset readback to those exact bytes. No workflow calls the codec yet, and no
 exclusive consumption or native dispatch has been qualified by its fixtures.
 
+`scripts/toolchain/compiler-sdk-claim-upload-v2.py` is an inactive internal
+post-authentication primitive. It requires that exact canonical claim, rechecks
+the active repository and exact empty private candidate, performs one bounded
+upload call, and admits only a confirmed HTTP 201 with the expected numeric
+asset identity, size, MIME type and digest. It then downloads by numeric ID and
+requires the original bytes plus an exact private-draft/sole-claim readback.
+All candidate observations use the same pinned GitHub.com job-token transport;
+the active repository and exact annotated tag are rechecked after readback.
+An occupied name, unknown outcome or failed readback stops without another
+upload, rename, deletion or native dispatch. The future controller must
+authenticate all provider/crypto boundaries before calling this primitive;
+its return value alone is not dispatch authorization. No workflow calls it.
+The CLI transport's numeric download was observed read-only against a public
+checksum asset with HTTP 200 and exact byte count; this does not qualify a
+real upload, job-token custody, private claim race or native dispatch.
+
 The released V2 runtime, source qualification and complete compiler/SDK matrix
 remain prerequisites. This design neither changes source pins nor waives
 missing source authorization. It creates no environments, grants, tags,
