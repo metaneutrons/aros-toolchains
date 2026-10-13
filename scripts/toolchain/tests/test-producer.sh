@@ -454,6 +454,7 @@ python3 -B "$source_root/scripts/toolchain/tests/test-native-release-evidence-se
 python3 -B "$source_root/scripts/toolchain/tests/test-final-candidate-workflow-v2.py"
 python3 -B "$source_root/scripts/toolchain/tests/test-record-complete-qualification-v2.py"
 python3 -B "$source_root/scripts/toolchain/tests/test-prepare-recovery-request-v2.py"
+python3 -B "$source_root/scripts/toolchain/tests/test-audit-isolated-release-v2.py"
 python3 -B "$source_root/scripts/toolchain/tests/test-compiler-owner-matrix-v2.py"
 python3 -B "$source_root/scripts/toolchain/tests/test-collect-compiler-owners-v2.py"
 bash -n "$source_root/scripts/toolchain/collect-compiler-owners-v2.sh"

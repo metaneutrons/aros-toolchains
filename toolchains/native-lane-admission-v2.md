@@ -154,3 +154,22 @@ The adapter joins selected package digests, product IDs, generation tuples and
 qualification receipts. Additional detailed fields in `native_result` are
 reported from the hash-selected native runtime, not independently re-derived
 or authenticated by the Python adapter. They are not a publication decision.
+
+## Read-only isolated V2 release audit
+
+`audit-isolated-release-v2.py` checks an already isolated final inventory against
+an independently held original qualification document. It reuses the closed V2
+index, candidate summary and compiler/SDK selection; it does not assume the
+historical 44-file inventory or a fixed replacement count.
+
+The adapter verifies signed provenance for the exact selected tag, commit, run
+and attempt, then invokes native `producer verify-qualification`. The explicit
+current-time policy must respect the original qualification lifetime. It never
+records replacement qualification, runs an index-writing stage, downloads or
+publishes assets. Its fresh operation directory contains audit diagnostics and
+policy only; the original release and evidence bytes remain unchanged.
+
+Provider download selection, original-owner authentication, annotated-tag
+observation and released-runtime authentication remain protected-caller gates.
+The adapter's synthetic fixtures prove its local sequencing and failure
+boundaries, not a signed production release or final public download URLs.
