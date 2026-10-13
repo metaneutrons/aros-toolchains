@@ -54,6 +54,25 @@ def context() -> dict:
     }
 
 
+def provider_run(ctx: dict | None = None, *, event: str = "push", path_with_ref: bool = False) -> dict:
+    ctx = context() if ctx is None else ctx
+    suffix = ctx["source_ref"].split("/", 2)[2]
+    path = ctx["workflow"]
+    if path_with_ref:
+        path = f'{path}@{ctx["source_ref"]}'
+    return {
+        "id": ctx["run_id"],
+        "run_attempt": ctx["run_attempt"],
+        "head_sha": ctx["producer_commit"],
+        "head_branch": suffix,
+        "path": path,
+        "head_repository": {"id": ctx["repository_id"], "full_name": ctx["repository"]},
+        "event": event,
+        "status": "in_progress",
+        "conclusion": None,
+    }
+
+
 def claims(now: int) -> dict:
     ctx = context()
     return {
@@ -66,6 +85,7 @@ def claims(now: int) -> dict:
         "workflow_ref": f'{ctx["repository"]}/{ctx["workflow"]}@{ctx["source_ref"]}',
         "workflow_sha": ctx["producer_commit"],
         "runner_environment": "github-hosted",
+        "event_name": "push",
         "run_id": str(ctx["run_id"]),
         "run_attempt": str(ctx["run_attempt"]),
         "check_run_id": str(CHECK_RUN_ID),
@@ -254,6 +274,70 @@ class CanonicalMetadataTests(unittest.TestCase):
                     origin.parse_json(raw)
 
 
+class ProviderRunEventTests(unittest.TestCase):
+    def test_observes_supported_actual_events_for_branch_and_tag_refs(self) -> None:
+        cases = (
+            ("push branch", "refs/heads/main", "push", False),
+            ("push tag", "refs/tags/v1.2.3", "push", True),
+            ("dispatch tag", "refs/tags/release/candidate", "workflow_dispatch", False),
+            ("workflow run main", "refs/heads/main", "workflow_run", True),
+        )
+        for label, source_ref, event, path_with_ref in cases:
+            with self.subTest(case=label):
+                ctx = context()
+                ctx["source_ref"] = source_ref
+                observed = provider_run(ctx, event=event, path_with_ref=path_with_ref)
+                endpoint = (f"repos/{REPOSITORY}/actions/runs/{RUN_ID}"
+                            f"/attempts/{RUN_ATTEMPT}")
+                with mock.patch.object(origin, "gh_json", return_value=observed) as mocked_gh:
+                    self.assertEqual(origin.observe_run_event(ctx), event)
+                mocked_gh.assert_called_once_with(["api", endpoint])
+
+    def test_rejects_unsupported_missing_changed_and_malformed_run_fields(self) -> None:
+        invalid = (
+            ("missing event", lambda run: run.pop("event")),
+            ("unknown event", lambda run: run.__setitem__("event", "pull_request")),
+            ("malformed event", lambda run: run.__setitem__("event", 17)),
+            ("missing run id", lambda run: run.pop("id")),
+            ("run id", lambda run: run.__setitem__("id", RUN_ID + 1)),
+            ("malformed run id", lambda run: run.__setitem__("id", "123456")),
+            ("missing run attempt", lambda run: run.pop("run_attempt")),
+            ("changed run attempt", lambda run: run.__setitem__("run_attempt", RUN_ATTEMPT + 1)),
+            ("run attempt", lambda run: run.__setitem__("run_attempt", str(RUN_ATTEMPT))),
+            ("boolean run attempt", lambda run: run.__setitem__("run_attempt", True)),
+            ("boolean run id", lambda run: run.__setitem__("id", True)),
+            ("missing commit", lambda run: run.pop("head_sha")),
+            ("commit", lambda run: run.__setitem__("head_sha", "f" * 40)),
+            ("missing branch", lambda run: run.pop("head_branch")),
+            ("branch", lambda run: run.__setitem__("head_branch", "other")),
+            ("branch type", lambda run: run.__setitem__("head_branch", 17)),
+            ("missing workflow path", lambda run: run.pop("path")),
+            ("workflow path type", lambda run: run.__setitem__("path", 17)),
+            ("workflow path", lambda run: run.__setitem__("path", WORKFLOW + "@refs/heads/other")),
+            ("missing repository", lambda run: run.pop("head_repository")),
+            ("missing repository name", lambda run: run["head_repository"].pop("full_name")),
+            ("repository name type", lambda run: run["head_repository"].__setitem__("full_name", 17)),
+            ("repository name", lambda run: run["head_repository"].__setitem__("full_name", "other/project")),
+            ("missing repository id", lambda run: run["head_repository"].pop("id")),
+            ("repository id", lambda run: run["head_repository"].__setitem__("id", REPOSITORY_ID + 1)),
+            ("repository id type", lambda run: run["head_repository"].__setitem__("id", "7890")),
+            ("malformed repository id", lambda run: run["head_repository"].__setitem__("id", True)),
+        )
+        for label, mutate in invalid:
+            with self.subTest(field=label):
+                observed = provider_run()
+                mutate(observed)
+                with mock.patch.object(origin, "gh_json", return_value=observed):
+                    with self.assertRaises(origin.OriginError):
+                        origin.observe_run_event(context())
+
+    def test_rejects_provider_api_failures_without_fallback(self) -> None:
+        with mock.patch.object(origin, "gh_json", side_effect=origin.OriginError("provider unavailable")) as mocked:
+            with self.assertRaisesRegex(origin.OriginError, "provider unavailable"):
+                origin.observe_run_event(context())
+        mocked.assert_called_once()
+
+
 class OidcClaimTests(unittest.TestCase):
     def setUp(self) -> None:
         self.now = 1_800_000_000
@@ -261,11 +345,43 @@ class OidcClaimTests(unittest.TestCase):
         self.ctx = context()
 
     def test_exact_hosted_workflow_source_times_and_current_check_id(self) -> None:
-        self.assertEqual(origin.require_oidc_claims(self.valid, self.ctx, self.now), CHECK_RUN_ID)
+        self.assertEqual(origin.require_oidc_claims(
+            self.valid, self.ctx, self.now, expected_event="push"), CHECK_RUN_ID)
 
     def test_accepts_only_the_exact_direct_workflow_self_reference_pair(self) -> None:
         direct = dict(self.valid, job_workflow_ref=self.valid["workflow_ref"], job_workflow_sha=COMMIT)
-        self.assertEqual(origin.require_oidc_claims(direct, self.ctx, self.now), CHECK_RUN_ID)
+        self.assertEqual(origin.require_oidc_claims(
+            direct, self.ctx, self.now, expected_event="push"), CHECK_RUN_ID)
+
+    def test_requires_oidc_event_name_to_match_the_explicit_provider_event(self) -> None:
+        for label, fields in (("missing", {}), ("different", {"event_name": "workflow_run"}),
+                              ("unknown", {"event_name": "pull_request"})):
+            with self.subTest(event=label):
+                observed = dict(self.valid)
+                if label == "missing":
+                    del observed["event_name"]
+                else:
+                    observed.update(fields)
+                with self.assertRaisesRegex(origin.OriginError, "OIDC event differs"):
+                    origin.require_oidc_claims(observed, self.ctx, self.now, expected_event="push")
+        unsupported = dict(self.valid, event_name="pull_request")
+        with self.assertRaisesRegex(origin.OriginError, "OIDC event differs"):
+            origin.require_oidc_claims(unsupported, self.ctx, self.now,
+                                       expected_event="pull_request")
+
+    def test_supported_oidc_events_preserve_the_exact_branch_or_tag_context(self) -> None:
+        for event, ref in (("push", "refs/tags/v1.2.3"),
+                           ("workflow_dispatch", "refs/tags/v1.2.3"),
+                           ("workflow_run", "refs/heads/main")):
+            with self.subTest(event=event, ref=ref):
+                ctx = dict(self.ctx, source_ref=ref)
+                observed = dict(self.valid, event_name=event, ref=ref,
+                                workflow_ref=f'{ctx["repository"]}/{ctx["workflow"]}@{ref}')
+                self.assertEqual(origin.require_oidc_claims(
+                    observed, ctx, self.now, expected_event=event), CHECK_RUN_ID)
+        dynamic = dict(self.valid, event_name="dynamic")
+        with self.assertRaisesRegex(origin.OriginError, "OIDC event differs"):
+            origin.require_oidc_claims(dynamic, self.ctx, self.now, expected_event="dynamic")
 
     def test_rejects_mismatched_audience_repository_source_workflow_or_runner(self) -> None:
         mismatches = {
@@ -283,7 +399,7 @@ class OidcClaimTests(unittest.TestCase):
                 observed = dict(self.valid)
                 observed[key] = value
                 with self.assertRaises(origin.OriginError):
-                    origin.require_oidc_claims(observed, self.ctx, self.now)
+                    origin.require_oidc_claims(observed, self.ctx, self.now, expected_event="push")
 
     def test_rejects_mismatched_run_attempt_and_repository_ids(self) -> None:
         for key, value in (("repository_id", "7891"), ("run_id", str(RUN_ID + 1)),
@@ -292,7 +408,7 @@ class OidcClaimTests(unittest.TestCase):
                 observed = dict(self.valid)
                 observed[key] = value
                 with self.assertRaises(origin.OriginError):
-                    origin.require_oidc_claims(observed, self.ctx, self.now)
+                    origin.require_oidc_claims(observed, self.ctx, self.now, expected_event="push")
 
     def test_rejects_missing_or_invalid_check_id_reusable_job_and_expired_token(self) -> None:
         missing_check = dict(self.valid)
@@ -304,7 +420,7 @@ class OidcClaimTests(unittest.TestCase):
                                ("expired", expired), ("invalid check", invalid_check)):
             with self.subTest(case=name):
                 with self.assertRaises(origin.OriginError):
-                    origin.require_oidc_claims(observed, self.ctx, self.now)
+                    origin.require_oidc_claims(observed, self.ctx, self.now, expected_event="push")
 
     def test_job_workflow_diagnostics_are_closed_and_still_fail_before_recording(self) -> None:
         cases = (
@@ -325,7 +441,8 @@ class OidcClaimTests(unittest.TestCase):
         for fields, shape in cases:
             with self.subTest(shape=shape):
                 with self.assertRaises(origin.OriginError) as caught:
-                    origin.require_oidc_claims(dict(self.valid, **fields), self.ctx, self.now)
+                    origin.require_oidc_claims(dict(self.valid, **fields), self.ctx, self.now,
+                                               expected_event="push")
                 self.assertEqual(str(caught.exception),
                                  f"unapproved job workflow identity ({shape}); no token or claim values logged")
 
@@ -340,7 +457,7 @@ class OidcClaimTests(unittest.TestCase):
         for label, observed in cases.items():
             with self.subTest(case=label):
                 with self.assertRaises(origin.OriginError):
-                    origin.require_oidc_claims(observed, self.ctx, self.now)
+                    origin.require_oidc_claims(observed, self.ctx, self.now, expected_event="push")
 
 
 class JobSelectionTests(unittest.TestCase):
@@ -628,6 +745,10 @@ class RecordVerifyCallFlowTests(unittest.TestCase):
             gh_calls.append((args, purpose))
             if purpose == "origin signature authentication":
                 return selected_attestation
+            run_endpoint = (f"repos/{REPOSITORY}/actions/runs/{RUN_ID}"
+                            f"/attempts/{RUN_ATTEMPT}")
+            if args == ["api", run_endpoint]:
+                return provider_run(fixture["context"])
             if args[:3] == ["api", "--paginate", "--slurp"]:
                 return selected_jobs
             if args == ["api", f"repos/{REPOSITORY}/actions/artifacts/{ARTIFACT_ID}"]:
@@ -672,6 +793,10 @@ class RecordVerifyCallFlowTests(unittest.TestCase):
             def mocked_gh_json(arguments, purpose="GitHub observation"):
                 call = (list(arguments), purpose)
                 gh_calls.append(call)
+                run_endpoint = (f"repos/{REPOSITORY}/actions/runs/{RUN_ID}"
+                                f"/attempts/{RUN_ATTEMPT}")
+                if list(arguments) == ["api", run_endpoint]:
+                    return provider_run(ctx)
                 if arguments[:3] == ["api", "--paginate", "--slurp"]:
                     return pages
                 if arguments == ["api", f"repos/{REPOSITORY}/actions/artifacts/{ARTIFACT_ID}"]:
@@ -696,8 +821,10 @@ class RecordVerifyCallFlowTests(unittest.TestCase):
                 }
                 self.assertEqual(stored, origin.canonical(expected))
                 self.assertEqual(origin.parse_json(stored), expected)
-                mocked_oidc.assert_called_once_with(ctx)
+                mocked_oidc.assert_called_once_with(ctx, expected_event="push")
                 self.assertEqual(gh_calls, [
+                    (["api", f"repos/{REPOSITORY}/actions/runs/{RUN_ID}/attempts/{RUN_ATTEMPT}"],
+                     "GitHub observation"),
                     (["api", "--paginate", "--slurp",
                       f"repos/{REPOSITORY}/actions/runs/{RUN_ID}/attempts/{RUN_ATTEMPT}/jobs?per_page=100"],
                      "GitHub observation"),
@@ -714,7 +841,7 @@ class RecordVerifyCallFlowTests(unittest.TestCase):
                     origin.record(args, ctx)
                 self.assertEqual(output.read_bytes(), stored)
                 self.assertEqual(mocked_oidc.call_count, 1)
-                self.assertEqual(len(gh_calls), 2)
+                self.assertEqual(len(gh_calls), 3)
 
     def test_mocked_verify_uses_exact_signer_source_and_remeasures_all_inputs(self) -> None:
         # All bytes and the successful attestation response are synthetic mocks.
@@ -735,6 +862,8 @@ class RecordVerifyCallFlowTests(unittest.TestCase):
                 "--deny-self-hosted-runners", "--format", "json",
             ]
             self.assertEqual(gh_calls, [
+                (["api", f"repos/{REPOSITORY}/actions/runs/{RUN_ID}/attempts/{RUN_ATTEMPT}"],
+                 "GitHub observation"),
                 (expected_attestation_args, "origin signature authentication"),
                 (["api", "--paginate", "--slurp",
                   f"repos/{REPOSITORY}/actions/runs/{RUN_ID}/attempts/{RUN_ATTEMPT}/jobs?per_page=100"],

@@ -141,6 +141,13 @@ tag-ref manual event without weakening the branch diagnostic boundary. Original
 owner collection, attestation verification and native evidence readback must
 preserve that real event identity throughout the complete plan-derived matrix.
 
+The artifact-origin reader now observes the exact provider run attempt and its
+actual event. It binds the current reader's OIDC `event_name` to that observation
+and rechecks the original source event and identity before retaining bytes.
+Existing seven-field contexts and signed origin formats remain unchanged.
+These transport checks do not yet bind native matrix projections to that event
+or authorize a production tag dispatch; those caller integrations remain open.
+
 ### Provider observations (2026-10-13)
 
 The pinned action was exercised in a separate private test repository with
