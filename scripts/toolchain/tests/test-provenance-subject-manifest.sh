@@ -196,6 +196,33 @@ cmp -s "$output" "$fake_response" || fail 'success output differs from fake-gh r
 [[ $(gh_call_count) == 1 ]] || fail 'success did not call fake gh exactly once'
 [[ $(snapshot_inputs) == "$inputs_before" ]] || fail 'success changed an input'
 
+# SDK product IDs allow plus; the subject name must retain that literal byte.
+new_fixture sdk-plus-name
+renamed_package="$release/aros-sdk-sdk+abi-0.1.0.tar.xz"
+command mv "$package" "$renamed_package"
+package="$renamed_package"
+write_manifest
+write_response exact
+refresh_common_args
+inputs_before=$(snapshot_inputs)
+output="$fixture/verified.json"
+if ! stdout=$(run_verifier "$output" '' '' "${common_args[@]}" \
+    --run-id "$run_id" --run-attempt "$run_attempt" 2> "$stderr_file"); then
+    cat "$stderr_file" >&2
+    fail 'portable SDK plus name should pass the exact subject join'
+fi
+[[ "$stdout" == 'verified 2 signed release subjects' ]] || fail 'plus-name summary differs'
+cmp -s "$output" "$fake_response" || fail 'plus-name response differs'
+[[ $(gh_call_count) == 1 ]] || fail 'plus-name subject join did not call fake gh exactly once'
+[[ $(snapshot_inputs) == "$inputs_before" ]] || fail 'plus-name verification changed inputs'
+printf 'corrupted SDK fixture\n' > "$package"
+expect_pregh_failure plus-name-corruption 'checksum subject digest differs' "${common_args[@]}"
+
+new_fixture sdk-plus-traversal
+printf '%s  sdk+abi/../escape.tar.xz\n' "$(sha256_file "$package")" > "$manifest"
+refresh_common_args
+expect_pregh_failure plus-name-traversal 'noncanonical entry' "${common_args[@]}"
+
 # Raw hash, size, syntax, exact-set, and argument errors reject before fake gh.
 new_fixture wrong-manifest-hash
 bad_args=("${common_args[@]}")
