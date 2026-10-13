@@ -33,6 +33,52 @@ implicit fallback. Environment protection and credential access must be
 confirmed separately before activation; a workflow referencing an environment
 does not prove that protection exists.
 
+### Governance credential qualification
+
+Do not assume that `Administration: read` exposes all tag governance details.
+The [repository ruleset API](https://docs.github.com/en/rest/repos/rules#get-a-repository-ruleset)
+requires only metadata read access for the rule document, but documents that
+`bypass_actors` is returned only when the caller has write access to the ruleset.
+A successful GET therefore does not establish that the caller can prove an
+empty bypass list. On 2026-10-13 the public read of the active tag ruleset
+omitted that field, while the existing privileged operator read explicitly
+returned an empty list. Neither observation qualifies a proposed read-only
+installation token.
+
+Before configuring a governance credential, probe its exact granted scope and
+the complete response, including an explicit empty bypass list. Keep the current
+missing-field rejection. Do not grant administrative write rights merely to
+make this probe pass, silently substitute the operator's token, or infer no
+bypasses from an omitted field. The fresh pre-mutation recheck must use a caller
+whose visibility is independently proven; a saved receipt does not make hidden
+current policy visible. This credential boundary remains unqualified.
+
+The existing contracts workflow has an opt-in `governance_visibility_probe`
+dispatch. Its two jobs use only the automatically issued job token, with
+`contents: read` and `contents: write` respectively, and perform bounded GETs.
+They report whether the bypass field is visible, its count, and the public
+policy digest; they do not expose actors or credentials. Neither report is an
+admission receipt. This probe is intended to determine whether the normal
+protected-start job token suffices before introducing another credential.
+The write-capable job is restricted to protected main; its initial controlled
+branch observation used the explicitly inspected source commit, not arbitrary
+dispatch input code.
+The read-only job additionally observes the documented GraphQL ruleset
+connection's bypass count without actor identities. This is an alternative
+visibility probe, not a fallback that admits a candidate. A reported zero
+alone does not prove complete visibility; a known nonempty provider
+counterprobe is required before this interface could replace governance reads.
+It creates no tag, draft, release, dispatch claim or package publication.
+
+The initial REST provider probe, run
+[38456476174](https://github.com/metaneutrons/aros-toolchains/actions/runs/38456476174)
+on inspected commit `36d300dc35ac69f8a015ccbb8107b7ba8ea25eff`, passed its
+contracts and both visibility jobs. Both normal job tokens omitted
+`bypass_actors`: `contents: read` and `contents: write` returned the same
+public policy digest, but neither proved an empty bypass list. No credential
+was created or copied and no tag/release was changed. The normal token is
+therefore insufficient for the complete REST governance gate tested here.
+
 ## Event sequence
 
 1. The existing PR-only Release Please workflow prepares the version PR.
@@ -133,6 +179,32 @@ behavior or production qualification:
 
 ### Remaining integration proof
 
+`scripts/toolchain/compiler-sdk-release-start-v2.py` is an inactive reader for
+the future signed start. It verifies the independently selected original
+main-based workflow/run/attempt and successful owning job, authenticates the
+exact record subject through GitHub attestations, rereads the frozen input
+blobs, and checks the annotated tag plus exact private empty draft. It repeats
+run/job observations and record/bundle byte readbacks before returning.
+Its offline fixtures do not prove a real signed start. No workflow currently
+calls it, and it neither constructs a start nor consumes or dispatches one.
+The reader also requires independently selected runtime paths and host: it
+hashes the retained materialization and interface receipts, checks the exact
+locked file closure, joins the executable to its manifest and interface
+measurement, and repeats these byte checks after provider observations.
+The original interface path is evidence, never a reader-supplied execution
+path; the only executable inspected is the selected runtime's `bin/aros`.
+These joins do not redo publication signatures or prove the start ran the
+materializer. The future protected workflow must authenticate the published
+runtime before constructing/signing the start and bind host selection to its
+actual provider environment; a local receipt cannot replace those gates.
+The retained closure check is point-in-time: held descriptors and directory
+readbacks detect concurrent changes during inspection, but do not make a
+mutable tree permanently immutable. The controller must keep runtime staging
+private from unrelated writers throughout measurement and start construction.
+Runtime materialization, fresh privileged absence, mutation outcome checks,
+record signing/retention and exclusive consumption still require the complete
+protected controller and a genuine provider observation.
+
 `scripts/toolchain/prepare-release-draft-config-v2.py` derives an inactive draft
 configuration from the committed `release-please-config.json`. It preserves the
 reviewed version strategy and sole root package, changes only the three draft
@@ -153,6 +225,12 @@ and rechecks the original source event and identity before retaining bytes.
 Existing seven-field contexts and signed origin formats remain unchanged.
 These transport checks do not yet bind native matrix projections to that event
 or authorize a production tag dispatch; those caller integrations remain open.
+
+Compiler owner selection and the compiler, combined-candidate and native-evidence
+adapters now preserve the actual provider event with the canonical source
+context. They reobserve the exact source attempt before emitting results.
+This closes their event projection boundary, not START-A5 through START-A7 or
+the production workflow entry.
 
 ### Provider observations (2026-10-13)
 
@@ -181,6 +259,56 @@ admission and dispatch still require independent qualification. Do not copy the 
 lightweight-tag conversion sequence or retarget a tag to accommodate the library.
 An archived repository's draft 404 is not evidence of absence: require an active
 repository before using privileged absence checks.
+
+The same isolated private fixture also exercised fixed-name draft asset
+consumption without a native dispatch. A confirmed existing name rejected a
+second upload with HTTP 422. A fresh-name parallel upload returned HTTP 201
+and HTTP 404, with exactly one retained asset; numeric-ID downloads matched
+the submitted bytes and the annotated test tags remained unchanged. The
+expected 422 race-loser assertion failed: this is not a wholly successful
+consumption proof. The fixture was archived again without publishing or
+deleting its test assets.
+
+The dispatcher must proceed only after its own confirmed HTTP 201 and exact
+numeric asset readback. Any other or unknown mutation result, including 404,
+stops that invocation without retry, deletion, replacement or an alternate
+claim name. The fixed-name claim must bind the independently authenticated
+original start and exact tag/draft/input identities and remain in the closed
+candidate inventory. The provider uniqueness observation alone proves neither
+that binding nor a successful exclusive native dispatch; START-A7 stays open.
+
+`scripts/toolchain/compiler-sdk-dispatch-claim-v2.py` prepares only a closed
+canonical payload for the fixed name `compiler-sdk-dispatch-claim-v2.json`.
+It binds original start/signature byte hashes, source owner, exact tag/draft,
+frozen input/runtime digests, and a distinct original main-based dispatcher
+context/job. The dispatcher code commit may differ from the tagged producer
+commit; its projected native target must still be the exact admitted tag.
+The selected actual dispatcher event and complete triggering start context
+are explicit inputs; only the `workflow_run` edge to that original start is
+accepted and retained. The controller must authenticate this provider edge,
+not derive it from the payload's own claims.
+Changed selectors, extra fields and noncanonical byte readbacks are rejected.
+This codec neither authenticates those contexts nor uploads/consumes anything.
+The future controller must independently authenticate both provider identities
+and the start before using it, then bind one confirmed HTTP 201 and numeric
+asset readback to those exact bytes. No workflow calls the codec yet, and no
+exclusive consumption or native dispatch has been qualified by its fixtures.
+
+`scripts/toolchain/compiler-sdk-claim-upload-v2.py` is an inactive internal
+post-authentication primitive. It requires that exact canonical claim, rechecks
+the active repository and exact empty private candidate, performs one bounded
+upload call, and admits only a confirmed HTTP 201 with the expected numeric
+asset identity, size, MIME type and digest. It then downloads by numeric ID and
+requires the original bytes plus an exact private-draft/sole-claim readback.
+All candidate observations use the same pinned GitHub.com job-token transport;
+the active repository and exact annotated tag are rechecked after readback.
+An occupied name, unknown outcome or failed readback stops without another
+upload, rename, deletion or native dispatch. The future controller must
+authenticate all provider/crypto boundaries before calling this primitive;
+its return value alone is not dispatch authorization. No workflow calls it.
+The CLI transport's numeric download was observed read-only against a public
+checksum asset with HTTP 200 and exact byte count; this does not qualify a
+real upload, job-token custody, private claim race or native dispatch.
 
 The released V2 runtime, source qualification and complete compiler/SDK matrix
 remain prerequisites. This design neither changes source pins nor waives

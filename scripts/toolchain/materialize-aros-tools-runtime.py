@@ -406,11 +406,12 @@ def safe_extract(archive: Path, manifest: dict[str, Any], destination: Path) -> 
 
 
 def receipt(
-    lock_path: Path, lock: dict[str, Any], host: str, manifest: dict[str, Any], manifest_sha256: str
+    lock_path: Path, lock: dict[str, Any], host: str, manifest: dict[str, Any], manifest_sha256: str,
+    *, lock_sha256: str | None = None,
 ) -> dict[str, Any]:
     return {
         "schema": "aros-tools-runtime-receipt-v1",
-        "runtime_lock_sha256": sha256_file(lock_path),
+        "runtime_lock_sha256": sha256_file(lock_path) if lock_sha256 is None else lock_sha256,
         "host": host,
         "repository": lock["repository"],
         "release_id": lock["release_id"],
@@ -600,7 +601,23 @@ def _parse_json_bytes(contents: bytes, label: str) -> Any:
 
 def restore_artifact_modes(lock_path: Path, host: str, directory: Path) -> None:
     """Restore executable modes lost when a runtime crossed GitHub artifacts."""
-    lock = validate_lock(read_json(lock_path))
+    _inspect_runtime(lock_path, host, directory, restore=True)
+
+
+def verify_extracted_frozen(lock: dict[str, Any], lock_sha256: str, host: str, directory: Path) -> dict:
+    """Inspect the entire held closure against caller-authenticated lock bytes.
+
+    Never reopen a lock pathname or change file modes. Publication authenticity
+    still belongs to materialize; this proves only the exact retained closure.
+    """
+    require_hex(lock_sha256, 64, "frozen runtime lock digest")
+    return _inspect_runtime(None, host, directory, restore=False,
+                            frozen_lock=validate_lock(lock), frozen_digest=lock_sha256)
+
+
+def _inspect_runtime(lock_path: Path | None, host: str, directory: Path, *, restore: bool,
+                     frozen_lock: dict[str, Any] | None = None, frozen_digest: str | None = None) -> dict:
+    lock = validate_lock(read_json(lock_path)) if frozen_lock is None else frozen_lock
     if host not in HOST_TARGETS:
         fail(f"unsupported runtime host {host!r}")
     if not hasattr(os, "O_NOFOLLOW"):
@@ -674,7 +691,8 @@ def restore_artifact_modes(lock_path: Path, host: str, directory: Path) -> None:
             max_size=MAX_METADATA_SIZE,
         )
         manifest = validate_manifest_bytes(lock, host, manifest_bytes)
-        expected_receipt = receipt(lock_path, lock, host, manifest, hashlib.sha256(manifest_bytes).hexdigest())
+        expected_receipt = receipt(lock_path, lock, host, manifest, hashlib.sha256(manifest_bytes).hexdigest(),
+                                   lock_sha256=frozen_digest)
         receipt_bytes = _read_fd(opened[receipt_name][0], receipt_name, max_size=MAX_METADATA_SIZE)
         if _parse_json_bytes(receipt_bytes, receipt_name) != expected_receipt:
             fail("runtime receipt differs from locked release identity")
@@ -695,7 +713,7 @@ def restore_artifact_modes(lock_path: Path, host: str, directory: Path) -> None:
             expected_mode = int(details["mode"], 8)
             current_mode = stat.S_IMODE(state.st_mode)
             native = EXPECTED_FILES[relative][1]
-            accepted_modes = {0o644, expected_mode} if native else {expected_mode}
+            accepted_modes = {0o644, expected_mode} if native and restore else {expected_mode}
             if current_mode not in accepted_modes:
                 fail(f"runtime file mode cannot be restored safely: {relative}")
 
@@ -738,8 +756,31 @@ def restore_artifact_modes(lock_path: Path, host: str, directory: Path) -> None:
                 current_mode = stat.S_IMODE(stable_state.st_mode)
                 expected_mode = int(details["mode"], 8)
                 native = EXPECTED_FILES[relative][1]
-                if current_mode not in ({0o644, expected_mode} if native else {expected_mode}):
+                if current_mode not in ({0o644, expected_mode} if native and restore else {expected_mode}):
                     fail(f"runtime file mode cannot be restored safely: {relative}")
+
+        if not restore:
+            # A later member's hashing must not hide changes to an earlier
+            # member. Verify-only inspection never legitimately alters any
+            # payload or metadata state, including a write-and-restore race.
+            list_exact(root_fd, root_names, "file set")
+            list_exact(bin_fd, bin_names, "bin file set")
+            for relative, (fd, parent_fd, name, original_state) in opened.items():
+                current_state = os.fstat(fd)
+                named_state = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+                if (_stable_file_state(current_state) != _stable_file_state(original_state)
+                        or _stable_file_state(named_state) != _stable_file_state(current_state)):
+                    fail(f"runtime file changed during frozen closure verification: {relative}")
+            if (not _same_file_identity(directory.lstat(), os.fstat(root_fd))
+                    or not _same_file_identity(os.stat("bin", dir_fd=root_fd, follow_symlinks=False),
+                                               os.fstat(bin_fd))):
+                fail("runtime directory changed during frozen closure verification")
+            list_exact(root_fd, root_names, "file set")
+            list_exact(bin_fd, bin_names, "bin file set")
+            if (_stable_file_state(root_state) != _stable_file_state(os.fstat(root_fd))
+                    or _stable_file_state(bin_state) != _stable_file_state(os.fstat(bin_fd))):
+                fail("runtime directory state changed during frozen closure verification")
+            return manifest
 
         try:
             for relative, details in manifest_files.items():

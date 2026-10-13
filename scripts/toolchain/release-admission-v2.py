@@ -587,7 +587,7 @@ def _governance(receipt: dict[str, Any] | None = None) -> dict[str, Any]:
             fail("governance receipt is expired or from the future")
     listing = paginated(
         f"repos/{REPOSITORY}/rulesets?includes_parents=true&targets=tag",
-        governance=receipt is None,
+        governance=True,
     )
     tag_ids = [item.get("id") for item in listing if item.get("target") == "tag" and item.get("enforcement") == "active"]
     for identifier in tag_ids:
@@ -598,7 +598,7 @@ def _governance(receipt: dict[str, Any] | None = None) -> dict[str, Any]:
         fail("tag governance is ambiguous or missing")
     identifier = tag_ids[0]
     ruleset = _required_object(
-        api(f"repos/{REPOSITORY}/rulesets/{identifier}", governance=receipt is None),
+        api(f"repos/{REPOSITORY}/rulesets/{identifier}", governance=True),
         "tag ruleset details",
     )
     conditions = ruleset.get("conditions")
@@ -623,7 +623,7 @@ def _governance(receipt: dict[str, Any] | None = None) -> dict[str, Any]:
     policy_digest = hashlib.sha256(canonical_json(_public_policy(ruleset)).encode("utf-8")).hexdigest()
     if receipt is not None:
         if identifier != receipt["ruleset_id"] or policy_digest != receipt["policy_sha256"]:
-            fail("public tag governance policy changed since admission")
+            fail("tag governance policy changed since admission")
         return receipt
     return {"ruleset_id": identifier, "policy_sha256": policy_digest, "checked_at": int(time.time())}
 
@@ -981,6 +981,40 @@ def command_recheck(admission_path: Path, output: Path) -> None:
     print("Read-only admission rechecked")
 
 
+def command_probe_visibility(output: Path, profile: str) -> None:
+    """Observe normal job-token visibility; never emit an admission receipt."""
+    _check_output_destination(output, existing=False)
+    require_active_repository()
+    listing = paginated(f"repos/{REPOSITORY}/rulesets?includes_parents=true&targets=tag")
+    selected = [entry for entry in listing
+                if entry.get("target") == "tag" and entry.get("enforcement") == "active"]
+    if len(selected) != 1:
+        fail("visibility probe requires one active tag ruleset")
+    identifier = _positive_int(selected[0].get("id"), "visibility ruleset id")
+    ruleset = _required_object(api(f"repos/{REPOSITORY}/rulesets/{identifier}"), "visibility ruleset")
+    if (type(ruleset.get("id")) is not int or ruleset["id"] != identifier or ruleset.get("target") != "tag"
+            or ruleset.get("enforcement") != "active"):
+        fail("visibility ruleset identity changed")
+    visible = "bypass_actors" in ruleset
+    bypass = ruleset.get("bypass_actors")
+    if visible and not isinstance(bypass, list):
+        fail("visibility bypass field is malformed")
+    report = {
+        "schema": "aros-toolchains-governance-visibility-probe-v1",
+        "assurance": "visibility-only-not-release-admission",
+        "repository": REPOSITORY,
+        "declared_job_contents_permission": profile,
+        "ruleset_id": identifier,
+        "bypass_visible": visible,
+        "bypass_count": len(bypass) if visible else None,
+        "explicitly_empty_bypass": visible and bypass == [],
+        "public_policy_sha256": hashlib.sha256(canonical_json(_public_policy(ruleset)).encode()).hexdigest(),
+    }
+    require_active_repository()
+    _write_exclusive(output, (canonical_json(report) + "\n").encode())
+    print(canonical_json(report))
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -990,12 +1024,17 @@ def main() -> None:
     recheck = subparsers.add_parser("recheck")
     recheck.add_argument("--admission", type=Path, required=True)
     recheck.add_argument("--output", type=Path, required=True)
+    probe = subparsers.add_parser("probe-governance-visibility")
+    probe.add_argument("--output", type=Path, required=True)
+    probe.add_argument("--contents-permission", choices=("read", "write"), required=True)
     args = parser.parse_args()
     try:
         if args.command == "admit":
             command_admit(args.output, args.github_output)
-        else:
+        elif args.command == "recheck":
             command_recheck(args.admission, args.output)
+        else:
+            command_probe_visibility(args.output, args.contents_permission)
     except AdmissionError as error:
         print(f"release admission failed: {error}", file=sys.stderr)
         raise SystemExit(1) from None

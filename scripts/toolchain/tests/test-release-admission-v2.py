@@ -106,6 +106,9 @@ if isinstance(value, dict) and "__sequence" in value:
 if value is None:
     print("synthetic provider body governance-secret-fixture (HTTP 404)", file=sys.stderr)
     raise SystemExit(1)
+if (configuration.get("redact_job_bypass") and is_ruleset
+        and token == os.environ.get("FAKE_JOB_TOKEN") and isinstance(value, dict)):
+    value = {key: item for key, item in value.items() if key != "bypass_actors"}
 if isinstance(value, dict) and "__http" in value:
     status = int(value["__http"])
     print(f"synthetic provider body governance-secret-fixture (HTTP {status})", file=sys.stderr)
@@ -335,7 +338,7 @@ class ReleaseAdmissionTests(unittest.TestCase):
         event: str = "workflow_run",
         output: Path | None = None,
         github_output: Path | None = None,
-        environment: dict[str, str] | None = None,
+        environment: dict[str, str | None] | None = None,
     ) -> tuple[subprocess.CompletedProcess[str], Path, Path]:
         self.serial += 1
         if output is None:
@@ -344,8 +347,11 @@ class ReleaseAdmissionTests(unittest.TestCase):
             github_output = self.base / f"github-output-{self.serial}.txt"
             github_output.write_bytes(b"")
         run_environment = self._environment(event=event)
-        if environment is not None:
-            run_environment.update(environment)
+        for name, value in (environment or {}).items():
+            if value is None:
+                run_environment.pop(name, None)
+            else:
+                run_environment[name] = value
         result = subprocess.run(
             [sys.executable, "-B", str(self.repo / "scripts/toolchain/release-admission-v2.py"),
              "admit", "--output", str(output), "--github-output", str(github_output)],
@@ -358,12 +364,13 @@ class ReleaseAdmissionTests(unittest.TestCase):
         )
         return result, output, github_output
 
-    def _run_recheck(self, admission: Path, output: Path) -> subprocess.CompletedProcess[str]:
+    def _run_recheck(self, admission: Path, output: Path, *,
+                     environment: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
             [sys.executable, "-B", str(self.repo / "scripts/toolchain/release-admission-v2.py"),
              "recheck", "--admission", str(admission), "--output", str(output)],
             cwd=self.repo,
-            env=self._environment(event="workflow_dispatch"),
+            env=environment if environment is not None else self._environment(event="workflow_dispatch"),
             capture_output=True,
             text=True,
             check=False,
@@ -373,6 +380,93 @@ class ReleaseAdmissionTests(unittest.TestCase):
     def _api_route(self, path: str, value: object) -> None:
         self.responses[path] = value
         self._save_responses()
+
+    def _run_visibility(self, output: Path, profile: str = "read") -> subprocess.CompletedProcess[str]:
+        environment = self._environment(event="workflow_dispatch")
+        environment.pop("GOVERNANCE_TOKEN")
+        return subprocess.run(
+            [sys.executable, "-B", str(self.repo / "scripts/toolchain/release-admission-v2.py"),
+             "probe-governance-visibility", "--contents-permission", profile, "--output", str(output)],
+            cwd=self.repo, env=environment, capture_output=True, text=True, timeout=30,
+        )
+
+    def test_visibility_probe_uses_only_job_token_and_is_not_admission(self) -> None:
+        for profile in ("read", "write"):
+            with self.subTest(profile=profile):
+                output = self.base / f"visibility-{profile}.json"
+                result = self._run_visibility(output, profile)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                report = json.loads(output.read_bytes())
+                self.assertEqual(json.loads(result.stdout), report)
+                self.assertEqual(report["assurance"], "visibility-only-not-release-admission")
+                self.assertEqual(report["declared_job_contents_permission"], profile)
+                self.assertTrue(report["explicitly_empty_bypass"])
+                self.assertEqual(report["bypass_count"], 0)
+                invalid_output = self.base / f"not-admission-{profile}.json"
+                rejected = self._run_recheck(output, invalid_output)
+                self._assert_rejected(rejected)
+                self.assertFalse(invalid_output.exists())
+        entries = [json.loads(line) for line in self.log_path.read_text().splitlines()]
+        self.assertTrue(entries)
+        self.assertTrue(all(entry["credential"] == "job" for entry in entries))
+        self.assertTrue(all(entry["method"] == "GET" for entry in entries))
+
+    def test_visibility_probe_distinguishes_omitted_and_nonempty_bypass(self) -> None:
+        original = dict(self.responses[RULESET_PATH])
+        for suffix, bypass in (("hidden", None), ("present", [{"actor_type": "User", "actor_id": 17}])):
+            with self.subTest(suffix=suffix):
+                ruleset = dict(original)
+                if bypass is None:
+                    ruleset.pop("bypass_actors")
+                else:
+                    ruleset["bypass_actors"] = bypass
+                self._api_route(RULESET_PATH, ruleset)
+                output = self.base / f"visibility-{suffix}.json"
+                result = self._run_visibility(output)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                report = json.loads(output.read_bytes())
+                self.assertFalse(report["explicitly_empty_bypass"])
+                self.assertEqual(report["bypass_visible"], bypass is not None)
+                self.assertEqual(report["bypass_count"], None if bypass is None else 1)
+                self.assertNotIn("actor_type", result.stdout)
+
+    def test_visibility_errors_and_occupied_output_do_not_emit_receipts(self) -> None:
+        for error in (403, 429, "transport"):
+            with self.subTest(error=error):
+                self._api_error(RULESET_PATH, error)
+                output = self.base / f"visibility-error-{error}.json"
+                result = self._run_visibility(output)
+                self._assert_rejected(result)
+                self.assertFalse(output.exists())
+        self.errors.clear()
+        self._save_responses()
+        occupied = self.base / "visibility-occupied.json"
+        occupied.write_bytes(b"preserved\n")
+        result = self._run_visibility(occupied)
+        self._assert_rejected(result)
+        self.assertEqual(occupied.read_bytes(), b"preserved\n")
+
+    def test_visibility_rejects_boolean_ruleset_id(self) -> None:
+        self._api_route(RULESETS_PATH, [{"id": 1, "target": "tag", "enforcement": "active"}])
+        ruleset = {**self.responses[RULESET_PATH], "id": True}
+        self._api_route(f"{RULESETS_PATH}/1", ruleset)
+        output = self.base / "visibility-boolean-id.json"
+        rejected = self._run_visibility(output)
+        self._assert_rejected(rejected)
+        self.assertFalse(output.exists())
+
+    def test_visibility_workflow_write_job_is_opt_in_and_main_only(self) -> None:
+        workflow = (SOURCE_ROOT / ".github/workflows/ci.yml").read_text()
+        write_job = workflow.split("  governance-visibility-write:\n", 1)[1].split("\n  contracts:\n", 1)[0]
+        self.assertIn("github.event_name == 'workflow_dispatch'", write_job)
+        self.assertIn("github.ref == 'refs/heads/main'", write_job)
+        self.assertIn("inputs.governance_visibility_probe", write_job)
+        self.assertIn("GH_TOKEN: ${{ github.token }}", write_job)
+        self.assertIn("persist-credentials: false", write_job)
+        self.assertNotIn("secrets.", write_job)
+        self.assertNotIn("environment:", write_job)
+        self.assertNotIn("release create", write_job)
+        self.assertNotIn("git push", write_job)
 
     def _api_error(self, path: str, value: object) -> None:
         self.errors[path] = value
@@ -540,7 +634,38 @@ class ReleaseAdmissionTests(unittest.TestCase):
         log = [json.loads(line) for line in self.log_path.read_text(encoding="utf-8").splitlines()]
         recheck_rules = [entry for entry in log if "/rulesets" in entry["endpoint"]][2:]
         self.assertTrue(recheck_rules)
-        self.assertTrue(all(entry["credential"] == "job" for entry in recheck_rules))
+        self.assertTrue(all(entry["credential"] == "governance" for entry in recheck_rules))
+
+    def test_recheck_uses_fresh_governance_visibility_not_job_token(self) -> None:
+        configuration = json.loads(self.responses_path.read_text(encoding="utf-8"))
+        configuration["redact_job_bypass"] = True
+        self.responses_path.write_text(json.dumps(configuration), encoding="utf-8")
+        admitted, admission_path, _ = self._run_admit()
+        self.assertEqual(admitted.returncode, 0, admitted.stderr)
+        before = len(self.log_path.read_text(encoding="utf-8").splitlines())
+        rechecked_path = self.base / "governance-rechecked.json"
+        rechecked = self._run_recheck(admission_path, rechecked_path)
+        self.assertEqual(rechecked.returncode, 0, rechecked.stderr)
+        self.assertEqual(rechecked_path.read_bytes(), admission_path.read_bytes())
+        entries = [json.loads(line) for line in self.log_path.read_text(encoding="utf-8").splitlines()]
+        fresh_rules = [entry for entry in entries[before:] if "/rulesets" in entry["endpoint"]]
+        self.assertTrue(fresh_rules)
+        self.assertTrue(all(entry["credential"] == "governance" for entry in fresh_rules))
+
+        environment = self._environment(event="workflow_dispatch")
+        environment.pop("GOVERNANCE_TOKEN")
+        failed_path = self.base / "no-governance-recheck.json"
+        failed = self._run_recheck(admission_path, failed_path, environment=environment)
+        self._assert_rejected(failed)
+        self.assertIn("authenticated governance metadata is unavailable", failed.stderr)
+        self.assertFalse(failed_path.exists())
+
+    def test_valid_candidate_cannot_fall_back_to_job_token_for_governance(self) -> None:
+        result, output, github_output = self._run_admit(environment={"GOVERNANCE_TOKEN": None})
+        self._assert_rejected(result)
+        self.assertIn("authenticated governance metadata is unavailable", result.stderr)
+        self.assertFalse(output.exists())
+        self.assertEqual(github_output.read_bytes(), b"")
 
     def test_stale_or_nonrelease_events_return_ready_false_without_receipt(self) -> None:
         self._write_event({**self._workflow_run(), "head_sha": "f" * 40})
@@ -615,7 +740,7 @@ class ReleaseAdmissionTests(unittest.TestCase):
                           json.dumps(selection, sort_keys=True) + "\n")
         self._api_route(f"repos/{REPOSITORY}/commits/{self.head}/pulls", [])
         environment = self._environment(event="workflow_dispatch")
-        environment.pop("GOVERNANCE_TOKEN")
+        environment["GOVERNANCE_TOKEN"] = None
         result, output, github_output = self._run_admit(
             event="workflow_dispatch", environment=environment
         )
@@ -779,6 +904,22 @@ class ReleaseAdmissionTests(unittest.TestCase):
         self._api_route(RULESET_PATH, ruleset)
         result, _, _ = self._run_admit()
         self._assert_rejected(result)
+
+    def test_new_bypass_after_admission_rejects_recheck_without_output(self) -> None:
+        admitted, admission_path, _ = self._run_admit()
+        self.assertEqual(admitted.returncode, 0, admitted.stderr)
+        original = admission_path.read_bytes()
+        ruleset = dict(self.responses[RULESET_PATH])
+        ruleset["bypass_actors"] = [{
+            "actor_type": "Integration", "actor_id": 123, "bypass_mode": "always",
+        }]
+        self._api_route(RULESET_PATH, ruleset)
+        output = self.base / "changed-bypass-recheck.json"
+        rejected = self._run_recheck(admission_path, output)
+        self._assert_rejected(rejected)
+        self.assertIn("explicitly expose an empty bypass list", rejected.stderr)
+        self.assertFalse(output.exists())
+        self.assertEqual(admission_path.read_bytes(), original)
 
     def test_governance_receipt_expiry_and_public_policy_drift_block_recheck(self) -> None:
         admitted, admission_path, _ = self._run_admit()

@@ -6,6 +6,10 @@ on:
     branches: [main]
   workflow_dispatch:
     inputs:
+      governance_visibility_probe:
+        description: 'Observe normal read/write job-token ruleset visibility without publication'
+        type: boolean
+        default: false
       artifact_origin_probe:
         description: 'Run the non-publishing owning-job artifact transport probe'
         type: boolean
@@ -29,6 +33,57 @@ env:
   PYTHONHASHSEED: '0'
 
 jobs:
+  governance-visibility-read:
+    name: Governance visibility with contents read
+    if: github.event_name == 'workflow_dispatch' && inputs.governance_visibility_probe
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Observe only normal job-token metadata visibility
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python3 -B scripts/toolchain/release-admission-v2.py probe-governance-visibility \
+            --contents-permission read --output "$RUNNER_TEMP/governance-read.json"
+      - name: Observe GraphQL bypass-count visibility without reading actor identities
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          ruleset_id=$(jq -er '.ruleset_id | select(type == "number" and . > 0)' "$RUNNER_TEMP/governance-read.json")
+          node_id=$(gh api "repos/$GITHUB_REPOSITORY/rulesets/$ruleset_id" --jq '.node_id')
+          # GraphQL variables must not expand in the shell.
+          # shellcheck disable=SC2016
+          gh api graphql \
+            -f query='query($id:ID!) { node(id:$id) { ... on RepositoryRuleset { id databaseId target enforcement bypassActors(first:1) { totalCount pageInfo { hasNextPage } } } } }' \
+            -f "id=$node_id" \
+            --jq '.data.node | {id,databaseId,target,enforcement,bypass_count:.bypassActors.totalCount,has_next_page:.bypassActors.pageInfo.hasNextPage}'
+
+  governance-visibility-write:
+    name: Governance visibility with contents write
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.governance_visibility_probe
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Observe only normal job-token metadata visibility
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python3 -B scripts/toolchain/release-admission-v2.py probe-governance-visibility \
+            --contents-permission write --output "$RUNNER_TEMP/governance-write.json"
+
   contracts:
     runs-on: ubuntu-24.04
     steps:
