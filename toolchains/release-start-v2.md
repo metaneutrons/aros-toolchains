@@ -277,6 +277,23 @@ original start and exact tag/draft/input identities and remain in the closed
 candidate inventory. The provider uniqueness observation alone proves neither
 that binding nor a successful exclusive native dispatch; START-A7 stays open.
 
+`scripts/toolchain/compiler-sdk-dispatch-claim-v2.py` prepares only a closed
+canonical payload for the fixed name `compiler-sdk-dispatch-claim-v2.json`.
+It binds original start/signature byte hashes, source owner, exact tag/draft,
+frozen input/runtime digests, and a distinct original main-based dispatcher
+context/job. The dispatcher code commit may differ from the tagged producer
+commit; its projected native target must still be the exact admitted tag.
+The selected actual dispatcher event and complete triggering start context
+are explicit inputs; only the `workflow_run` edge to that original start is
+accepted and retained. The controller must authenticate this provider edge,
+not derive it from the payload's own claims.
+Changed selectors, extra fields and noncanonical byte readbacks are rejected.
+This codec neither authenticates those contexts nor uploads/consumes anything.
+The future controller must independently authenticate both provider identities
+and the start before using it, then bind one confirmed HTTP 201 and numeric
+asset readback to those exact bytes. No workflow calls the codec yet, and no
+exclusive consumption or native dispatch has been qualified by its fixtures.
+
 The released V2 runtime, source qualification and complete compiler/SDK matrix
 remain prerequisites. This design neither changes source pins nor waives
 missing source authorization. It creates no environments, grants, tags,
