@@ -270,6 +270,17 @@ class QualifyOwnedCompilerLaneTests(unittest.TestCase):
         self.workspace_check = self._write_executable(
             workspace_tools / "check-workspace.sh", FAKE_GNU_PACKAGE_TEST
         )
+        self.fixture_checker = self._file(
+            workspace_tools / "check-gnu-package-fixture.py", b"# inert fixture marker\n"
+        )
+        fixture_cmake = self.tools / "crates/aros-cmake-engine/engine/tests/package-qualified"
+        fixture_cmake.mkdir(parents=True)
+        self.fixture_cmake = self._file(
+            fixture_cmake / "LiteralGnuCompilerRoleTest.cmake", b"# inert fixture marker\n"
+        )
+        self.fixture_capture = self._file(
+            fixture_cmake / "BoundedProcessOutput.cmake", b"# inert fixture marker\n"
+        )
 
         identity = self._file(self.inputs / "sdk-identity.json", b'{"fixture":"identity"}\n')
         plan["sdks"] = [
@@ -336,9 +347,18 @@ class QualifyOwnedCompilerLaneTests(unittest.TestCase):
             "--job-name", JOB_NAME,
         ]
 
-    def _run(self, extra: list[str], *, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
+    def _run(
+        self,
+        extra: list[str],
+        *,
+        env: dict[str, str] | None = None,
+        root: Path | None = None,
+    ) -> subprocess.CompletedProcess[str]:
+        base_args = self._base_args()
+        if root is not None:
+            base_args[base_args.index("--root") + 1] = str(root)
         return subprocess.run(
-            ["/bin/bash", str(self.script), *self._base_args(), *extra],
+            ["/bin/bash", str(self.script), *base_args, *extra],
             capture_output=True,
             text=True,
             check=False,
@@ -517,6 +537,26 @@ class QualifyOwnedCompilerLaneTests(unittest.TestCase):
         self.assertIn("fixture stdout", fixture_log.read_text(encoding="utf-8"))
         self.assertIn("fixture stderr", fixture_log.read_text(encoding="utf-8"))
 
+    def test_missing_gnu_fixture_source_fails_before_compiler_or_sdk_dispatch(self) -> None:
+        forbidden_stages = {
+            "build", "read-a", "read-b", "compare", "materialize-source", "host-tools",
+            "sdk-build", "gnu-package-test",
+        }
+        for marker_index, marker in enumerate((self.fixture_checker, self.fixture_cmake, self.fixture_capture)):
+            with self.subTest(marker=marker.relative_to(self.tools)):
+                marker.unlink()
+                for owner_mode in (False, True):
+                    self.call_log.unlink(missing_ok=True)
+                    current_root = self.operations / f"preflight-{marker_index}-{int(owner_mode)}"
+                    extra = self._owner_args() if owner_mode else []
+                    result = self._run(extra, root=current_root)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn("selected tools source lacks regular GNU package fixture inputs", result.stderr)
+                    stages = [event["stage"] for event in self._events()]
+                    self.assertEqual(stages, ["release-plan"])
+                    self.assertFalse(forbidden_stages.intersection(stages))
+                marker.write_text("# inert fixture marker\n", encoding="utf-8")
+
     def test_sdk_build_failure_preserves_exit_and_skips_gnu_package_fixture(self) -> None:
         result = self._run_through_sdk(sdk_exit=47)
         self.assertEqual(result.returncode, 47, result.stderr)
@@ -526,6 +566,8 @@ class QualifyOwnedCompilerLaneTests(unittest.TestCase):
         self.assertNotIn("gnu-package-test", stages)
 
     def test_llvm_sdk_does_not_dispatch_gnu_package_fixture(self) -> None:
+        self.fixture_checker.unlink()
+        self.fixture_cmake.unlink()
         result = self._run_through_sdk(family="llvm")
         self.assertEqual(result.returncode, 0, result.stderr)
         stages = [event["stage"] for event in self._events()]
