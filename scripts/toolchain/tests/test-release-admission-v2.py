@@ -446,6 +446,28 @@ class ReleaseAdmissionTests(unittest.TestCase):
         self._assert_rejected(result)
         self.assertEqual(occupied.read_bytes(), b"preserved\n")
 
+    def test_visibility_rejects_boolean_ruleset_id(self) -> None:
+        self._api_route(RULESETS_PATH, [{"id": 1, "target": "tag", "enforcement": "active"}])
+        ruleset = {**self.responses[RULESET_PATH], "id": True}
+        self._api_route(f"{RULESETS_PATH}/1", ruleset)
+        output = self.base / "visibility-boolean-id.json"
+        rejected = self._run_visibility(output)
+        self._assert_rejected(rejected)
+        self.assertFalse(output.exists())
+
+    def test_visibility_workflow_write_job_is_opt_in_and_main_only(self) -> None:
+        workflow = (SOURCE_ROOT / ".github/workflows/ci.yml").read_text()
+        write_job = workflow.split("  governance-visibility-write:\n", 1)[1].split("\n  contracts:\n", 1)[0]
+        self.assertIn("github.event_name == 'workflow_dispatch'", write_job)
+        self.assertIn("github.ref == 'refs/heads/main'", write_job)
+        self.assertIn("inputs.governance_visibility_probe", write_job)
+        self.assertIn("GH_TOKEN: ${{ github.token }}", write_job)
+        self.assertIn("persist-credentials: false", write_job)
+        self.assertNotIn("secrets.", write_job)
+        self.assertNotIn("environment:", write_job)
+        self.assertNotIn("release create", write_job)
+        self.assertNotIn("git push", write_job)
+
     def _api_error(self, path: str, value: object) -> None:
         self.errors[path] = value
         self._save_responses()

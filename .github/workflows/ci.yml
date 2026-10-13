@@ -51,10 +51,23 @@ jobs:
           set -euo pipefail
           python3 -B scripts/toolchain/release-admission-v2.py probe-governance-visibility \
             --contents-permission read --output "$RUNNER_TEMP/governance-read.json"
+      - name: Observe GraphQL bypass-count visibility without reading actor identities
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          ruleset_id=$(jq -er '.ruleset_id | select(type == "number" and . > 0)' "$RUNNER_TEMP/governance-read.json")
+          node_id=$(gh api "repos/$GITHUB_REPOSITORY/rulesets/$ruleset_id" --jq '.node_id')
+          # GraphQL variables must not expand in the shell.
+          # shellcheck disable=SC2016
+          gh api graphql \
+            -f query='query($id:ID!) { node(id:$id) { ... on RepositoryRuleset { id databaseId target enforcement bypassActors(first:1) { totalCount pageInfo { hasNextPage } } } } }' \
+            -f "id=$node_id" \
+            --jq '.data.node | {id,databaseId,target,enforcement,bypass_count:.bypassActors.totalCount,has_next_page:.bypassActors.pageInfo.hasNextPage}'
 
   governance-visibility-write:
     name: Governance visibility with contents write
-    if: github.event_name == 'workflow_dispatch' && inputs.governance_visibility_probe
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.governance_visibility_probe
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:

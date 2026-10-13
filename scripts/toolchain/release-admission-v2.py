@@ -992,7 +992,7 @@ def command_probe_visibility(output: Path, profile: str) -> None:
         fail("visibility probe requires one active tag ruleset")
     identifier = _positive_int(selected[0].get("id"), "visibility ruleset id")
     ruleset = _required_object(api(f"repos/{REPOSITORY}/rulesets/{identifier}"), "visibility ruleset")
-    if (ruleset.get("id") != identifier or ruleset.get("target") != "tag"
+    if (type(ruleset.get("id")) is not int or ruleset["id"] != identifier or ruleset.get("target") != "tag"
             or ruleset.get("enforcement") != "active"):
         fail("visibility ruleset identity changed")
     visible = "bypass_actors" in ruleset
