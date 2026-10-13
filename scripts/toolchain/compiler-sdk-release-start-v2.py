@@ -273,8 +273,16 @@ def verify_start(record_path: Path, bundle_path: Path, source_context: dict, *,
     record = validate_start(ADMISSION.parse_json(raw, "signed start", maximum=MAX_RECORD), source_context)
     context = record["context"]
     observe_start_run(context)
-    expected = ORIGIN.select_source_job(ORIGIN.jobs_for(context), context,
-                                       {"id": record["job"]["id"], "name": JOB})
+    def source_job() -> dict:
+        pages = ORIGIN.jobs_for(context)
+        selected_job = ORIGIN.select_source_job(pages, context,
+                                               {"id": record["job"]["id"], "name": JOB})
+        provider_job = next(item for item in ORIGIN.complete_jobs(pages) if item["id"] == selected_job["id"])
+        require(provider_job.get("labels") == ["ubuntu-24.04"],
+                "signed start provider runner label differs")
+        return selected_job
+
+    expected = source_job()
     require(expected == record["job"], "completed provider job differs from the signed start")
     # gh reopens its inputs by pathname. Verify private copies of the selected
     # bytes, not mutable caller paths; preserve the signed subject basename.
@@ -312,8 +320,7 @@ def verify_start(record_path: Path, bundle_path: Path, source_context: dict, *,
     verify_runtime_evidence(record, **runtime_selection)
     observe_candidate(record)
     observe_start_run(context)
-    require(ORIGIN.select_source_job(ORIGIN.jobs_for(context), context,
-            {"id": record["job"]["id"], "name": JOB}) == expected,
+    require(source_job() == expected,
             "provider start job changed during authentication")
     observe_candidate(record)
     verify_runtime_evidence(record, **runtime_selection)

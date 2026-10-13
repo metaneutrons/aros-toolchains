@@ -155,6 +155,7 @@ def provider_job(ctx: dict, *, job_id: int = JOB_ID, check_id: int = CHECK_RUN_I
         "head_sha": ctx["producer_commit"],
         "run_id": ctx["run_id"],
         "run_attempt": attempt,
+        "labels": ["ubuntu-24.04"],
         "status": status,
         "conclusion": conclusion,
     }
@@ -328,6 +329,8 @@ class StartFixture:
                 self.source_job["check_run_url"] = (
                     f"https://api.github.com/repos/{REPOSITORY}/check-runs/{CHECK_RUN_ID + 1}"
                 )
+            elif mutate_after_candidate == "runner":
+                self.source_job["labels"] = ["self-hosted"]
             elif mutate_after_candidate == "draft":
                 self.provider[f"repos/{REPOSITORY}/releases/{DRAFT_ID}"]["draft"] = False
             elif mutate_after_candidate == "tag":
@@ -648,6 +651,18 @@ class ObserveCandidateTests(unittest.TestCase):
 
 
 class VerifyStartTests(unittest.TestCase):
+    def test_source_runner_identity_is_required_in_both_provider_snapshots(self) -> None:
+        for labels in (None, [], ["self-hosted"], ["ubuntu-24.04-arm"]):
+            with self.subTest(labels=labels), tempfile.TemporaryDirectory() as directory:
+                fixture = StartFixture(Path(directory))
+                fixture.source_job["labels"] = labels
+                with self.assertRaisesRegex(start.StartError, "runner label"):
+                    fixture.verify()
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = StartFixture(Path(directory))
+            with self.assertRaisesRegex(start.StartError, "runner label"):
+                fixture.verify(mutate_after_candidate="runner")
+
     def test_external_verifier_does_not_reopen_temporarily_substituted_caller_inputs(self) -> None:
         with tempfile.TemporaryDirectory(prefix="compiler-sdk-start-private-bytes.") as directory:
             fixture = StartFixture(Path(directory))
