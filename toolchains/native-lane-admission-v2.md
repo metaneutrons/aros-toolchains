@@ -98,3 +98,33 @@ behavior, not actual compiler execution or cryptographic authentication. A live
 native owning-job upload/readback exercise remains required, followed by the
 complete selected mixed-family matrix, comparison/compatibility evidence,
 closed release index, isolated signature/attestation audit and consumer cutover.
+
+## Durable V2 qualification adapter
+
+`record-complete-qualification-v2.py` is a production-only recording adapter,
+not an enabled production workflow. It requires independently held runtime,
+collection, index, selection, candidate-summary and external subject-list
+digests. The candidate release ID and download URL must match the selected
+SemVer tag and repository; diagnostic identities cannot be recorded through it.
+
+The adapter rechecks the staged provenance bundle through the external verifier,
+including the exact source commit, tag ref, run and attempt. It then invokes
+native `record-qualification --release-format family-v2` and
+`verify-qualification` against the complete original compiler and SDK evidence.
+Returned counts, tuples, report and package digests must match the held
+selectors. Only after both native operations pass does it expose the unchanged
+qualification document and return its raw digest. Child files are bounded to
+16 MiB; timeouts terminate the process group. Existing operation roots are
+never adopted or overwritten, and failures retain diagnostics without a success
+summary.
+
+Place the fresh operation directory beneath an owned parent outside the release,
+selected evidence and all forbidden build prefixes. In particular, an output
+under `RUNNER_TEMP` cannot be used when that entire root is a forbidden prefix.
+
+The protected caller still authenticates original owning jobs, obtains genuine
+provider/tag observations and independently verifies the released runtime.
+Supplied tag-object metadata and a binary hash do not establish those properties.
+This adapter neither creates tags/releases nor grants publication authority.
+Its synthetic process-boundary tests exercise sequencing and rejection, not a
+real signed-production invocation or successful compiler/SDK qualification.
