@@ -1,0 +1,43 @@
+name: Verify compiler and SDK runtime transport
+description: Recheck a selected runtime after artifact transport without network access or runtime fallback.
+
+inputs:
+  runtime-kind:
+    description: Explicit development or released route selected before fan-out.
+    required: true
+  root:
+    description: Downloaded runtime directory.
+    required: true
+  host:
+    description: Exact selected native host.
+    required: true
+  lock:
+    description: Repository-relative immutable runtime lock.
+    default: toolchains/aros-tools-runtime-v1.json
+    required: false
+
+runs:
+  using: composite
+  steps:
+    - name: Verify the selected runtime closure and restore transport modes
+      shell: bash
+      env:
+        RUNTIME_KIND: ${{ inputs.runtime-kind }}
+        RUNTIME_ROOT: ${{ inputs.root }}
+        RUNTIME_HOST: ${{ inputs.host }}
+        RUNTIME_LOCK: ${{ inputs.lock }}
+      run: |
+        set -euo pipefail
+        case "$RUNTIME_KIND" in
+          development)
+            (cd "$RUNTIME_ROOT" && shasum -a 256 -c SHA256SUMS)
+            chmod +x "$RUNTIME_ROOT"/bin/*
+            ;;
+          released)
+            python3 -B "$GITHUB_WORKSPACE/scripts/toolchain/materialize-aros-tools-runtime.py" restore-artifact-modes \
+              --lock "$GITHUB_WORKSPACE/$RUNTIME_LOCK" --host "$RUNTIME_HOST" --directory "$RUNTIME_ROOT"
+            python3 -B "$GITHUB_WORKSPACE/scripts/toolchain/materialize-aros-tools-runtime.py" verify \
+              --lock "$GITHUB_WORKSPACE/$RUNTIME_LOCK" --host "$RUNTIME_HOST" --directory "$RUNTIME_ROOT"
+            ;;
+          *) echo 'Unsupported compiler/SDK runtime route.' >&2; exit 1;;
+        esac

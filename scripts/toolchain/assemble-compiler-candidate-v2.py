@@ -71,6 +71,14 @@ def _require(condition: bool, message: str) -> None:
         raise AssemblyError(message)
 
 
+def _projection_route(source_ref: str) -> tuple[str, bool]:
+    if source_ref.startswith("refs/tags/"):
+        return "push", False
+    if source_ref.startswith("refs/heads/"):
+        return "workflow_dispatch", True
+    raise AssemblyError("collector source ref does not select a release route")
+
+
 def _digest(value: object, label: str) -> str:
     _require(isinstance(value, str) and HEX64.fullmatch(value) is not None,
              f"{label} must be a lowercase SHA-256 digest")
@@ -207,14 +215,6 @@ def _read_bound_inputs(args: argparse.Namespace) -> dict:
              "native release plan bytes differ from the selected digest")
     _MATRIX._validate_plan(plan, expected_inputs_sha256=inputs_sha,
                            expected_producer_commit=producer, expected_tools_commit=tools)
-    projection = _MATRIX.project(
-        raw=plan_raw, plan=plan, plan_sha256=plan_sha, inputs_sha256=inputs_sha,
-        producer_commit=producer, tools_commit=tools, event="workflow_dispatch",
-        scope="full", full_qualification=True,
-    )
-    _require(projection["complete_selection"] is True
-             and projection["scope"] == "full" and projection["event"] == "workflow_dispatch",
-             "selected native release plan is not a complete full-qualification plan")
     _SDK_SELECT._validate_collection(collection, plan, producer_commit=producer, tools_commit=tools)
 
     group_refs: dict[str, dict[str, Path]] = {}
@@ -279,6 +279,16 @@ def _read_bound_inputs(args: argparse.Namespace) -> dict:
              and type(fragment["release_admission"]) is bool and not fragment["release_admission"]
              and type(fragment["publication"]) is bool and not fragment["publication"],
              "compiler collector fragment has a release or publication authority mismatch")
+
+    event, full_qualification = _projection_route(fragment["source_ref"])
+    projection = _MATRIX.project(
+        raw=plan_raw, plan=plan, plan_sha256=plan_sha, inputs_sha256=inputs_sha,
+        producer_commit=producer, tools_commit=tools, event=event,
+        scope="full", full_qualification=full_qualification,
+    )
+    _require(projection["complete_selection"] is True
+             and projection["scope"] == "full" and projection["event"] == event,
+             "selected native release plan is not a complete full-scope plan")
 
     expected_lanes = [
         {"group_id": lane["group_id"], "host": lane["host"],

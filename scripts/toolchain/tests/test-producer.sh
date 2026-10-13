@@ -438,6 +438,7 @@ python3 -B "$source_root/scripts/toolchain/tests/test-required-compiler-payload-
 python3 -B "$source_root/scripts/toolchain/tests/test-compiler-required-payload-policy.py"
 python3 -B "$source_root/scripts/toolchain/tests/test-prepare-compiler-sdk-inputs-v2.py"
 python3 -B "$source_root/scripts/toolchain/tests/test-compiler-sdk-workflow-v2.py"
+python3 -B "$source_root/scripts/toolchain/tests/test-compiler-sdk-route-v2.py"
 python3 -B "$source_root/scripts/toolchain/tests/test-qualify-owned-compiler-lane-v2.py"
 python3 -B "$source_root/scripts/toolchain/tests/test-retain-sdk-config-logs.py"
 python3 -B "$source_root/scripts/toolchain/tests/test-read-native-owner-v2.py"

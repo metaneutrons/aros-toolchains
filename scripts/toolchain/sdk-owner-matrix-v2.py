@@ -66,6 +66,14 @@ def _check_sha(value: object, description: str) -> str:
     return value
 
 
+def _projection_route(source_ref: str) -> tuple[str, bool]:
+    if source_ref.startswith("refs/tags/"):
+        return "push", False
+    if source_ref.startswith("refs/heads/"):
+        return "workflow_dispatch", True
+    raise artifact_origin.OriginError("source ref does not select a release route")
+
+
 def _measure_raw(path: Path, limit: int, description: str) -> tuple[dict, bytes]:
     measurement, raw = artifact_origin.normalized_file(path, limit)
     _require(raw is not None, f"{description} could not be read as bounded metadata")
@@ -195,6 +203,7 @@ def select(args: argparse.Namespace) -> dict[str, Any]:
              and context["source_ref"] == args.source_ref,
              "source context differs from the selected producer/workflow/ref")
 
+    event, full_qualification = _projection_route(context["source_ref"])
     projection = release_matrix.project(
         raw=raw_plan,
         plan=plan,
@@ -202,9 +211,9 @@ def select(args: argparse.Namespace) -> dict[str, Any]:
         inputs_sha256=inputs_sha256,
         producer_commit=args.producer_commit,
         tools_commit=args.tools_commit,
-        event="workflow_dispatch",
+        event=event,
         scope="full",
-        full_qualification=True,
+        full_qualification=full_qualification,
     )
     _require(projection["complete_selection"] is True,
              "SDK owner selection requires the exact complete native matrix")

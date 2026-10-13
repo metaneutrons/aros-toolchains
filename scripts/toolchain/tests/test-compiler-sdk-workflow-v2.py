@@ -24,9 +24,11 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[3]
 WORKFLOW = ".github/workflows/toolchain-release.yml"
 ACTION = ".github/actions/materialize-development-aros-tools/action.yml"
+RUNTIME_ACTION = ".github/actions/verify-aros-tools-runtime-transport/action.yml"
 PREPARE = "scripts/toolchain/prepare-compiler-sdk-inputs-v2.py"
 QUALIFY = "scripts/toolchain/qualify-compiler-sdk-lane-v2.sh"
 MATRIX = "scripts/toolchain/select-release-matrix-v2.py"
+ROUTE = "scripts/toolchain/select-compiler-sdk-route-v2.py"
 CACHE_TRANSPORT = "scripts/toolchain/cache-archive-transport.py"
 SELECTION = "toolchains/compiler-sdk-ci-selection-v2.json"
 EXECUTOR = "toolchains/producer-executor-v1.toml"
@@ -147,6 +149,8 @@ def require_read_only_job(job: str, name: str) -> None:
                 cursor += 1
             break
     expected_permissions = ["contents: read"]
+    if name in {"v2-prepare", "v2-runtimes"}:
+        expected_permissions += ["attestations: read"]
     if name in {"v2-qualify", "v2-build", "v2-sdk"}:
         expected_permissions += ["actions: read", "id-token: write", "attestations: write"]
     if name == "v2-readback":
@@ -155,7 +159,11 @@ def require_read_only_job(job: str, name: str) -> None:
         raise PolicyViolation(f"{name} permissions must exactly match its non-publishing job scope")
     if re.search(r"(?m)^\s*environment:", job):
         raise PolicyViolation(f"{name} must not use a publication environment")
-    permitted_reader_token = "GH_TOKEN: ${{ github.token }}" if name in {"v2-sdk", "v2-readback"} else ""
+    permitted_reader_token = (
+        "GH_TOKEN: ${{ github.token }}"
+        if name in {"v2-prepare", "v2-sdk", "v2-readback"}
+        else ""
+    )
     inspected_job = job.replace(permitted_reader_token, "") if permitted_reader_token else job
     if re.search(r"\bsecrets\.", inspected_job) or "GH_TOKEN" in inspected_job or "GITHUB_TOKEN" in inspected_job:
         raise PolicyViolation(f"{name} must not request credentials or secrets")
@@ -378,6 +386,8 @@ def validate_selected_inputs(documents: Documents) -> dict[str, int]:
 def validate_v2_policy(documents: Documents) -> dict[str, int]:
     workflow = documents.text(WORKFLOW)
     action = documents.text(ACTION)
+    runtime_action = documents.text(RUNTIME_ACTION)
+    route_script = documents.text(ROUTE)
     prepare_script = documents.text(PREPARE)
     qualify_script = documents.text(QUALIFY)
     matrix_script = documents.text(MATRIX)
@@ -402,25 +412,121 @@ def validate_v2_policy(documents: Documents) -> dict[str, int]:
                 f"{name} must have a bounded job timeout")
 
     require(
-        "if: github.event_name == 'workflow_dispatch' && (inputs.mode == 'qualify-v2' || inputs.mode == 'qualify-v2-full')" in prepare,
-        "V2 preparation must run only for an explicit qualify-v2 dispatch",
+        "if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && (inputs.mode == 'qualify-v2' || inputs.mode == 'qualify-v2-full'))" in prepare,
+        "V2 preparation must admit only pushes and the two explicit manual qualification modes",
+    )
+    selection_step = prepare.split("      - id: selection\n", 1)[1].split("      - ", 1)[0]
+    require(
+        "name: Authenticate the exact route before source checkout or runtime materialization" in selection_step
+        and "GH_TOKEN: ${{ github.token }}" in selection_step
+        and 'REQUESTED_MODE: ${{ inputs.mode }}' in selection_step
+        and 'REQUESTED_SCOPE: ${{ inputs.scope }}' in selection_step
+        and 'REQUESTED_GROUP: ${{ inputs.diagnostic_group }}' in selection_step
+        and "select-compiler-sdk-route-v2.py" in selection_step
+        and '--event "$GITHUB_EVENT_NAME" --ref-type "$GITHUB_REF_TYPE" --source-ref "$GITHUB_REF"' in selection_step
+        and '--repository "$GITHUB_REPOSITORY" --producer-commit "$GITHUB_SHA"' in selection_step
+        and '--run-attempt "$GITHUB_RUN_ATTEMPT"' in selection_step
+        and '--mode "$REQUESTED_MODE" --scope "$REQUESTED_SCOPE" --group "$REQUESTED_GROUP"' in selection_step
+        and '--github-output "$GITHUB_OUTPUT"' in selection_step
+        and prepare.index("Authenticate the exact route") < prepare.index("checkout-pinned-recursive-source")
+        and prepare.index("Authenticate the exact route") < prepare.index("materialize-development-aros-tools"),
+        "V2 must authenticate one closed route before source checkout or runtime materialization",
+    )
+    documents.read(ROUTE)
+    push_route = route_script.split('if args.event == "push":', 1)[1].split("\n    else:", 1)[0]
+    manual_route = route_script.split("\n    else:", 1)[1].split("\n    return outputs", 1)[0]
+    require(
+        "authenticate_tag(args, selection[\"tools_commit\"])" in push_route
+        and 'runtime_kind="released"' in push_route
+        and 'full_matrix="true"' in push_route
+        and 'runtime_kind="development"' in manual_route
+        and 'full_matrix=str(full).lower()' in manual_route
+        and 'release_id=f"toolchain-dev-{args.producer_commit[:12]}"' in manual_route
+        and 'args.event == "workflow_dispatch"' in manual_route
+        and 'args.run_attempt == "1"' in route_script
+        and 'args.mode == args.scope == args.group == ""' in route_script
+        and '("qualify-v2", "linux-x86_64")' in route_script
+        and '("qualify-v2-full", "full")' in route_script
+        and 'not full or args.group == ""' in route_script
+        and 'runtime.get("source_commit") == tools_commit' in route_script
+        and 'return {"release_id": name' in route_script
+        and 'absence.returncode != 0 and statuses == ["404"]' in route_script,
+        "route selector must close push and manual identities before writing route outputs",
     )
     require(
-        '[[ "$GITHUB_EVENT_NAME" == workflow_dispatch && "$GITHUB_REF_TYPE" == branch ]]' in prepare,
-        "V2 diagnostics must reject tag and non-dispatch refs",
+        'release_id: ${{ steps.selection.outputs.release_id }}' in prepare
+        and 'runtime_kind: ${{ steps.selection.outputs.runtime_kind }}' in prepare
+        and 'full_matrix: ${{ steps.selection.outputs.full_matrix }}' in prepare
+        and 'tag_object: ${{ steps.selection.outputs.tag_object }}' in prepare
+        and 'tag_epoch: ${{ steps.selection.outputs.tag_epoch }}' in prepare,
+        "authenticated release identity and route outputs must be exposed by V2 preparation",
+    )
+    for block_name, block, kind_ref, host_ref in (
+        ("v2-prepare", prepare, "steps.selection.outputs.runtime_kind", "linux-x86_64"),
+        ("v2-runtimes", runtimes, "needs.v2-prepare.outputs.runtime_kind", "${{ matrix.host }}"),
+    ):
+        require(
+            f"if: {kind_ref} == 'development'" in block
+            and "uses: ./.github/actions/materialize-development-aros-tools" in block
+            and f"if: {kind_ref} == 'released'" in block
+            and "uses: ./.github/actions/materialize-aros-tools-runtime" in block
+            and f"host: {host_ref}" in block,
+            f"{block_name} must select exactly the route-authenticated development or released runtime",
+        )
+    require(
+        workflow.count("uses: ./.github/actions/verify-aros-tools-runtime-transport") == 7,
+        "all seven V2 runtime consumers must use the shared transport verifier",
+    )
+    for block_name, block in (("v2-prepare", prepare), ("v2-sources", sources),
+                              ("v2-runtimes", runtimes), ("v2-qualify", qualify),
+                              ("v2-build", builds), ("v2-sdk", sdk), ("v2-readback", readback)):
+        require(
+            block.count("uses: ./.github/actions/verify-aros-tools-runtime-transport") == 1
+            and "root: ${{ runner.temp }}/diagnostic-runtime" in block
+            and "runtime-kind:" in block,
+            f"{block_name} must reverify its transported selected runtime before use",
+        )
+    for block_name, block in (("v2-prepare", prepare), ("v2-runtimes", runtimes)):
+        verifier = block.index("uses: ./.github/actions/verify-aros-tools-runtime-transport")
+        binder = block.find("name: Bind the verified runtime root without fallback")
+        require(
+            binder > verifier
+            and "run: printf 'root=%s/diagnostic-runtime\\n' \"$RUNNER_TEMP\" >> \"$GITHUB_OUTPUT\"" in block,
+            f"{block_name} must expose only the route-authenticated runtime root after verification",
+        )
+    require(
+        "include-hidden-files: true" in prepare and "include-hidden-files: true" in runtimes,
+        "V2 runtime artifacts must retain hidden metadata through transport",
     )
     require(
-        'case "$REQUESTED_MODE:$REQUESTED_SCOPE" in' in prepare
-        and 'qualify-v2:linux-x86_64) ;;' in prepare
-        and 'qualify-v2-full:full) [[ -z "$REQUESTED_GROUP" ]] ;;' in prepare
-        and 'REQUESTED_MODE: ${{ inputs.mode }}' in prepare
-        and 'REQUESTED_SCOPE: ${{ inputs.scope }}' in prepare,
-        "V2 diagnostics must keep Linux x86-64 separate from explicit complete qualification",
+        "case \"$RUNTIME_KIND\" in" in runtime_action
+        and re.search(
+            r"(?s)case \"\$RUNTIME_KIND\" in\s*development\)\s*(.*?)\s*;;\s*released\)\s*(.*?)\s*;;\s*\*\)\s*(.*?)\s*;;\s*esac",
+            runtime_action,
+        ) is not None,
+        "shared runtime transport must have only development, released and rejecting default cases",
     )
-    require("uses: ./.github/actions/materialize-development-aros-tools" in prepare,
-            "V2 preparation must use the local development-only tools helper")
+    runtime_cases = re.search(
+        r"(?s)case \"\$RUNTIME_KIND\" in\s*development\)\s*(.*?)\s*;;\s*released\)\s*(.*?)\s*;;\s*\*\)\s*(.*?)\s*;;\s*esac",
+        runtime_action,
+    )
+    assert runtime_cases is not None
+    development_case, released_case, unsupported_case = runtime_cases.groups()
+    require(
+        'shasum -a 256 -c SHA256SUMS' in development_case
+        and 'chmod +x "$RUNTIME_ROOT"/bin/*' in development_case
+        and "materialize-aros-tools-runtime.py" not in development_case
+        and 'materialize-aros-tools-runtime.py" restore-artifact-modes' in released_case
+        and 'materialize-aros-tools-runtime.py" verify' in released_case
+        and released_case.count('--lock "$GITHUB_WORKSPACE/$RUNTIME_LOCK" --host "$RUNTIME_HOST" --directory "$RUNTIME_ROOT"') == 2
+        and "exit 1" in unsupported_case
+        and "exit 0" not in unsupported_case
+        and "||" not in runtime_cases.group(0),
+        "shared runtime verification must close both kinds independently and reject unknown kinds without fallback",
+    )
     require(
         "name: Check portable readback interface before full qualification" in prepare
+        and "if: steps.selection.outputs.full_matrix == 'true'" in prepare
         and 'readback_help=$("$READBACK_AROS" toolchain producer verify-package --help)' in prepare
         and "for option in package-measurement package-measurement-sha256 executor-contract-sha256 executor-binary-sha256; do" in prepare
         and prepare.index("name: Check portable readback interface") < prepare.index("- id: matrix"),
@@ -452,8 +558,24 @@ def validate_v2_policy(documents: Documents) -> dict[str, int]:
 
     plan = workflow_job(workflow, "plan")
     require(
-        "inputs.mode != 'qualify-v2'" in plan and "inputs.mode != 'qualify-v2-full'" in plan,
-        "diagnostic dispatch must not enter the legacy release graph",
+        "if: github.event_name == 'workflow_dispatch' && inputs.mode == 'produce'" in plan
+        and "name: Reject legacy publication during the V2 compiler and SDK migration" in plan
+        and "if: github.event_name == 'push'" in plan
+        and "exit 1" in plan,
+        "legacy plan must stay manual-produce only while retaining its unreachable old tag rejection gate",
+    )
+    publisher = workflow_job(workflow, "draft-release")
+    require(
+        "needs: [plan, compatibility]" in publisher
+        and "if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')" in publisher,
+        "the V1 tag publisher must remain downstream of the manual-only legacy plan",
+    )
+    require(
+        re.search(
+            r"(?ms)^      scope:\n.*?^        options:\n          - linux-x86_64\n          - linux\n          - full\n",
+            workflow,
+        ) is not None,
+        "existing manual release scopes must remain available",
     )
     for name in names:
         if name in expected_names:
@@ -467,15 +589,16 @@ def validate_v2_policy(documents: Documents) -> dict[str, int]:
     require(
         "prepare-compiler-sdk-inputs-v2.py" in prepare
         and "select-release-matrix-v2.py" in prepare
-        and '--event workflow_dispatch --scope "$REQUESTED_SCOPE"' in prepare
-        and 'if [[ "$REQUESTED_MODE" == qualify-v2-full ]]; then' in prepare
+        and '--event "$SELECTED_EVENT" --scope "$SELECTED_SCOPE"' in prepare
+        and 'FULL_QUALIFICATION: ${{ steps.selection.outputs.full_qualification }}' in prepare
+        and 'if [[ "$FULL_QUALIFICATION" == true ]]; then' in prepare
         and 'group_arguments+=(--full-qualification)' in prepare,
-        "V2 matrix preparation must use explicit native-plan full qualification without event spoofing",
+        "V2 matrix preparation must use the authenticated event and explicit native-plan full qualification",
     )
     require(
         "if: inputs.mode == 'qualify-v2'" in qualify
-        and "if: inputs.mode == 'qualify-v2-full'" in builds
-        and "if: inputs.mode == 'qualify-v2-full'" in sdk
+        and "if: needs.v2-prepare.outputs.full_matrix == 'true'" in builds
+        and "if: needs.v2-prepare.outputs.full_matrix == 'true'" in sdk
         and "build_matrix: ${{ steps.matrix.outputs.build_matrix }}" in prepare
         and "matrix: ${{ fromJSON(needs.v2-prepare.outputs.build_matrix) }}" in builds
         and "uses: ./.github/actions/build-native-lane-v2" in builds
@@ -483,6 +606,14 @@ def validate_v2_policy(documents: Documents) -> dict[str, int]:
         and "root: ${{ runner.temp }}/native-lane-${{ matrix.copy }}" in builds
         and "job-name: Native compiler (${{ matrix.group_id }}, ${{ matrix.host }}, ${{ matrix.profile }}, ${{ matrix.copy }})" in builds,
         "full native compiler copies must execute in distinct original owning jobs and roots",
+    )
+    require(
+        'release_id: ${{ steps.selection.outputs.release_id }}' in prepare
+        and 'SELECTED_RELEASE_ID: ${{ needs.v2-prepare.outputs.release_id }}' in builds
+        and 'SELECTED_RELEASE_ID: ${{ needs.v2-prepare.outputs.release_id }}' in sdk
+        and 'SELECTED_RELEASE_ID: ${{ needs.v2-prepare.outputs.release_id }}' in readback
+        and "toolchain-dev-" not in builds + sdk + readback,
+        "authenticated release IDs must flow to full owners and readback without a hardcoded development fallback",
     )
     require(
         "needs: [v2-prepare, v2-sources, v2-runtimes, v2-build]" in sdk
@@ -499,14 +630,14 @@ def validate_v2_policy(documents: Documents) -> dict[str, int]:
         "SDK owners must authenticate two distinct original compilers without rebuilding",
     )
     require(
-        "if: inputs.mode == 'qualify-v2-full'" in readback
+        "if: needs.v2-prepare.outputs.full_matrix == 'true'" in readback
         and "needs: [v2-prepare, v2-runtimes, v2-build, v2-sdk]" in readback
         and "runs-on: ubuntu-24.04" in readback
         and "name: diagnostic-v2-native-runtime-linux-x86_64" in readback
         and "collect-sdk-owners-v2.sh" in readback
         and "collect-compiler-owners-v2.sh" in readback
         and readback.index("collect-compiler-owners-v2.sh") < readback.index("collect-sdk-owners-v2.sh")
-        and '--release-id "toolchain-dev-${GITHUB_SHA:0:12}"' in readback.split(
+        and '--release-id "$SELECTED_RELEASE_ID"' in readback.split(
             "collect-compiler-owners-v2.sh", 1
         )[1].split("collect-sdk-owners-v2.sh", 1)[0]
         and '--forbidden-prefix "$GITHUB_WORKSPACE" --forbidden-prefix "$RUNNER_TEMP"' in readback
@@ -580,11 +711,11 @@ def validate_v2_policy(documents: Documents) -> dict[str, int]:
             '--sdk-fragment "$fragment" --sdk-fragment-sha256 "$fragment_sha"',
             '--sdk-owner-root "$RUNNER_TEMP/complete-sdk-readback"',
             '--required-paths "$required_paths" --required-paths-sha256 "$required_paths_sha"',
-            '--release-id "toolchain-dev-${GITHUB_SHA:0:12}"',
+            '--release-id "$SELECTED_RELEASE_ID"',
             '--forbidden-prefix "$GITHUB_WORKSPACE" --forbidden-prefix "$RUNNER_TEMP"',
             '--support-dir "$support" --manifest-schema-sha256 "$manifest_schema_sha"',
             '--tree-fixture-sha256 "$tree_fixture_sha"',
-            '--base-url "https://github.com/$GITHUB_REPOSITORY/releases/download/toolchain-dev-${GITHUB_SHA:0:12}"',
+            '--base-url "https://github.com/$GITHUB_REPOSITORY/releases/download/$SELECTED_RELEASE_ID"',
             '--root "$RUNNER_TEMP/release-candidate"',
         )),
         "combined candidate assembly must follow authentication with independently selected policy and exact bindings",
@@ -694,13 +825,14 @@ def validate_v2_policy(documents: Documents) -> dict[str, int]:
         "host_matrix: ${{ steps.matrix.outputs.host_matrix }}" in prepare
         and "matrix: ${{ fromJSON(needs.v2-prepare.outputs.host_matrix) }}" in runtimes
         and "runs-on: ${{ matrix.runner }}" in runtimes
-        and "uses: ./.github/actions/materialize-development-aros-tools" in runtimes
+        and "uses: ./.github/actions/verify-aros-tools-runtime-transport" in runtimes
+        and "runtime-kind: ${{ needs.v2-prepare.outputs.runtime_kind }}" in runtimes
         and "commit: ${{ needs.v2-prepare.outputs.tools_commit }}" in runtimes
         and "name: diagnostic-v2-native-runtime-${{ matrix.host }}" in runtimes
         and "name: diagnostic-v2-native-runtime-${{ matrix.host }}" in qualify
         and "if: runner.os == 'Linux'" in qualify
-        and 'shasum -a 256 -c SHA256SUMS' in qualify,
-        "every native lane must consume its own host runtime with portable readback",
+        and "runtime-kind: ${{ needs.v2-prepare.outputs.runtime_kind }}" in qualify,
+        "every native lane must consume and reverify its own selected host runtime with portable readback",
     )
     require(
         'REQUESTED_GROUP: ${{ inputs.diagnostic_group }}' in prepare
@@ -852,7 +984,7 @@ class CompilerSdkWorkflowV2Tests(unittest.TestCase):
     def test_portable_readback_preflight_executes_the_actual_shell(self) -> None:
         workflow = Documents().text(WORKFLOW)
         block = workflow.split("name: Check portable readback interface before full qualification", 1)[1]
-        self.assertIn("if: inputs.mode == 'qualify-v2-full'", block.split("- id: matrix", 1)[0])
+        self.assertIn("if: steps.selection.outputs.full_matrix == 'true'", block.split("- id: matrix", 1)[0])
         script = block.split("        run: |\n", 1)[1].split("      - id: matrix", 1)[0]
         script = "\n".join(line[10:] for line in script.splitlines()) + "\n"
         options = ("package-measurement", "package-measurement-sha256",
@@ -898,43 +1030,115 @@ class CompilerSdkWorkflowV2Tests(unittest.TestCase):
         self.assertEqual(result["group_count"], len(selection["groups"]))
         self.assertEqual(result["sdk_count"], len(selection["sdks"]))
 
-    def test_actual_selection_shell_requires_explicit_non_publishing_full_mode(self) -> None:
+    def test_actual_route_shell_accepts_manual_modes_and_rejects_tag_without_runtime_lock(self) -> None:
         prepare = workflow_job(Documents().text(WORKFLOW), "v2-prepare")
-        block = prepare.split("        run: |\n", 1)[1].split("      - ", 1)[0]
-        script = "\n".join(line[10:] for line in block.splitlines())
-        for mode, scope, group, event, ref_type, accepted in (
-            ("qualify-v2", "linux-x86_64", "", "workflow_dispatch", "branch", True),
-            ("qualify-v2-full", "full", "", "workflow_dispatch", "branch", True),
-            ("qualify-v2", "full", "", "workflow_dispatch", "branch", False),
-            ("qualify-v2-full", "linux-x86_64", "", "workflow_dispatch", "branch", False),
-            ("qualify-v2-full", "full", "gnu-rv32", "workflow_dispatch", "branch", False),
-            ("qualify-v2-full", "full", "", "push", "tag", False),
-            ("qualify-v2-full", "full", "", "workflow_dispatch", "tag", False),
-        ):
-            with self.subTest(mode=mode, scope=scope, group=group, event=event), \
-                    tempfile.TemporaryDirectory(prefix="v2-full-selector-") as directory:
-                output = Path(directory) / "output"
-                output.touch()
-                environment = {**os.environ, "GITHUB_OUTPUT": str(output),
-                               "GITHUB_EVENT_NAME": event, "GITHUB_REF_TYPE": ref_type,
-                               "REQUESTED_MODE": mode, "REQUESTED_SCOPE": scope,
-                               "REQUESTED_GROUP": group}
-                result = subprocess.run(["bash", "-c", script], cwd=ROOT, env=environment,
-                                        capture_output=True, text=True, timeout=10)
-                self.assertEqual(result.returncode == 0, accepted, result.stderr)
-                if accepted:
-                    selection = Documents().json(SELECTION)
-                    self.assertEqual(output.read_text(),
-                                     f"source_commit={selection['source_commit']}\n"
-                                     f"tools_commit={selection['tools_commit']}\n")
-                else:
-                    self.assertEqual(output.read_bytes(), b"")
+        block = prepare.split("      - id: selection\n", 1)[1].split("      - ", 1)[0]
+        script = block.split("        run: |\n", 1)[1]
+        script = "\n".join(line[10:] for line in script.splitlines()) + "\n"
+        source_commit = "1" * 40
+        tools_commit = "2" * 40
+        with tempfile.TemporaryDirectory(prefix="v2-route-shell-") as directory:
+            workspace = Path(directory) / "producer"
+            workspace.mkdir()
+            subprocess.run(["git", "init", "-q", str(workspace)], check=True)
+            subprocess.run(["git", "-C", str(workspace), "config", "user.name", "Policy Test"], check=True)
+            subprocess.run(["git", "-C", str(workspace), "config", "user.email", "policy@example.invalid"], check=True)
+            toolchains = workspace / "toolchains"
+            toolchains.mkdir()
+            (workspace / "version.txt").write_text("1.2.3\n", encoding="utf-8")
+            (toolchains / "compiler-sdk-ci-selection-v2.json").write_text(
+                json.dumps({"schema": "aros-compiler-sdk-ci-selection-v2",
+                            "source_commit": source_commit, "tools_commit": tools_commit}),
+                encoding="utf-8",
+            )
+            subprocess.run(["git", "-C", str(workspace), "add", "version.txt", "toolchains"], check=True)
+            subprocess.run(["git", "-C", str(workspace), "commit", "-qm", "route fixture"], check=True)
+            producer_commit = subprocess.run(
+                ["git", "-C", str(workspace), "rev-parse", "HEAD"],
+                check=True, capture_output=True, text=True,
+            ).stdout.strip()
+            subprocess.run(["git", "-C", str(workspace), "tag", "-a", "v1.2.3", "-m", "fixture"], check=True)
 
-    def test_rejects_cross_host_runtime_download_and_full_mode_legacy_entry(self) -> None:
+            scenarios = (
+                ("qualify-v2", "linux-x86_64", "", "workflow_dispatch", "branch", True),
+                ("qualify-v2-full", "full", "", "workflow_dispatch", "branch", True),
+                ("qualify-v2", "full", "", "workflow_dispatch", "branch", False),
+                ("qualify-v2-full", "linux-x86_64", "", "workflow_dispatch", "branch", False),
+                ("qualify-v2-full", "full", "gnu-rv32", "workflow_dispatch", "branch", False),
+                ("qualify-v2-full", "full", "", "workflow_dispatch", "tag", False),
+            )
+            for mode, scope, group, event, ref_type, accepted in scenarios:
+                with self.subTest(mode=mode, scope=scope, group=group, event=event, ref_type=ref_type):
+                    output = Path(directory) / "output"
+                    output.write_bytes(b"")
+                    ref = "refs/heads/policy/route-tests" if ref_type == "branch" else "refs/tags/v1.2.3"
+                    environment = {
+                        **os.environ,
+                        "GITHUB_OUTPUT": str(output),
+                        "GITHUB_WORKSPACE": str(workspace),
+                        "GITHUB_EVENT_NAME": event,
+                        "GITHUB_REF_TYPE": ref_type,
+                        "GITHUB_REF": ref,
+                        "GITHUB_REPOSITORY": "example/producer",
+                        "GITHUB_SHA": producer_commit,
+                        "GITHUB_RUN_ATTEMPT": "1",
+                        "TOOLS_RUNTIME_LOCK": "toolchains/aros-tools-runtime-v1.json",
+                        "GH_TOKEN": "policy-test-token",
+                        "REQUESTED_MODE": mode,
+                        "REQUESTED_SCOPE": scope,
+                        "REQUESTED_GROUP": group,
+                    }
+                    result = subprocess.run(
+                        ["bash", "-c", script], cwd=ROOT, env=environment,
+                        capture_output=True, text=True, timeout=10,
+                    )
+                    self.assertEqual(result.returncode == 0, accepted, result.stderr)
+                    if accepted:
+                        outputs = dict(line.split("=", 1) for line in output.read_text().splitlines())
+                        self.assertEqual(outputs["source_commit"], source_commit)
+                        self.assertEqual(outputs["tools_commit"], tools_commit)
+                        self.assertEqual(outputs["event"], "workflow_dispatch")
+                        self.assertEqual(outputs["scope"], scope)
+                        self.assertEqual(outputs["runtime_kind"], "development")
+                        self.assertEqual(outputs["full_matrix"], str(mode == "qualify-v2-full").lower())
+                        self.assertEqual(outputs["full_qualification"], str(mode == "qualify-v2-full").lower())
+                        self.assertEqual(outputs["release_id"], f"toolchain-dev-{producer_commit[:12]}")
+                    else:
+                        self.assertEqual(output.read_bytes(), b"")
+
+            output = Path(directory) / "tag-output"
+            output.write_bytes(b"")
+            environment = {
+                **os.environ,
+                "GITHUB_OUTPUT": str(output),
+                "GITHUB_WORKSPACE": str(workspace),
+                "GITHUB_EVENT_NAME": "push",
+                "GITHUB_REF_TYPE": "tag",
+                "GITHUB_REF": "refs/tags/v1.2.3",
+                "GITHUB_REPOSITORY": "example/producer",
+                "GITHUB_SHA": producer_commit,
+                "GITHUB_RUN_ATTEMPT": "1",
+                "TOOLS_RUNTIME_LOCK": "toolchains/aros-tools-runtime-v1.json",
+                "GH_TOKEN": "policy-test-token",
+                "REQUESTED_MODE": "",
+                "REQUESTED_SCOPE": "",
+                "REQUESTED_GROUP": "",
+            }
+            result = subprocess.run(
+                ["bash", "-c", script], cwd=ROOT, env=environment,
+                capture_output=True, text=True, timeout=10,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("route input must be a regular file", result.stderr)
+            self.assertEqual(output.read_bytes(), b"")
+
+    def test_rejects_cross_host_runtime_download_and_legacy_route_widening(self) -> None:
         for job, original, replacement, reason in (
             ("v2-qualify", "name: diagnostic-v2-native-runtime-${{ matrix.host }}",
-             "name: diagnostic-v2-runtime", "own host runtime"),
-            ("plan", " && inputs.mode != 'qualify-v2-full'", "", "legacy release graph"),
+             "name: diagnostic-v2-runtime", "every native lane"),
+            ("plan", "if: github.event_name == 'workflow_dispatch' && inputs.mode == 'produce'",
+             "if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'",
+             "manual-produce only"),
             ("v2-prepare", "group_arguments+=(--full-qualification)",
              "group_arguments+=()", "full qualification"),
         ):
@@ -957,6 +1161,48 @@ class CompilerSdkWorkflowV2Tests(unittest.TestCase):
         documents.set_text(WORKFLOW, workflow)
         with self.assertRaisesRegex(PolicyViolation, "permissions"):
             validate_v2_policy(documents)
+
+    def test_rejects_missing_read_only_attestation_access_for_route_authentication(self) -> None:
+        for job in ("v2-prepare", "v2-runtimes"):
+            with self.subTest(job=job):
+                documents = self.new_documents()
+                workflow = mutate_job(
+                    documents.text(WORKFLOW), job, "      attestations: read\n", "",
+                )
+                documents.set_text(WORKFLOW, workflow)
+                with self.assertRaisesRegex(PolicyViolation, "permissions"):
+                    validate_v2_policy(documents)
+
+    def test_rejects_runtime_route_fallback_or_unverified_kind(self) -> None:
+        for before, after in (
+            ("shasum -a 256 -c SHA256SUMS", "true"),
+            ("materialize-aros-tools-runtime.py\" verify", "missing-runtime-verification.py"),
+            ("exit 1", "exit 0"),
+            ("released)", "*)"),
+        ):
+            with self.subTest(before=before):
+                documents = self.new_documents()
+                action = documents.text(RUNTIME_ACTION)
+                self.assertIn(before, action)
+                documents.set_text(RUNTIME_ACTION, action.replace(before, after, 1))
+                with self.assertRaisesRegex(PolicyViolation, "shared runtime (transport|verification)"):
+                    validate_v2_policy(documents)
+
+    def test_rejects_release_identity_loss_and_v1_tag_route_reconnection(self) -> None:
+        cases = (
+            ("v2-prepare", "release_id: ${{ steps.selection.outputs.release_id }}",
+             "release_id: toolchain-dev-static", "authenticated release identity"),
+            ("v2-build", "SELECTED_RELEASE_ID: ${{ needs.v2-prepare.outputs.release_id }}",
+             "SELECTED_RELEASE_ID: toolchain-dev-static", "authenticated release IDs"),
+            ("draft-release", "needs: [plan, compatibility]", "needs: [compatibility]",
+             "V1 tag publisher"),
+        )
+        for job, before, after, reason in cases:
+            with self.subTest(job=job):
+                documents = self.new_documents()
+                documents.set_text(WORKFLOW, mutate_job(documents.text(WORKFLOW), job, before, after))
+                with self.assertRaisesRegex(PolicyViolation, reason):
+                    validate_v2_policy(documents)
 
     def test_rejects_raw_cache_transport_or_missing_digest_restore(self) -> None:
         for job, original, replacement in (
@@ -1005,15 +1251,11 @@ class CompilerSdkWorkflowV2Tests(unittest.TestCase):
 
     def test_rejects_widened_diagnostic_host_scope(self) -> None:
         documents = self.new_documents()
-        workflow = documents.text(WORKFLOW)
-        workflow = mutate_job(
-            workflow,
-            "v2-prepare",
-            'qualify-v2:linux-x86_64) ;;',
-            'qualify-v2:*) ;;',
-        )
-        documents.set_text(WORKFLOW, workflow)
-        with self.assertRaisesRegex(PolicyViolation, "Linux x86-64"):
+        route_script = documents.text(ROUTE)
+        documents.set_text(ROUTE, route_script.replace(
+            '("qualify-v2", "linux-x86_64")', '("qualify-v2", "linux")', 1,
+        ))
+        with self.assertRaisesRegex(PolicyViolation, "route selector must close"):
             validate_v2_policy(documents)
 
     def test_rejects_unbound_diagnostic_group_selector(self) -> None:
@@ -1033,7 +1275,7 @@ class CompilerSdkWorkflowV2Tests(unittest.TestCase):
         for before, after in (
             ("copy: ${{ matrix.copy }}", "copy: a"),
             ("root: ${{ runner.temp }}/native-lane-${{ matrix.copy }}", "root: ${{ runner.temp }}/native-lane"),
-            ("if: inputs.mode == 'qualify-v2-full'", "if: inputs.mode == 'qualify-v2'"),
+            ("if: needs.v2-prepare.outputs.full_matrix == 'true'", "if: inputs.mode == 'qualify-v2'"),
         ):
             with self.subTest(before=before):
                 documents = self.new_documents()
@@ -1057,10 +1299,10 @@ class CompilerSdkWorkflowV2Tests(unittest.TestCase):
     def test_rejects_incomplete_sdk_owner_readback_graph(self) -> None:
         for before, after in (
             ("needs: [v2-prepare, v2-runtimes, v2-build, v2-sdk]", "needs: [v2-prepare, v2-runtimes, v2-build]"),
-            ("if: inputs.mode == 'qualify-v2-full'", "if: inputs.mode == 'qualify-v2'"),
+            ("if: needs.v2-prepare.outputs.full_matrix == 'true'", "if: inputs.mode == 'qualify-v2'"),
             ("collect-sdk-owners-v2.sh", "unverified-sdk-download.sh"),
             ("collect-compiler-owners-v2.sh", "unverified-compiler-download.sh"),
-            ('--release-id "toolchain-dev-${GITHUB_SHA:0:12}"', '--release-id stale-candidate'),
+            ('--release-id "$SELECTED_RELEASE_ID"', '--release-id stale-candidate'),
             ('--job-name "$CURRENT_JOB" --same-attempt', '--job-name "$CURRENT_JOB"'),
         ):
             with self.subTest(before=before):

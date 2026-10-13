@@ -316,6 +316,37 @@ class QualifyOwnedCompilerLaneTests(unittest.TestCase):
         self.assertEqual(compare[compare.index("--left") + 1], str(self.root / "compiler-a/payload/package"))
         self.assertEqual(compare[compare.index("--right") + 1], str(self.root / "compiler-b/payload/package"))
 
+    def test_tag_release_id_reaches_both_original_owner_reads(self) -> None:
+        args = self._owner_args()
+        args[args.index("--source-ref") + 1] = "refs/tags/v0.2.0"
+        result = self._run(args + ["--release-id", "v0.2.0", "--same-attempt"])
+        self.assertEqual(result.returncode, 77, result.stderr)
+        self.assertEqual([event["stage"] for event in self._events()],
+                         ["release-plan", "read-a", "read-b", "compare"])
+        for event in self._events()[1:3]:
+            values = event["args"]
+            self.assertEqual(values[values.index("--release-id") + 1], "v0.2.0")
+            self.assertEqual(values[values.index("--source-ref") + 1], "refs/tags/v0.2.0")
+
+    def test_tag_owner_requires_its_exact_explicit_release_id_before_writes(self) -> None:
+        args = self._owner_args()
+        args[args.index("--source-ref") + 1] = "refs/tags/v0.2.0"
+        for suffix in ([], ["--release-id", "v0.2.1"],
+                       ["--release-id", "toolchain-dev-0123456789ab"]):
+            with self.subTest(suffix=suffix):
+                result = self._run(args + suffix)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("tag-bound owner release ID", result.stderr)
+                self.assertFalse(self.root.exists())
+                self.assertEqual(self._events(), [])
+
+    def test_branch_diagnostic_cannot_claim_a_product_release_id(self) -> None:
+        result = self._run(self._owner_args() + ["--release-id", "v0.2.0"])
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("diagnostic release ID", result.stderr)
+        self.assertFalse(self.root.exists())
+        self.assertEqual(self._events(), [])
+
     def _assert_owner_authentication_failure(self, failed_copy: str, expected_reads: list[str]) -> None:
         env = self.env.copy()
         env["FAKE_OWNER_FAIL_COPY"] = failed_copy

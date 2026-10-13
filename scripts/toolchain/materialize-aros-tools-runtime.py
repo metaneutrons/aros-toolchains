@@ -43,6 +43,7 @@ EXPECTED_FILES = {
     "bin/aros-verify": ("0755", True),
 }
 ASSET_FIELDS = {"name", "sha256", "size"}
+MAX_METADATA_SIZE = 1024 * 1024
 
 
 class RuntimeError(Exception):
@@ -289,7 +290,30 @@ def verify_attestation(lock: dict[str, Any], subject: Path) -> None:
 
 
 def validate_manifest(lock: dict[str, Any], host: str, manifest_path: Path) -> dict[str, Any]:
-    manifest = read_json(manifest_path)
+    if host not in HOST_TARGETS:
+        fail(f"unsupported runtime host {host!r}")
+    asset = lock["hosts"][host]["manifest"]
+    contents = _read_path_capped(
+        manifest_path,
+        "released runtime manifest",
+        expected_size=asset["size"],
+        max_size=MAX_METADATA_SIZE,
+    )
+    return validate_manifest_bytes(lock, host, contents)
+
+
+def validate_manifest_bytes(lock: dict[str, Any], host: str, contents: bytes) -> dict[str, Any]:
+    if host not in HOST_TARGETS:
+        fail(f"unsupported runtime host {host!r}")
+    if len(contents) > MAX_METADATA_SIZE:
+        fail("released runtime manifest exceeds the metadata size limit")
+    asset = lock["hosts"][host]["manifest"]
+    if len(contents) != asset["size"] or hashlib.sha256(contents).hexdigest() != asset["sha256"]:
+        fail("released runtime manifest checksum or size differs from runtime lock")
+    return validate_manifest_data(lock, host, _parse_json_bytes(contents, "released runtime manifest"))
+
+
+def validate_manifest_data(lock: dict[str, Any], host: str, manifest: Any) -> dict[str, Any]:
     expected_keys = {
         "schema", "package", "version", "target", "source_commit", "source_date_epoch",
         "archive", "archive_sha256", "archive_size", "files",
@@ -317,7 +341,7 @@ def validate_manifest(lock: dict[str, Any], host: str, manifest_path: Path) -> d
     for item in files:
         file = require_exact_keys(item, {"path", "mode", "sha256", "size"}, "released runtime file")
         path = file["path"]
-        if path not in EXPECTED_FILES or path in observed:
+        if not isinstance(path, str) or path not in EXPECTED_FILES or path in observed:
             fail(f"released runtime manifest has unknown or duplicate file {path!r}")
         expected_mode, _ = EXPECTED_FILES[path]
         if file["mode"] != expected_mode:
@@ -433,9 +457,16 @@ def verify_extracted(lock_path: Path, host: str, directory: Path) -> None:
         fail("runtime verification requires a real directory for a supported host")
     manifest_path = directory / ".aros-tools-runtime-manifest.json"
     receipt_path = directory / ".aros-tools-runtime-receipt-v1.json"
-    manifest = validate_manifest(lock, host, manifest_path)
-    expected_receipt = receipt(lock_path, lock, host, manifest, sha256_file(manifest_path))
-    if read_json(receipt_path) != expected_receipt:
+    manifest_bytes = _read_path_capped(
+        manifest_path,
+        "released runtime manifest",
+        expected_size=lock["hosts"][host]["manifest"]["size"],
+        max_size=MAX_METADATA_SIZE,
+    )
+    manifest = validate_manifest_bytes(lock, host, manifest_bytes)
+    expected_receipt = receipt(lock_path, lock, host, manifest, hashlib.sha256(manifest_bytes).hexdigest())
+    receipt_bytes = _read_path_capped(receipt_path, "runtime receipt", max_size=MAX_METADATA_SIZE)
+    if _parse_json_bytes(receipt_bytes, "runtime receipt") != expected_receipt:
         fail("runtime receipt differs from locked release identity")
     expected_paths = set(EXPECTED_FILES) | {".aros-tools-runtime-manifest.json", ".aros-tools-runtime-receipt-v1.json"}
     observed_paths: set[str] = set()
@@ -460,6 +491,289 @@ def verify_extracted(lock_path: Path, host: str, directory: Path) -> None:
             fail(f"runtime file mode differs from signed manifest: {item['path']}")
 
 
+def _same_file_identity(left: os.stat_result, right: os.stat_result) -> bool:
+    return left.st_dev == right.st_dev and left.st_ino == right.st_ino
+
+
+def _stable_file_state(value: os.stat_result) -> tuple[int, int, int, int, int, int, int]:
+    return (
+        value.st_dev, value.st_ino, value.st_mode, value.st_nlink, value.st_size,
+        value.st_mtime_ns, value.st_ctime_ns,
+    )
+
+
+def _read_fd(
+    fd: int,
+    label: str,
+    *,
+    expected_size: int | None = None,
+    max_size: int = MAX_METADATA_SIZE,
+) -> bytes:
+    before = os.fstat(fd)
+    if before.st_size > max_size:
+        fail(f"runtime metadata exceeds the {max_size}-byte size limit: {label}")
+    if expected_size is not None and before.st_size != expected_size:
+        fail(f"runtime metadata size differs from runtime lock: {label}")
+    os.lseek(fd, 0, os.SEEK_SET)
+    chunks: list[bytes] = []
+    total_size = 0
+    while True:
+        remaining = max_size - total_size
+        block = os.read(fd, min(1024 * 1024, remaining + 1))
+        if not block:
+            break
+        total_size += len(block)
+        if total_size > max_size:
+            fail(f"runtime metadata exceeds the {max_size}-byte size limit: {label}")
+        chunks.append(block)
+    contents = b"".join(chunks)
+    after = os.fstat(fd)
+    if _stable_file_state(before) != _stable_file_state(after) or len(contents) != after.st_size:
+        fail(f"runtime file changed while being read: {label}")
+    return contents
+
+
+def _hash_fd(fd: int, label: str, *, expected_size: int | None = None) -> tuple[str, os.stat_result]:
+    before = os.fstat(fd)
+    if expected_size is not None and before.st_size != expected_size:
+        fail(f"runtime file size differs from signed manifest: {label}")
+    digest = hashlib.sha256()
+    os.lseek(fd, 0, os.SEEK_SET)
+    for block in iter(lambda: os.read(fd, 1024 * 1024), b""):
+        digest.update(block)
+    after = os.fstat(fd)
+    if _stable_file_state(before) != _stable_file_state(after):
+        fail(f"runtime file changed while being read: {label}")
+    return digest.hexdigest(), after
+
+
+def _read_path_capped(
+    path: Path,
+    label: str,
+    *,
+    expected_size: int | None = None,
+    max_size: int = MAX_METADATA_SIZE,
+) -> bytes:
+    if not hasattr(os, "O_NOFOLLOW"):
+        fail("bounded runtime metadata reads require O_NOFOLLOW support")
+    flags = os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_NONBLOCK", 0)
+    try:
+        fd = os.open(path, flags)
+    except OSError as exc:
+        fail(f"cannot open {label} without following symlinks: {exc}")
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            fail(f"runtime metadata is not a regular file: {label}")
+        return _read_fd(fd, label, expected_size=expected_size, max_size=max_size)
+    finally:
+        os.close(fd)
+
+
+def _open_runtime_file(parent_fd: int, name: str, relative: str) -> tuple[int, os.stat_result]:
+    try:
+        before = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+    except OSError as exc:
+        fail(f"cannot inspect runtime file {relative}: {exc}")
+    if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
+        fail(f"runtime file is not a singly-linked regular file: {relative}")
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+    fd = -1
+    try:
+        fd = os.open(name, flags, dir_fd=parent_fd)
+        after = os.fstat(fd)
+    except OSError as exc:
+        if fd >= 0:
+            os.close(fd)
+        fail(f"cannot open runtime file without following symlinks {relative}: {exc}")
+    if not stat.S_ISREG(after.st_mode) or after.st_nlink != 1 or not _same_file_identity(before, after):
+        os.close(fd)
+        fail(f"runtime file changed or is hard-linked: {relative}")
+    return fd, after
+
+
+def _parse_json_bytes(contents: bytes, label: str) -> Any:
+    try:
+        return json.loads(contents.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        fail(f"cannot read JSON {label}: {exc}")
+
+
+def restore_artifact_modes(lock_path: Path, host: str, directory: Path) -> None:
+    """Restore executable modes lost when a runtime crossed GitHub artifacts."""
+    lock = validate_lock(read_json(lock_path))
+    if host not in HOST_TARGETS:
+        fail(f"unsupported runtime host {host!r}")
+    if not hasattr(os, "O_NOFOLLOW"):
+        fail("artifact mode restoration requires O_NOFOLLOW support")
+
+    root_fd = -1
+    bin_fd = -1
+    opened: dict[str, tuple[int, int, str, os.stat_result]] = {}
+    changed: list[tuple[int, int]] = []
+    manifest_name = ".aros-tools-runtime-manifest.json"
+    receipt_name = ".aros-tools-runtime-receipt-v1.json"
+    root_names = {PurePosixPath(path).parts[0] for path in EXPECTED_FILES} | {manifest_name, receipt_name}
+    bin_names = {path.removeprefix("bin/") for path, (_, native) in EXPECTED_FILES.items() if native}
+
+    def list_exact(fd: int, expected: set[str], label: str) -> None:
+        try:
+            observed = set(os.listdir(fd))
+        except OSError as exc:
+            fail(f"cannot inspect runtime {label}: {exc}")
+        if observed != expected:
+            fail(f"runtime {label} differs from the expected closure")
+
+    def open_directory(parent_fd: int, name: str, relative: str) -> tuple[int, os.stat_result]:
+        try:
+            before = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+        except OSError as exc:
+            fail(f"cannot inspect runtime directory {relative}: {exc}")
+        if not stat.S_ISDIR(before.st_mode):
+            fail(f"runtime path is not a real directory: {relative}")
+        flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | os.O_NOFOLLOW
+        fd = -1
+        try:
+            fd = os.open(name, flags, dir_fd=parent_fd)
+            after = os.fstat(fd)
+        except OSError as exc:
+            if fd >= 0:
+                os.close(fd)
+            fail(f"cannot open runtime directory without following symlinks {relative}: {exc}")
+        if not stat.S_ISDIR(after.st_mode) or not _same_file_identity(before, after):
+            os.close(fd)
+            fail(f"runtime directory changed during inspection: {relative}")
+        return fd, after
+
+    try:
+        flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | os.O_NOFOLLOW
+        try:
+            root_fd = os.open(directory, flags)
+        except OSError as exc:
+            fail(f"cannot open runtime root without following symlinks: {exc}")
+        if not stat.S_ISDIR(os.fstat(root_fd).st_mode):
+            fail("runtime verification requires a real directory for a supported host")
+
+        list_exact(root_fd, root_names, "file set")
+        bin_fd, bin_state = open_directory(root_fd, "bin", "bin")
+        list_exact(bin_fd, bin_names, "bin file set")
+
+        for relative in sorted(EXPECTED_FILES):
+            parent_fd = bin_fd if relative.startswith("bin/") else root_fd
+            name = relative.removeprefix("bin/") if relative.startswith("bin/") else relative
+            fd, state = _open_runtime_file(parent_fd, name, relative)
+            opened[relative] = (fd, parent_fd, name, state)
+        for relative in (manifest_name, receipt_name):
+            fd, state = _open_runtime_file(root_fd, relative, relative)
+            opened[relative] = (fd, root_fd, relative, state)
+
+        manifest_asset = lock["hosts"][host]["manifest"]
+        manifest_bytes = _read_fd(
+            opened[manifest_name][0],
+            manifest_name,
+            expected_size=manifest_asset["size"],
+            max_size=MAX_METADATA_SIZE,
+        )
+        manifest = validate_manifest_bytes(lock, host, manifest_bytes)
+        expected_receipt = receipt(lock_path, lock, host, manifest, hashlib.sha256(manifest_bytes).hexdigest())
+        receipt_bytes = _read_fd(opened[receipt_name][0], receipt_name, max_size=MAX_METADATA_SIZE)
+        if _parse_json_bytes(receipt_bytes, receipt_name) != expected_receipt:
+            fail("runtime receipt differs from locked release identity")
+
+        manifest_files = {item["path"]: item for item in manifest["files"]}
+        expected_hashes = {
+            manifest_name: hashlib.sha256(manifest_bytes).hexdigest(),
+            receipt_name: hashlib.sha256(receipt_bytes).hexdigest(),
+        }
+        expected_sizes = {manifest_name: len(manifest_bytes), receipt_name: len(receipt_bytes)}
+        for relative, details in manifest_files.items():
+            fd = opened[relative][0]
+            digest, state = _hash_fd(fd, relative, expected_size=details["size"])
+            if state.st_size != details["size"] or digest != details["sha256"]:
+                fail(f"runtime file differs from signed manifest: {relative}")
+            expected_hashes[relative] = details["sha256"]
+            expected_sizes[relative] = details["size"]
+            expected_mode = int(details["mode"], 8)
+            current_mode = stat.S_IMODE(state.st_mode)
+            native = EXPECTED_FILES[relative][1]
+            accepted_modes = {0o644, expected_mode} if native else {expected_mode}
+            if current_mode not in accepted_modes:
+                fail(f"runtime file mode cannot be restored safely: {relative}")
+
+        root_state = os.fstat(root_fd)
+        # Recheck the complete closure through the held descriptors immediately
+        # before mutation, including names, file identities, bytes and modes.
+        list_exact(root_fd, root_names, "file set")
+        list_exact(bin_fd, bin_names, "bin file set")
+        try:
+            root_path_state = directory.lstat()
+            bin_path_state = os.stat("bin", dir_fd=root_fd, follow_symlinks=False)
+        except OSError as exc:
+            fail(f"cannot recheck runtime directories: {exc}")
+        if (
+            not stat.S_ISDIR(root_path_state.st_mode)
+            or not _same_file_identity(root_state, os.fstat(root_fd))
+            or not _same_file_identity(root_path_state, os.fstat(root_fd))
+            or not stat.S_ISDIR(bin_path_state.st_mode)
+            or not _same_file_identity(bin_state, os.fstat(bin_fd))
+            or not _same_file_identity(bin_path_state, os.fstat(bin_fd))
+        ):
+            fail("runtime directory changed during mode restoration")
+        for relative, (fd, parent_fd, name, original_state) in opened.items():
+            try:
+                path_state = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+            except OSError as exc:
+                fail(f"cannot recheck runtime file {relative}: {exc}")
+            fd_state = os.fstat(fd)
+            if (
+                not stat.S_ISREG(path_state.st_mode) or path_state.st_nlink != 1 or fd_state.st_nlink != 1
+                or not _same_file_identity(path_state, fd_state)
+                or not _same_file_identity(original_state, fd_state)
+            ):
+                fail(f"runtime file changed during mode restoration: {relative}")
+            digest, stable_state = _hash_fd(fd, relative, expected_size=expected_sizes[relative])
+            if stable_state.st_size != expected_sizes[relative] or digest != expected_hashes[relative]:
+                fail(f"runtime file differs from signed manifest: {relative}")
+            details = manifest_files.get(relative)
+            if details is not None:
+                current_mode = stat.S_IMODE(stable_state.st_mode)
+                expected_mode = int(details["mode"], 8)
+                native = EXPECTED_FILES[relative][1]
+                if current_mode not in ({0o644, expected_mode} if native else {expected_mode}):
+                    fail(f"runtime file mode cannot be restored safely: {relative}")
+
+        try:
+            for relative, details in manifest_files.items():
+                if not EXPECTED_FILES[relative][1]:
+                    continue
+                fd = opened[relative][0]
+                original_mode = stat.S_IMODE(os.fstat(fd).st_mode)
+                expected_mode = int(details["mode"], 8)
+                if original_mode != expected_mode:
+                    os.fchmod(fd, expected_mode)
+                    changed.append((fd, original_mode))
+            verify_extracted(lock_path, host, directory)
+        except BaseException as original_error:
+            rollback_errors: list[OSError] = []
+            for fd, original_mode in reversed(changed):
+                try:
+                    os.fchmod(fd, original_mode)
+                except OSError as rollback_error:
+                    rollback_errors.append(rollback_error)
+            if rollback_errors:
+                fail(
+                    f"artifact mode restoration failed ({original_error}); "
+                    f"rollback also failed: {'; '.join(str(error) for error in rollback_errors)}"
+                )
+            raise
+    finally:
+        for fd, _, _, _ in opened.values():
+            os.close(fd)
+        if bin_fd >= 0:
+            os.close(bin_fd)
+        if root_fd >= 0:
+            os.close(root_fd)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
@@ -473,6 +787,13 @@ def main() -> int:
     verify.add_argument("--lock", type=Path, required=True)
     verify.add_argument("--host", choices=sorted(HOST_TARGETS), required=True)
     verify.add_argument("--directory", type=Path, required=True)
+    restore = commands.add_parser(
+        "restore-artifact-modes",
+        help="restore signed executable modes lost in an artifact transport, offline",
+    )
+    restore.add_argument("--lock", type=Path, required=True)
+    restore.add_argument("--host", choices=sorted(HOST_TARGETS), required=True)
+    restore.add_argument("--directory", type=Path, required=True)
     args = parser.parse_args()
     try:
         if args.command == "validate":
@@ -480,10 +801,16 @@ def main() -> int:
             print(sha256_file(args.lock))
         elif args.command == "materialize":
             materialize(args.lock.resolve(), args.host, args.destination.resolve())
+        elif args.command == "restore-artifact-modes":
+            restore_artifact_modes(args.lock.resolve(), args.host, args.directory.absolute())
+            print(args.directory.absolute())
         else:
-            verify_extracted(args.lock.resolve(), args.host, args.directory.resolve())
-            print(args.directory.resolve())
+            verify_extracted(args.lock.resolve(), args.host, args.directory.absolute())
+            print(args.directory.absolute())
     except RuntimeError as exc:
+        print(f"aros-tools runtime bootstrap: {exc}", file=sys.stderr)
+        return 1
+    except OSError as exc:
         print(f"aros-tools runtime bootstrap: {exc}", file=sys.stderr)
         return 1
     return 0

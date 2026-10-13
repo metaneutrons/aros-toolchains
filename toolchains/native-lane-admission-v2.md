@@ -173,3 +173,31 @@ Provider download selection, original-owner authentication, annotated-tag
 observation and released-runtime authentication remain protected-caller gates.
 The adapter's synthetic fixtures prove its local sequencing and failure
 boundaries, not a signed production release or final public download URLs.
+
+## Product-tag entry
+
+`select-compiler-sdk-route-v2.py` admits a tag qualification only on its first
+attempt. The canonical SemVer tag must match `version.txt` in the clean selected
+commit, be annotated under its own name, and match GitHub's exact object and
+peeled commit. The commit must belong to protected `main` history. Only a real
+HTTP 404 establishes that its GitHub release is absent; authentication failures,
+rate limits and transport errors do not establish absence.
+
+Before any source checkout or runtime download, the selected tools commit must
+match the published runtime lock. Tags use only that host-matched released
+runtime. Branch diagnostics may use the explicitly selected development runtime;
+there is no fallback from a failed released-runtime verification.
+
+Runtime artifacts retain the signed manifest and receipt. Offline transport
+verification checks the manifest's exact independently locked digest and size,
+the complete file closure and every payload digest before restoring executable
+modes lost during artifact transport. Ordinary verification remains read-only
+and mode-strict. Symlinks, hardlinks, extra files and resealed forged manifests
+are rejected before restoration.
+
+The full native plan selects owning jobs and SDK generations. The validated tag
+name reaches both compiler owners, combined assembly and the final index, while
+SDK product versions remain source-owned and independent. These tag-bound byte
+readbacks still do not issue publication authority: complete native qualification,
+durable recovery evidence and an isolated final release audit must be wired and
+verified before publication. The retained V1 publisher cannot receive a tag push.
