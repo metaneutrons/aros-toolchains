@@ -273,8 +273,16 @@ class StartFixture:
             raise AssertionError(f"unexpected gh command: {selected!r}")
         if purpose != "start signature authentication":
             raise AssertionError(f"unexpected gh command purpose: {purpose}")
+        private_record, private_bundle = Path(selected[2]), Path(selected[4])
+        if (private_record == self.record_path or private_bundle == self.bundle_path
+                or private_record.name != self.record_path.name
+                or private_record.read_bytes() != self.record_bytes
+                or private_bundle.read_bytes() != self.bundle_bytes
+                or private_record.stat().st_mode & 0o777 != 0o600
+                or private_bundle.stat().st_mode & 0o777 != 0o600):
+            raise AssertionError("verifier did not receive private copies of selected bytes")
         expected_arguments = [
-            "attestation", "verify", str(self.record_path), "--bundle", str(self.bundle_path),
+            "attestation", "verify", str(private_record), "--bundle", str(private_bundle),
             "--repo", REPOSITORY, "--signer-workflow", f"{REPOSITORY}/{WORKFLOW}",
             "--signer-digest", COMMIT, "--source-digest", COMMIT, "--source-ref", MAIN,
             "--deny-self-hosted-runners", "--format", "json",
@@ -298,7 +306,7 @@ class StartFixture:
         return data
 
     def verify(self, *, case: str | None = None, signature: list[dict] | None = None,
-               mutate_after_candidate: str | None = None) -> dict:
+               mutate_after_candidate: str | None = None, **byte_selection) -> dict:
         self.case = case
         if signature is not None:
             self.signature = signature
@@ -339,6 +347,7 @@ class StartFixture:
                 runtime_directory=self.runtime_directory,
                 runtime_interface=self.runtime_interface_path,
                 runtime_host=self.runtime_host,
+                **byte_selection,
             )
             self.runtime_binding_calls = runtime_binding.call_args_list
             return result
@@ -639,6 +648,45 @@ class ObserveCandidateTests(unittest.TestCase):
 
 
 class VerifyStartTests(unittest.TestCase):
+    def test_external_verifier_does_not_reopen_temporarily_substituted_caller_inputs(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="compiler-sdk-start-private-bytes.") as directory:
+            fixture = StartFixture(Path(directory))
+            original_verifier = fixture.run_bounded_gh
+            observed_private_paths = []
+
+            def substitute_caller_paths(arguments, purpose):
+                fixture.record_path.write_bytes(fixture.record_bytes + b" ")
+                fixture.bundle_path.write_bytes(b"different valid bundle fixture")
+                try:
+                    observed_private_paths.extend((Path(arguments[2]), Path(arguments[4])))
+                    return original_verifier(arguments, purpose)
+                finally:
+                    fixture.record_path.write_bytes(fixture.record_bytes)
+                    fixture.bundle_path.write_bytes(fixture.bundle_bytes)
+
+            with mock.patch.object(fixture, "run_bounded_gh", side_effect=substitute_caller_paths):
+                self.assertEqual(fixture.verify(), fixture.record)
+            self.assertTrue(observed_private_paths)
+            self.assertTrue(all(not path.exists() for path in observed_private_paths))
+
+    def test_exact_record_and_bundle_pins_join_authentication_to_claim_bytes(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="compiler-sdk-start-byte-pins.") as directory:
+            fixture = StartFixture(Path(directory))
+            pins = {"expected_record_sha256": sha256(fixture.record_bytes),
+                    "expected_bundle_sha256": sha256(fixture.bundle_bytes)}
+            self.assertEqual(fixture.verify(**pins), fixture.record)
+            for field, value in (("expected_record_sha256", "0" * 64),
+                                 ("expected_bundle_sha256", "0" * 64),
+                                 ("expected_record_sha256", True),
+                                 ("expected_bundle_sha256", "invalid"),
+                                 ("expected_bundle_sha256", None)):
+                with self.subTest(field=field, value=value), self.assertRaises(start.StartError):
+                    fixture.verify(**dict(pins, **{field: value}))
+            # Semantically identical JSON must not select different claim bytes.
+            fixture.record_path.write_bytes(fixture.record_bytes + b" ")
+            with self.assertRaisesRegex(start.StartError, "independently selected bytes"):
+                fixture.verify(**pins)
+
     def run_fixture(self, *, case: str | None = None, signature: list[dict] | None = None,
                     mutate_after_candidate: str | None = None):
         temporary = tempfile.TemporaryDirectory(prefix="compiler-sdk-release-start-v2.")
