@@ -21,6 +21,12 @@ checks, not release authority. The start controller must authenticate the
 published runtime and governance independently. Native producers still own
 compiler A/B execution, SDK generation, compatibility and package evidence.
 
+Compiler owner selection reads the actual event from the exact provider run
+attempt, validates its repository, workflow, commit and ref, and rechecks it
+before emitting the owner matrix. Tag pushes and branch/tag dispatches are
+distinct valid routes; branch pushes and unsupported events fail closed. This
+does not activate tag dispatch or qualify the remaining candidate adapters.
+
 Use repository-scoped workflow tokens for the required mutations, in protected
 environments. Do not broaden the Release Please App or introduce a PAT as an
 implicit fallback. Environment protection and credential access must be

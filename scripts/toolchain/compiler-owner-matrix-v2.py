@@ -66,12 +66,16 @@ def _check_sha(value: object, description: str) -> str:
     return value
 
 
-def _projection_route(source_ref: str) -> tuple[str, bool]:
-    if source_ref.startswith("refs/tags/"):
+def _projection_route(source_ref: str, event: str) -> tuple[str, bool]:
+    _require(type(source_ref) is str and type(event) is str,
+             "source event/ref does not select a release route")
+    if source_ref.startswith("refs/tags/") and event == "push":
         return "push", False
-    if source_ref.startswith("refs/heads/"):
+    if source_ref.startswith("refs/heads/") and event == "workflow_dispatch":
         return "workflow_dispatch", True
-    raise artifact_origin.OriginError("source ref does not select a release route")
+    if source_ref.startswith("refs/tags/") and event == "workflow_dispatch":
+        return "workflow_dispatch", True
+    raise artifact_origin.OriginError("source event/ref does not select a release route")
 
 
 def _measure_raw(path: Path, limit: int, description: str) -> tuple[dict, bytes]:
@@ -196,7 +200,12 @@ def select(args: argparse.Namespace) -> dict[str, Any]:
              and context["source_ref"] == args.source_ref,
              "source context differs from the selected producer/workflow/ref")
 
-    event, full_qualification = _projection_route(context["source_ref"])
+    observed_event = artifact_origin.observe_run_event(context)
+    projected_event, full_qualification = _projection_route(
+        context["source_ref"], observed_event
+    )
+    _require(projected_event == observed_event,
+             "observed provider event does not select the requested release route")
     projection = release_matrix.project(
         raw=raw_plan,
         plan=plan,
@@ -204,7 +213,7 @@ def select(args: argparse.Namespace) -> dict[str, Any]:
         inputs_sha256=inputs_sha256,
         producer_commit=args.producer_commit,
         tools_commit=args.tools_commit,
-        event=event,
+        event=observed_event,
         scope="full",
         full_qualification=full_qualification,
     )
@@ -227,7 +236,7 @@ def select(args: argparse.Namespace) -> dict[str, Any]:
         "expected_compiler_lanes": expected_lanes,
     }
 
-    # Re-measure all plan-bound files before emitting the first stdout byte.
+    # Re-measure all plan-bound files and the exact provider event before stdout.
     final_plan_measurement, _ = artifact_origin.normalized_file(
         plan_path, release_matrix.MAX_PLAN_BYTES
     )
@@ -247,6 +256,9 @@ def select(args: argparse.Namespace) -> dict[str, Any]:
             _require(final_measurement == measurement and final_raw == raw,
                      "native compiler reference changed during owner selection")
     _canonical_input_directory(inputs_dir)
+    final_event = artifact_origin.observe_run_event(context)
+    _require(final_event == observed_event,
+             "source run event changed during compiler owner selection")
     return result
 
 
