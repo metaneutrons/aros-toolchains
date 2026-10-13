@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path, PurePosixPath
@@ -25,6 +26,8 @@ ROOT = Path(__file__).resolve().parents[3]
 WORKFLOW = ".github/workflows/toolchain-release.yml"
 ACTION = ".github/actions/materialize-development-aros-tools/action.yml"
 RUNTIME_ACTION = ".github/actions/verify-aros-tools-runtime-transport/action.yml"
+INTERFACE_ACTION = ".github/actions/check-v2-runtime-interface/action.yml"
+INTERFACE_HELPER = "scripts/toolchain/check-v2-runtime-interface.py"
 PREPARE = "scripts/toolchain/prepare-compiler-sdk-inputs-v2.py"
 QUALIFY = "scripts/toolchain/qualify-compiler-sdk-lane-v2.sh"
 MATRIX = "scripts/toolchain/select-release-matrix-v2.py"
@@ -132,6 +135,26 @@ def job_names(workflow: str) -> list[str]:
         r"(?m)^  ([A-Za-z0-9][A-Za-z0-9_-]*):[ \t]*$",
         workflow[jobs_header.end() :],
     )
+
+
+def workflow_step(job: str, name: str) -> str:
+    marker = f"      - name: {name}\n"
+    start = job.find(marker)
+    if start < 0:
+        raise PolicyViolation(f"required workflow step is missing: {name}")
+    following = re.search(r"(?m)^      - ", job[start + len(marker) :])
+    end = start + len(marker) + following.start() if following else len(job)
+    return job[start:end]
+
+
+def composite_run_script(action: str) -> str:
+    match = re.search(
+        r"(?m)^      run: \|\n((?:^        .*\n|^        \n)*)",
+        action,
+    )
+    if match is None:
+        raise PolicyViolation("runtime interface action has no bounded composite shell")
+    return "\n".join(line[8:] for line in match.group(1).splitlines()) + "\n"
 
 
 def require_read_only_job(job: str, name: str) -> None:
@@ -383,10 +406,88 @@ def validate_selected_inputs(documents: Documents) -> dict[str, int]:
     return {"group_count": len(groups), "sdk_count": len(sdks)}
 
 
+def validate_runtime_interface_action(action: str) -> str:
+    require(
+        "name: Check the selected V2 runtime interface" in action
+        and "using: composite" in action
+        and action.count("    - name:") == 1
+        and "      shell: bash" in action
+        and "set -euo pipefail" in action
+        and not re.search(r"(?m)^\s*if:", action),
+        "runtime interface action must execute as one unconditional strict composite step",
+    )
+    for binding in (
+        "RUNTIME_KIND: ${{ inputs.runtime-kind }}",
+        "RUNTIME_ROOT: ${{ inputs.root }}",
+        "TOOLS_SOURCE: ${{ inputs.tools-source }}",
+        "TOOLS_COMMIT: ${{ inputs.tools-commit }}",
+        "INTERFACE_OUTPUT: ${{ inputs.output }}",
+        "RUNTIME_LOCK: ${{ inputs.lock }}",
+        '[[ "$TOOLS_COMMIT" =~ ^[0-9a-f]{40}$ ]]',
+        'test "$(git -C "$TOOLS_SOURCE" rev-parse HEAD)" = "$TOOLS_COMMIT"',
+        'test -z "$(git -C "$TOOLS_SOURCE" status --porcelain)"',
+        'git -C "$TOOLS_SOURCE" show HEAD:Cargo.toml',
+        'source_version=$(git -C "$TOOLS_SOURCE" show HEAD:Cargo.toml |',
+        'test "$(cat "$RUNTIME_ROOT/DEVELOPMENT_RUNTIME.txt")" = "development-only tools commit: $TOOLS_COMMIT"',
+        'runtime_sha=$(awk',
+        'if (count != 1) exit 1; print value',
+        'expected_version=$(jq -er --arg commit "$TOOLS_COMMIT" --arg version "$source_version"',
+        'if .source_commit == $commit and .version == $version then .version',
+        'else error("Released runtime differs from the selected tools source") end',
+        '[.files[] | select(.path == "bin/aros")] |',
+        'if length == 1 then .[0].sha256 else error("Runtime has no unique CLI entry") end',
+        "runtime_prefix=${RUNTIME_ROOT%/}",
+        'case "$INTERFACE_OUTPUT" in',
+        '"$runtime_prefix"|"$runtime_prefix"/*)',
+        "Interface-only receipts must remain outside the runtime root.",
+        'python3 -B "$GITHUB_WORKSPACE/scripts/toolchain/check-v2-runtime-interface.py"',
+        '--aros "$RUNTIME_ROOT/bin/aros" --aros-sha256 "$runtime_sha"',
+        '--expected-version "$expected_version" --output "$INTERFACE_OUTPUT"',
+        'test -z "$(git -C "$TOOLS_SOURCE" status --porcelain)"',
+    ):
+        require(binding in action, f"runtime interface action lost required binding: {binding}")
+    cases = re.search(
+        r'(?s)case "\$RUNTIME_KIND" in\s*development\)\s*(.*?)\s*;;\s*released\)\s*(.*?)\s*;;\s*\*\)\s*(.*?)\s*;;\s*esac',
+        action,
+    )
+    require(
+        cases is not None
+        and "exit 1" in cases.group(3)
+        and "exit 0" not in cases.group(3),
+        "runtime interface action must close development/released routes and reject unknown kinds",
+    )
+    require(
+        not re.search(r"\b(?:GH_TOKEN|GITHUB_TOKEN|secrets\.|gh\s+auth)\b", action)
+        and not re.search(r"(?m)^\s*(?:gh\s+release|git\s+(?:tag|push)\b)", action),
+        "runtime interface action must not bypass authentication or publish",
+    )
+    return composite_run_script(action)
+
+
+def interface_step_inputs(step: str) -> list[tuple[str, str]]:
+    return re.findall(r"(?m)^          ([a-z][a-z-]*): (.+)$", step)
+
+
+def require_interface_upload(step: str, expected_name: str, expected_path: str) -> None:
+    require(
+        "uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a" in step
+        and interface_step_inputs(step) == [
+            ("name", expected_name),
+            ("path", expected_path),
+            ("if-no-files-found", "error"),
+            ("retention-days", "7"),
+        ],
+        "runtime interface receipt must be retained as a separate bounded interface-only artifact",
+    )
+
+
 def validate_v2_policy(documents: Documents) -> dict[str, int]:
     workflow = documents.text(WORKFLOW)
     action = documents.text(ACTION)
     runtime_action = documents.text(RUNTIME_ACTION)
+    interface_action = documents.text(INTERFACE_ACTION)
+    documents.read(INTERFACE_HELPER)
+    validate_runtime_interface_action(interface_action)
     route_script = documents.text(ROUTE)
     prepare_script = documents.text(PREPARE)
     qualify_script = documents.text(QUALIFY)
@@ -524,13 +625,79 @@ def validate_v2_policy(documents: Documents) -> dict[str, int]:
         and "||" not in runtime_cases.group(0),
         "shared runtime verification must close both kinds independently and reject unknown kinds without fallback",
     )
+    interface_prepare = workflow_step(
+        prepare, "Check the exact V2 interface before recipe preparation"
+    )
+    interface_runtimes = workflow_step(
+        runtimes, "Check every selected host V2 interface before compiler fan-out"
+    )
     require(
-        "name: Check portable readback interface before full qualification" in prepare
-        and "if: steps.selection.outputs.full_matrix == 'true'" in prepare
-        and 'readback_help=$("$READBACK_AROS" toolchain producer verify-package --help)' in prepare
-        and "for option in package-measurement package-measurement-sha256 executor-contract-sha256 executor-binary-sha256; do" in prepare
-        and prepare.index("name: Check portable readback interface") < prepare.index("- id: matrix"),
-        "full preparation must reject unsupported portable readback before native matrix work",
+        workflow.count("uses: ./.github/actions/check-v2-runtime-interface") == 2,
+        "preparation and every native host must run the shared runtime interface check",
+    )
+    for job_name, block, step, expected_inputs, next_marker in (
+        (
+            "v2-prepare",
+            prepare,
+            interface_prepare,
+            [
+                ("runtime-kind", "${{ steps.selection.outputs.runtime_kind }}"),
+                ("root", "${{ steps.runtime.outputs.root }}"),
+                ("tools-source", "${{ github.workspace }}/dependencies/aros-tools"),
+                ("tools-commit", "${{ steps.selection.outputs.tools_commit }}"),
+                ("output", "${{ runner.temp }}/diagnostic-runtime-interface.json"),
+            ],
+            "- id: matrix",
+        ),
+        (
+            "v2-runtimes",
+            runtimes,
+            interface_runtimes,
+            [
+                ("runtime-kind", "${{ needs.v2-prepare.outputs.runtime_kind }}"),
+                ("root", "${{ steps.runtime.outputs.root }}"),
+                ("tools-source", "${{ github.workspace }}/dependencies/aros-tools"),
+                ("tools-commit", "${{ needs.v2-prepare.outputs.tools_commit }}"),
+                ("output", "${{ runner.temp }}/diagnostic-native-runtime-interface-${{ matrix.host }}.json"),
+            ],
+            "name: diagnostic-v2-native-runtime-${{ matrix.host }}",
+        ),
+    ):
+        verifier = block.index("uses: ./.github/actions/verify-aros-tools-runtime-transport")
+        binder = block.index("name: Bind the verified runtime root without fallback")
+        check = block.index("uses: ./.github/actions/check-v2-runtime-interface")
+        require(
+            step.count("uses: ./.github/actions/check-v2-runtime-interface") == 1
+            and interface_step_inputs(step) == expected_inputs
+            and "if:" not in step
+            and "continue-on-error:" not in step
+            and verifier < binder < check < block.index(next_marker),
+            f"{job_name} must run the unconditional interface check after verified transport with exact selected inputs",
+        )
+    prepare_receipt = workflow_step(prepare, "Retain preparation interface-only evidence")
+    native_receipt = workflow_step(runtimes, "Retain selected host interface-only evidence")
+    require_interface_upload(
+        prepare_receipt,
+        "diagnostic-v2-runtime-interface-prepare",
+        "${{ runner.temp }}/diagnostic-runtime-interface.json",
+    )
+    require_interface_upload(
+        native_receipt,
+        "diagnostic-v2-runtime-interface-${{ matrix.host }}",
+        "${{ runner.temp }}/diagnostic-native-runtime-interface-${{ matrix.host }}.json",
+    )
+    require(
+        prepare.index("Check the exact V2 interface before recipe preparation")
+        < prepare.index("Retain preparation interface-only evidence")
+        < prepare.index("- id: matrix")
+        and runtimes.index("Check every selected host V2 interface before compiler fan-out")
+        < runtimes.index("Retain selected host interface-only evidence")
+        < runtimes.index("name: diagnostic-v2-native-runtime-${{ matrix.host }}")
+        and not re.search(r"(?m)^    if: .*full_matrix", runtimes)
+        and prepare.count("${{ runner.temp }}/diagnostic-runtime-interface.json") == 2
+        and runtimes.count("${{ runner.temp }}/diagnostic-native-runtime-interface-${{ matrix.host }}.json") == 2
+        and all("runtime-interface" not in job for job in (sources, qualify, builds, sdk, readback)),
+        "interface receipts must remain outside runtime roots and outside later qualification/provenance inputs",
     )
     require("needs: v2-prepare" in sources, "V2 source preparation must depend on V2 preparation")
     require(
@@ -981,45 +1148,278 @@ def mutate_job(text: str, name: str, old: str, new: str) -> str:
 
 
 class CompilerSdkWorkflowV2Tests(unittest.TestCase):
-    def test_portable_readback_preflight_executes_the_actual_shell(self) -> None:
-        workflow = Documents().text(WORKFLOW)
-        block = workflow.split("name: Check portable readback interface before full qualification", 1)[1]
-        self.assertIn("if: steps.selection.outputs.full_matrix == 'true'", block.split("- id: matrix", 1)[0])
-        script = block.split("        run: |\n", 1)[1].split("      - id: matrix", 1)[0]
-        script = "\n".join(line[10:] for line in script.splitlines()) + "\n"
-        options = ("package-measurement", "package-measurement-sha256",
-                   "executor-contract-sha256", "executor-binary-sha256")
-        with tempfile.TemporaryDirectory() as temporary:
-            executable = Path(temporary) / "aros"
-            for missing in (None, *options, "backend-failure"):
-                with self.subTest(missing=missing):
-                    help_text = "\n".join(f"  --{option} <VALUE>" for option in options if option != missing)
-                    executable.write_text(
-                        "#!/usr/bin/env python3\nimport sys\n"
-                        "assert sys.argv[1:] == ['toolchain','producer','verify-package','--help']\n"
-                        + ("raise SystemExit(42)\n" if missing == "backend-failure"
-                           else f"print({help_text!r})\n"), encoding="utf-8",
-                    )
-                    executable.chmod(0o700)
-                    result = subprocess.run(
-                        ["/bin/bash", "-c", script], capture_output=True, text=True,
-                        env={**os.environ, "READBACK_AROS": str(executable)}, check=False,
-                    )
-                    if missing is None:
-                        self.assertEqual(result.returncode, 0, result.stderr)
-                    else:
-                        self.assertNotEqual(result.returncode, 0)
-                        if missing != "backend-failure":
-                            self.assertIn(f"--{missing}", result.stderr)
+    def _runtime_interface_fixture(
+        self,
+        directory: str,
+        *,
+        kind: str,
+        cli_version: str = "1.2.3",
+    ) -> dict[str, Any]:
+        base = Path(directory).resolve()
+        workspace = base / "workspace"
+        tools_source = base / "tools-source"
+        runtime = base / "selected-runtime"
+        workspace.mkdir()
+        tools_source.mkdir()
+        (workspace / "scripts/toolchain").mkdir(parents=True)
+        (workspace / INTERFACE_HELPER).write_bytes((ROOT / INTERFACE_HELPER).read_bytes())
+        (tools_source / "Cargo.toml").write_text(
+            '[workspace]\nresolver = "2"\n[workspace.package]\nversion = "1.2.3"\n',
+            encoding="utf-8",
+        )
+        subprocess.run(["git", "-C", str(tools_source), "init", "-q"], check=True)
+        subprocess.run(["git", "-C", str(tools_source), "config", "user.name", "Policy Test"], check=True)
+        subprocess.run(
+            ["git", "-C", str(tools_source), "config", "user.email", "policy@example.invalid"],
+            check=True,
+        )
+        subprocess.run(["git", "-C", str(tools_source), "add", "Cargo.toml"], check=True)
+        subprocess.run(
+            ["git", "-C", str(tools_source), "commit", "-qm", "selected tools source"],
+            check=True,
+        )
+        tools_commit = subprocess.run(
+            ["git", "-C", str(tools_source), "rev-parse", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
 
-    def test_rejects_disconnected_portable_readback_preflight(self) -> None:
-        documents = self.new_documents()
-        documents.set_text(WORKFLOW, documents.text(WORKFLOW).replace(
-            'readback_help=$("$READBACK_AROS" toolchain producer verify-package --help)',
-            'readback_help="unsupported runtime"', 1,
-        ))
-        with self.assertRaisesRegex(PolicyViolation, "unsupported portable readback"):
-            validate_v2_policy(documents)
+        helper_spec = importlib.util.spec_from_file_location(
+            "runtime_interface_for_workflow_policy", ROOT / INTERFACE_HELPER
+        )
+        self.assertIsNotNone(helper_spec)
+        assert helper_spec is not None and helper_spec.loader is not None
+        helper = importlib.util.module_from_spec(helper_spec)
+        helper_spec.loader.exec_module(helper)
+        options = sorted({option for _, required in helper.INTERFACES for option in required})
+        cli = "\n".join(
+            (
+                "#!/usr/bin/env python3",
+                "import os, sys",
+                f"VERSION = {cli_version!r}",
+                f"OPTIONS = {options!r}",
+                "arguments = sys.argv[1:]",
+                'if arguments == ["--version"]:',
+                '    print("aros " + os.environ.get("INTERFACE_TEST_VERSION", VERSION))',
+                'elif arguments and arguments[-1] == "--help":',
+                '    missing = os.environ.get("INTERFACE_TEST_MISSING_OPTION", "")',
+                '    print("Options:")',
+                '    for option in OPTIONS:',
+                '        if option != missing: print("  --" + option + " <VALUE>")',
+                "else:",
+                "    raise SystemExit(2)",
+                "",
+            )
+        )
+        binary = runtime / "bin/aros"
+        binary.parent.mkdir(parents=True)
+        binary.write_text(cli, encoding="utf-8")
+        binary.chmod(0o700)
+        runtime_sha = hashlib.sha256(binary.read_bytes()).hexdigest()
+
+        lock_path = workspace / "toolchains/aros-tools-runtime-v1.json"
+        lock_path.parent.mkdir(parents=True)
+        lock_path.write_text(
+            json.dumps({"source_commit": tools_commit, "version": "1.2.3"}),
+            encoding="utf-8",
+        )
+        (runtime / ".aros-tools-runtime-manifest.json").write_text(
+            json.dumps({"files": [{"path": "bin/aros", "sha256": runtime_sha}]}),
+            encoding="utf-8",
+        )
+        (runtime / "DEVELOPMENT_RUNTIME.txt").write_text(
+            f"development-only tools commit: {tools_commit}\n", encoding="utf-8"
+        )
+        (runtime / "SHA256SUMS").write_text(f"{runtime_sha}  bin/aros\n", encoding="utf-8")
+
+        return {
+            "kind": kind,
+            "workspace": workspace,
+            "tools_source": tools_source,
+            "tools_commit": tools_commit,
+            "runtime": runtime,
+            "binary": binary,
+            "runtime_sha": runtime_sha,
+            "lock": lock_path,
+            "manifest": runtime / ".aros-tools-runtime-manifest.json",
+            "checksum_file": runtime / "SHA256SUMS",
+            "receipt": base / "runtime-interface-receipt.json",
+            "env": {
+                "RUNTIME_KIND": kind,
+                "RUNTIME_ROOT": str(runtime),
+                "TOOLS_SOURCE": str(tools_source),
+                "TOOLS_COMMIT": tools_commit,
+                "INTERFACE_OUTPUT": str(base / "runtime-interface-receipt.json"),
+                "RUNTIME_LOCK": "toolchains/aros-tools-runtime-v1.json",
+                "GITHUB_WORKSPACE": str(workspace),
+            },
+        }
+
+    def _run_interface_action(self, fixture: dict[str, Any], **environment: str) -> subprocess.CompletedProcess[str]:
+        script = composite_run_script(Documents().text(INTERFACE_ACTION))
+        return subprocess.run(
+            ["/bin/bash", "-c", script],
+            capture_output=True,
+            text=True,
+            env={**os.environ, **fixture["env"], **environment},
+            check=False,
+        )
+
+    def test_composite_interface_action_runs_the_real_helper_for_both_runtime_kinds(self) -> None:
+        for kind in ("development", "released"):
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as temporary:
+                fixture = self._runtime_interface_fixture(temporary, kind=kind)
+                result = self._run_interface_action(fixture)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertTrue(fixture["receipt"].is_file())
+                self.assertNotEqual(
+                    fixture["receipt"].parent,
+                    fixture["runtime"],
+                    "the interface receipt must be outside the selected runtime",
+                )
+                receipt = json.loads(fixture["receipt"].read_text(encoding="utf-8"))
+                self.assertEqual(receipt["schema"], "aros-tools-runtime-interface-preflight-v1")
+                self.assertEqual(receipt["assurance"], "interface-only-exact-selected-binary")
+                self.assertEqual(receipt["runtime"]["sha256"], fixture["runtime_sha"])
+                self.assertNotIn("source_commit", receipt)
+                self.assertTrue(
+                    any("does not authenticate published runtime provenance" in item
+                        for item in receipt["limitations"])
+                )
+
+    def test_composite_interface_action_rejects_runtime_binding_and_metadata_counterprobes(self) -> None:
+        probes = (
+            ("development", "digest"),
+            ("released", "released-digest"),
+            ("development", "version"),
+            ("released", "source"),
+            ("development", "selected-commit"),
+            ("development", "dirty-selected-source"),
+            ("development", "duplicate-checksum-metadata"),
+            ("development", "missing-checksum-metadata"),
+            ("released", "duplicate-manifest-cli-metadata"),
+            ("released", "missing-manifest-cli-metadata"),
+            ("development", "missing-help-option"),
+            ("development", "unknown-kind"),
+            ("development", "output-inside-runtime"),
+        )
+        for kind, probe in probes:
+            with self.subTest(probe=probe), tempfile.TemporaryDirectory() as temporary:
+                fixture = self._runtime_interface_fixture(temporary, kind=kind)
+                extra_environment: dict[str, str] = {}
+                if probe == "digest":
+                    fixture["checksum_file"].write_text(f"{'0' * 64}  bin/aros\n", encoding="utf-8")
+                elif probe == "released-digest":
+                    manifest = json.loads(fixture["manifest"].read_text(encoding="utf-8"))
+                    manifest["files"][0]["sha256"] = "0" * 64
+                    fixture["manifest"].write_text(json.dumps(manifest), encoding="utf-8")
+                elif probe == "version":
+                    extra_environment["INTERFACE_TEST_VERSION"] = "9.9.9"
+                elif probe == "source":
+                    lock = json.loads(fixture["lock"].read_text(encoding="utf-8"))
+                    lock["source_commit"] = "f" * 40 if fixture["tools_commit"] != "f" * 40 else "e" * 40
+                    fixture["lock"].write_text(json.dumps(lock), encoding="utf-8")
+                elif probe == "selected-commit":
+                    extra_environment["TOOLS_COMMIT"] = "0" * 40
+                elif probe == "dirty-selected-source":
+                    (fixture["tools_source"] / "untracked.txt").write_text("dirty\n", encoding="utf-8")
+                elif probe == "duplicate-checksum-metadata":
+                    line = fixture["checksum_file"].read_text(encoding="utf-8")
+                    fixture["checksum_file"].write_text(line + line, encoding="utf-8")
+                elif probe == "missing-checksum-metadata":
+                    fixture["checksum_file"].write_text("", encoding="utf-8")
+                elif probe == "duplicate-manifest-cli-metadata":
+                    manifest = json.loads(fixture["manifest"].read_text(encoding="utf-8"))
+                    manifest["files"].append(dict(manifest["files"][0]))
+                    fixture["manifest"].write_text(json.dumps(manifest), encoding="utf-8")
+                elif probe == "missing-manifest-cli-metadata":
+                    fixture["manifest"].write_text(json.dumps({"files": []}), encoding="utf-8")
+                elif probe == "missing-help-option":
+                    extra_environment["INTERFACE_TEST_MISSING_OPTION"] = "source-dir"
+                elif probe == "unknown-kind":
+                    extra_environment["RUNTIME_KIND"] = "unknown"
+                elif probe == "output-inside-runtime":
+                    extra_environment["INTERFACE_OUTPUT"] = str(
+                        fixture["runtime"] / "runtime-interface-receipt.json"
+                    )
+
+                result = self._run_interface_action(fixture, **extra_environment)
+                self.assertNotEqual(result.returncode, 0, result.stdout)
+                self.assertFalse(fixture["receipt"].exists())
+                if probe == "output-inside-runtime":
+                    self.assertFalse((fixture["runtime"] / "runtime-interface-receipt.json").exists())
+
+    def test_rejects_runtime_interface_workflow_skips_and_misbindings(self) -> None:
+        mutations = (
+            (
+                "v2-prepare",
+                "        uses: ./.github/actions/check-v2-runtime-interface\n",
+                "        if: steps.selection.outputs.full_matrix == 'true'\n"
+                "        uses: ./.github/actions/check-v2-runtime-interface\n",
+            ),
+            (
+                "v2-runtimes",
+                "        uses: ./.github/actions/check-v2-runtime-interface\n",
+                "        uses: ./.github/actions/check-v2-runtime-interface\n"
+                "        continue-on-error: true\n",
+            ),
+            (
+                "v2-prepare",
+                "          tools-commit: ${{ steps.selection.outputs.tools_commit }}",
+                "          tools-commit: ${{ github.sha }}",
+            ),
+            (
+                "v2-runtimes",
+                "      - name: Check every selected host V2 interface before compiler fan-out\n"
+                "        uses: ./.github/actions/check-v2-runtime-interface\n"
+                "        with:\n"
+                "          runtime-kind: ${{ needs.v2-prepare.outputs.runtime_kind }}",
+                "      - name: Check every selected host V2 interface before compiler fan-out\n"
+                "        uses: ./.github/actions/check-v2-runtime-interface\n"
+                "        with:\n"
+                "          runtime-kind: development",
+            ),
+            (
+                "v2-prepare",
+                "          output: ${{ runner.temp }}/diagnostic-runtime-interface.json",
+                "          output: ${{ runner.temp }}/diagnostic-runtime/interface.json",
+            ),
+            (
+                "v2-prepare",
+                "          root: ${{ steps.runtime.outputs.root }}",
+                "          root: ${{ runner.temp }}/fallback-runtime",
+            ),
+        )
+        for job, old, new in mutations:
+            with self.subTest(job=job, old=old), self.assertRaises(PolicyViolation):
+                documents = self.new_documents()
+                documents.set_text(
+                    WORKFLOW,
+                    mutate_job(documents.text(WORKFLOW), job, old, new),
+                )
+                validate_v2_policy(documents)
+
+    def test_rejects_runtime_interface_action_authentication_bypass_or_route_fallback(self) -> None:
+        action = Documents().text(INTERFACE_ACTION)
+        bypasses = (
+            (
+                'test "$(git -C "$TOOLS_SOURCE" rev-parse HEAD)" = "$TOOLS_COMMIT"',
+                'test -n "$TOOLS_COMMIT"',
+            ),
+            (
+                'else error("Runtime has no unique CLI entry") end',
+                'else .[0].sha256 end',
+            ),
+            ('runtime_prefix=${RUNTIME_ROOT%/}', 'runtime_prefix='),
+            ("*) echo 'Unsupported V2 runtime interface route.' >&2; exit 1;;",
+             "*) echo 'Unsupported V2 runtime interface route.' >&2; exit 0;;"),
+        )
+        for old, new in bypasses:
+            with self.subTest(old=old), self.assertRaises(PolicyViolation):
+                documents = self.new_documents()
+                documents.set_text(INTERFACE_ACTION, action.replace(old, new, 1))
+                validate_v2_policy(documents)
 
     def new_documents(self) -> Documents:
         return Documents()
