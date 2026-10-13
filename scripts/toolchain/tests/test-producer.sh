@@ -460,6 +460,7 @@ python3 -B "$source_root/scripts/toolchain/tests/test-compiler-sdk-release-start
 python3 -B "$source_root/scripts/toolchain/tests/test-compiler-sdk-dispatch-claim-v2.py"
 python3 -B "$source_root/scripts/toolchain/tests/test-compiler-sdk-claim-upload-v2.py"
 python3 -B "$source_root/scripts/toolchain/tests/test-compiler-sdk-dispatcher-auth-v2.py"
+python3 -B "$source_root/scripts/toolchain/tests/test-compiler-sdk-authenticated-claim-v2.py"
 python3 -B "$source_root/scripts/toolchain/tests/test-release-draft-config-v2.py"
 python3 -B "$source_root/scripts/toolchain/tests/test-v2-runtime-interface.py"
 python3 -B "$source_root/scripts/toolchain/tests/test-prepare-recovery-request-v2.py"

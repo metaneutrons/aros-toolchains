@@ -321,6 +321,22 @@ dispatcher identity and the causal edge, not signed-start/runtime authenticity,
 claim consumption, native dispatch or product qualification. No workflow calls
 it, and its fixtures do not establish a genuine provider/OIDC observation.
 
+`scripts/toolchain/compiler-sdk-authenticated-claim-v2.py` composes the inactive
+identity, signed-start/runtime-evidence verification and one confirmed upload
+primitive. It selects bounded original record/bundle bytes, passes both exact
+SHA256 pins into cryptographic verification, derives the claim only from those
+bytes, and repeats identity and start verification before mutation. The external
+verifier receives private copies of captured bytes, preserving the signed
+subject basename; it never reopens the caller's mutable record/bundle paths.
+A temporary caller-path substitution regression verifies this boundary.
+A partial
+pin selection, semantically identical but different raw bytes, changed identity
+or failed evidence gate rejects before upload. The caller must independently
+materialize the authentic published runtime in private, quiescent staging;
+this composition does not replace that publication-authentication gate. It has
+no CLI/workflow entry point, dispatches nothing and reports only authenticated
+claim-upload assurance, not native qualification or publication authority.
+
 The released V2 runtime, source qualification and complete compiler/SDK matrix
 remain prerequisites. This design neither changes source pins nor waives
 missing source authorization. It creates no environments, grants, tags,
