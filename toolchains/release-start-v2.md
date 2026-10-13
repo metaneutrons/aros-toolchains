@@ -187,6 +187,20 @@ blobs, and checks the annotated tag plus exact private empty draft. It repeats
 run/job observations and record/bundle byte readbacks before returning.
 Its offline fixtures do not prove a real signed start. No workflow currently
 calls it, and it neither constructs a start nor consumes or dispatches one.
+The reader also requires independently selected runtime paths and host: it
+hashes the retained materialization and interface receipts, checks the exact
+locked file closure, joins the executable to its manifest and interface
+measurement, and repeats these byte checks after provider observations.
+The original interface path is evidence, never a reader-supplied execution
+path; the only executable inspected is the selected runtime's `bin/aros`.
+These joins do not redo publication signatures or prove the start ran the
+materializer. The future protected workflow must authenticate the published
+runtime before constructing/signing the start and bind host selection to its
+actual provider environment; a local receipt cannot replace those gates.
+The retained closure check is point-in-time: held descriptors and directory
+readbacks detect concurrent changes during inspection, but do not make a
+mutable tree permanently immutable. The controller must keep runtime staging
+private from unrelated writers throughout measurement and start construction.
 Runtime materialization, fresh privileged absence, mutation outcome checks,
 record signing/retention and exclusive consumption still require the complete
 protected controller and a genuine provider observation.

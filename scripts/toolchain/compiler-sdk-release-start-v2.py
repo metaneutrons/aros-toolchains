@@ -30,6 +30,8 @@ def load_module(name: str, filename: str):
 
 ADMISSION = load_module("start_admission", "release-admission-v2.py")
 ORIGIN = load_module("start_origin", "artifact-origin.py")
+RUNTIME = load_module("start_runtime", "materialize-aros-tools-runtime.py")
+INTERFACE = load_module("start_interface", "check-v2-runtime-interface.py")
 WORKFLOW = ".github/workflows/compiler-sdk-release-start.yml"
 JOB = "Create protected compiler and SDK start"
 SCHEMA = "aros-toolchains-release-start-v2"
@@ -166,7 +168,91 @@ def observe_candidate(record: dict) -> None:
             "draft ID and tag lookup select different candidates")
 
 
-def verify_start(record_path: Path, bundle_path: Path, source_context: dict) -> dict:
+def verify_runtime_evidence(record: dict, *, lock_path: Path, directory: Path,
+                            interface_path: Path, host: str) -> None:
+    """Join retained measurements to frozen bytes, not publication authority.
+
+    The caller must separately authenticate the released runtime through the
+    materializer and select the start host from its provider environment. The
+    interface's original absolute path is retained evidence, not an executable
+    path to follow on a reader that may have relocated the runtime artifact.
+    """
+    selected = record["runtime"]
+    require(selected["lock_sha256"] == record["admission"]["inputs"]["toolchains/aros-tools-runtime-v1.json"],
+            "runtime evidence lock differs from the admitted frozen input")
+    receipt_path = directory / ".aros-tools-runtime-receipt-v1.json"
+    paths = {"lock_sha256": lock_path, "receipt_sha256": receipt_path,
+             "interface_sha256": interface_path}
+    require(len({path.absolute() for path in paths.values()}) == len(paths),
+            "runtime evidence must use separate files")
+    raw = {key: ADMISSION.read_regular_file(path, "start runtime evidence", MAX_RECORD)
+           for key, path in paths.items()}
+    for key, contents in raw.items():
+        require(hashlib.sha256(contents).hexdigest() == selected[key],
+                f"start runtime {key} differs from retained bytes")
+    lock = RUNTIME.validate_lock(ADMISSION.parse_json(raw["lock_sha256"], "start runtime lock"))
+    require(lock["repository"] == ADMISSION.RUNTIME_REPOSITORY and host in RUNTIME.HOST_TARGETS,
+            "start runtime repository or independently selected host differs")
+    materialization = ADMISSION.parse_json(raw["receipt_sha256"], "start materialization receipt")
+    manifest = RUNTIME.verify_extracted_frozen(lock, selected["lock_sha256"], host, directory)
+    require(materialization == RUNTIME.receipt(
+        lock_path, lock, host, manifest, lock["hosts"][host]["manifest"]["sha256"],
+        lock_sha256=selected["lock_sha256"]),
+        "start materialization receipt differs from the selected locked host")
+    executable = next(item for item in manifest["files"] if item["path"] == "bin/aros")
+    require(executable["sha256"] == selected["executable_sha256"],
+            "start executable digest differs from the locked manifest")
+    interface = exact(ADMISSION.parse_json(raw["interface_sha256"], "start runtime interface"),
+                      {"schema", "assurance", "runtime", "checks", "limitations"}, "runtime interface")
+    require(interface["schema"] == "aros-tools-runtime-interface-preflight-v1"
+            and interface["assurance"] == "interface-only-exact-selected-binary",
+            "start runtime interface schema or assurance differs")
+    observed = exact(interface["runtime"],
+                     {"path", "sha256", "version", "execution_binding", "file_identity"},
+                     "interface runtime")
+    require(observed["sha256"] == selected["executable_sha256"]
+            and observed["version"] == lock["version"],
+            "start runtime interface executable or version differs")
+    require(type(observed["path"]) is str and Path(observed["path"]).is_absolute()
+            and str(Path(observed["path"])) == observed["path"]
+            and ".." not in Path(observed["path"]).parts,
+            "interface original executable path is not absolute and normalized")
+    require(observed["execution_binding"] in
+            {"held-file-descriptor", "sha256-identical-private-temporary-copy"},
+            "interface executable binding is unsupported")
+    identity = exact(observed["file_identity"],
+                     {"device", "inode", "mode", "size", "mtime_ns", "ctime_ns"},
+                     "interface file identity")
+    require(all(type(value) is int and value >= 0 for value in identity.values())
+            and identity["size"] == executable["size"]
+            and identity["mode"] & 0o777 == int(executable["mode"], 8),
+            "interface executable size, mode or file identity differs")
+    checks = [{"kind": "version", "checked_selectors":
+               {"argv": ["--version"], "expected_version": lock["version"]}, "result": "passed"}]
+    checks.extend({"kind": "command-interface", "checked_selectors":
+                   {"command": list(command), "required_options": list(options)}, "result": "passed"}
+                  for command, options in INTERFACE.INTERFACES)
+    require(interface["checks"] == checks, "start runtime interface checks are incomplete or differ")
+    require(interface["limitations"] == [
+        "does not authenticate published runtime provenance or authenticity",
+        "does not establish V2 behavior, ABI compatibility, or qualification",
+        "does not establish source commit, signatures, or release authority",
+        "the caller must separately materialize and authenticate the runtime",
+    ],
+            "interface limitations are malformed")
+    held = INTERFACE.HeldExecutable((directory / "bin/aros").absolute(), selected["executable_sha256"])
+    try:
+        for key, path in paths.items():
+            require(ADMISSION.read_regular_file(path, "start runtime evidence", MAX_RECORD) == raw[key],
+                    "start runtime evidence changed during verification")
+        held.verify()
+    finally:
+        held.close()
+
+
+def verify_start(record_path: Path, bundle_path: Path, source_context: dict, *,
+                 runtime_lock: Path, runtime_directory: Path, runtime_interface: Path,
+                 runtime_host: str) -> dict:
     require(record_path.absolute() != bundle_path.absolute(),
             "start record and signature bundle must be separate files")
     raw = ADMISSION.read_regular_file(record_path, "signed start record", MAX_RECORD)
@@ -194,12 +280,16 @@ def verify_start(record_path: Path, bundle_path: Path, source_context: dict) -> 
         observed = ADMISSION.git("show", f'{context["producer_commit"]}:{path}')
         require(hashlib.sha256(observed).hexdigest() == selected_digest,
                 "frozen start input bytes differ from the signed admission")
+    runtime_selection = {"lock_path": runtime_lock, "directory": runtime_directory,
+                         "interface_path": runtime_interface, "host": runtime_host}
+    verify_runtime_evidence(record, **runtime_selection)
     observe_candidate(record)
     observe_start_run(context)
     require(ORIGIN.select_source_job(ORIGIN.jobs_for(context), context,
             {"id": record["job"]["id"], "name": JOB}) == expected,
             "provider start job changed during authentication")
     observe_candidate(record)
+    verify_runtime_evidence(record, **runtime_selection)
     require(ADMISSION.read_regular_file(record_path, "signed start record", MAX_RECORD) == raw
             and ADMISSION.read_regular_file(bundle_path, "start signature bundle", MAX_BUNDLE) == bundle,
             "start record or signature changed during authentication")
@@ -211,14 +301,21 @@ def main() -> int:
     parser.add_argument("--record", type=Path, required=True)
     parser.add_argument("--bundle", type=Path, required=True)
     parser.add_argument("--source-context", type=Path, required=True)
+    parser.add_argument("--runtime-lock", type=Path, required=True)
+    parser.add_argument("--runtime-directory", type=Path, required=True)
+    parser.add_argument("--runtime-interface", type=Path, required=True)
+    parser.add_argument("--runtime-host", choices=sorted(RUNTIME.HOST_TARGETS), required=True)
     args = parser.parse_args()
     try:
         context = ADMISSION.parse_json(ADMISSION.read_regular_file(
             args.source_context, "independently selected source context", MAX_RECORD), "source context")
-        verify_start(args.record, args.bundle, context)
+        verify_start(args.record, args.bundle, context, runtime_lock=args.runtime_lock,
+                     runtime_directory=args.runtime_directory, runtime_interface=args.runtime_interface,
+                     runtime_host=args.runtime_host)
         print("Authenticated protected start; native qualification and exclusive consumption remain required.")
         return 0
-    except (StartError, ADMISSION.AdmissionError, ORIGIN.OriginError, OSError, ValueError,
+    except (StartError, ADMISSION.AdmissionError, ORIGIN.OriginError, RUNTIME.RuntimeError,
+            OSError, ValueError,
             KeyError, TypeError, AttributeError, RecursionError, OverflowError) as error:
         print(f"protected start rejected: {error}", file=sys.stderr)
         return 1

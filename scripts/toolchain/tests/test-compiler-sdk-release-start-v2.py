@@ -7,6 +7,7 @@ import copy
 from datetime import datetime, timezone
 import hashlib
 import importlib.util
+import json
 from pathlib import Path
 import subprocess
 import tempfile
@@ -228,6 +229,11 @@ class StartFixture:
         self.bundle_bytes = BUNDLE_BYTES
         self.record_path.write_bytes(self.record_bytes)
         self.bundle_path.write_bytes(self.bundle_bytes)
+        self.runtime_lock_path = root / "runtime-lock.json"
+        self.runtime_directory = root / "runtime"
+        self.runtime_interface_path = root / "runtime-interface.json"
+        self.runtime_host = "linux-x86_64"
+        self.runtime_binding_calls: list = []
         self.provider = provider_responses(self.record)
         self.source_job = provider_job(self.source)
         self.signature = attestation(self.record_bytes)
@@ -325,8 +331,162 @@ class StartFixture:
                 mock.patch.object(ORIGIN, "gh_json", side_effect=self.run_origin_gh), \
                 mock.patch.object(start, "bounded_gh", side_effect=self.run_bounded_gh), \
                 mock.patch.object(start, "observe_candidate",
-                                  side_effect=observe_candidate_with_optional_mutation):
-            return start.verify_start(self.record_path, self.bundle_path, self.source)
+                                  side_effect=observe_candidate_with_optional_mutation), \
+                mock.patch.object(start, "verify_runtime_evidence") as runtime_binding:
+            result = start.verify_start(
+                self.record_path, self.bundle_path, self.source,
+                runtime_lock=self.runtime_lock_path,
+                runtime_directory=self.runtime_directory,
+                runtime_interface=self.runtime_interface_path,
+                runtime_host=self.runtime_host,
+            )
+            self.runtime_binding_calls = runtime_binding.call_args_list
+            return result
+
+
+class RuntimeEvidenceFixture:
+    """Small local runtime closure using the real release lock contract."""
+
+    def __init__(self, root: Path):
+        self.root = root.resolve()
+        self.host = "linux-x86_64"
+        self.lock_path = self.root / "runtime-lock.json"
+        self.directory = self.root / "runtime"
+        self.interface_path = self.root / "runtime-interface.json"
+        self.directory.mkdir()
+        (self.directory / "bin").mkdir()
+
+        real_lock_path = SOURCE_ROOT / LOCK_PATH
+        self.lock = json.loads(real_lock_path.read_text(encoding="utf-8"))
+        self.file_bytes = {
+            path: f"synthetic bounded runtime file: {path}\n".encode("ascii")
+            for path in start.RUNTIME.EXPECTED_FILES
+        }
+        manifest_files = []
+        for relative, (mode, _) in sorted(start.RUNTIME.EXPECTED_FILES.items()):
+            payload = self.file_bytes[relative]
+            path = self.directory / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(payload)
+            path.chmod(int(mode, 8))
+            manifest_files.append({
+                "path": relative,
+                "mode": mode,
+                "sha256": sha256(payload),
+                "size": len(payload),
+            })
+        entry = self.lock["hosts"][self.host]
+        self.manifest = {
+            "schema": 1,
+            "package": "aros-tools",
+            "version": self.lock["version"],
+            "target": entry["target"],
+            "source_commit": self.lock["source_commit"],
+            "source_date_epoch": self.lock["source_date_epoch"],
+            "archive": entry["archive"]["name"],
+            "archive_sha256": entry["archive"]["sha256"],
+            "archive_size": entry["archive"]["size"],
+            "files": manifest_files,
+        }
+        self.manifest_bytes = start.RUNTIME.canonical_json(self.manifest) + b"\n"
+        entry["manifest"]["size"] = len(self.manifest_bytes)
+        entry["manifest"]["sha256"] = sha256(self.manifest_bytes)
+        self.lock_path.write_text(json.dumps(self.lock, sort_keys=True, indent=2) + "\n",
+                                  encoding="utf-8")
+        (self.directory / ".aros-tools-runtime-manifest.json").write_bytes(self.manifest_bytes)
+        self.write_receipt()
+        self.write_interface()
+
+        self.record, _, _ = record_fixture()
+        self.record = copy.deepcopy(self.record)
+        lock_digest = sha256(self.lock_path.read_bytes())
+        self.record["admission"]["inputs"][LOCK_PATH] = lock_digest
+        self.record["runtime"] = {
+            "lock_sha256": lock_digest,
+            "receipt_sha256": sha256(self.receipt_path.read_bytes()),
+            "interface_sha256": sha256(self.interface_path.read_bytes()),
+            "executable_sha256": sha256((self.directory / "bin/aros").read_bytes()),
+        }
+
+    @property
+    def receipt_path(self) -> Path:
+        return self.directory / ".aros-tools-runtime-receipt-v1.json"
+
+    @property
+    def executable_path(self) -> Path:
+        return self.directory / "bin/aros"
+
+    def write_receipt(self) -> None:
+        receipt = start.RUNTIME.receipt(
+            self.lock_path, self.lock, self.host, self.manifest, sha256(self.manifest_bytes)
+        )
+        self.receipt_path.write_bytes(start.RUNTIME.canonical_json(receipt) + b"\n")
+
+    def interface_receipt(self) -> dict:
+        metadata = self.executable_path.stat()
+        checks = [{
+            "kind": "version",
+            "checked_selectors": {
+                "argv": ["--version"],
+                "expected_version": self.lock["version"],
+            },
+            "result": "passed",
+        }]
+        checks.extend({
+            "kind": "command-interface",
+            "checked_selectors": {
+                "command": list(command),
+                "required_options": list(options),
+            },
+            "result": "passed",
+        } for command, options in start.INTERFACE.INTERFACES)
+        return {
+            "schema": "aros-tools-runtime-interface-preflight-v1",
+            "assurance": "interface-only-exact-selected-binary",
+            "runtime": {
+                # This remains the original producer-side path; the verifier
+                # checks it as bounded metadata and opens its own selected path.
+                "path": str(self.executable_path),
+                "sha256": sha256(self.executable_path.read_bytes()),
+                "version": self.lock["version"],
+                "execution_binding": "sha256-identical-private-temporary-copy",
+                "file_identity": {
+                    "device": metadata.st_dev,
+                    "inode": metadata.st_ino,
+                    "mode": metadata.st_mode,
+                    "size": metadata.st_size,
+                    "mtime_ns": metadata.st_mtime_ns,
+                    "ctime_ns": metadata.st_ctime_ns,
+                },
+            },
+            "checks": checks,
+            "limitations": [
+                "does not authenticate published runtime provenance or authenticity",
+                "does not establish V2 behavior, ABI compatibility, or qualification",
+                "does not establish source commit, signatures, or release authority",
+                "the caller must separately materialize and authenticate the runtime",
+            ],
+        }
+
+    def write_interface(self, value: dict | None = None) -> None:
+        receipt = self.interface_receipt() if value is None else value
+        contents = json.dumps(receipt, sort_keys=True, separators=(",", ":")).encode("utf-8") + b"\n"
+        self.interface_path.write_bytes(contents)
+
+    def refresh_digest(self, key: str, path: Path) -> None:
+        selected = sha256(path.read_bytes())
+        self.record["runtime"][key] = selected
+        if key == "lock_sha256":
+            self.record["admission"]["inputs"][LOCK_PATH] = selected
+
+    def verify(self, *, host: str | None = None, record: dict | None = None) -> None:
+        start.verify_runtime_evidence(
+            self.record if record is None else record,
+            lock_path=self.lock_path,
+            directory=self.directory,
+            interface_path=self.interface_path,
+            host=self.host if host is None else host,
+        )
 
 
 class ValidateStartTests(unittest.TestCase):
@@ -500,6 +660,15 @@ class VerifyStartTests(unittest.TestCase):
         fixture = self.run_fixture()
         self.assertEqual(fixture.record_path.read_bytes(), fixture.record_bytes)
         self.assertEqual(fixture.bundle_path.read_bytes(), fixture.bundle_bytes)
+        expected_runtime_call = mock.call(
+            fixture.record,
+            lock_path=fixture.runtime_lock_path,
+            directory=fixture.runtime_directory,
+            interface_path=fixture.runtime_interface_path,
+            host=fixture.runtime_host,
+        )
+        self.assertEqual(fixture.runtime_binding_calls,
+                         [expected_runtime_call, expected_runtime_call])
         self.assertEqual(fixture.calls["git"], [("show", f"{COMMIT}:{path}")
                                                  for path in sorted(ADMISSION.INPUT_PATHS)])
         self.assertEqual([path for path, _, _ in fixture.calls["reads"]], [
@@ -598,6 +767,237 @@ class VerifyStartTests(unittest.TestCase):
                 self.addCleanup(temp.cleanup)
                 fixture = StartFixture(Path(temp.name))
                 self.assert_rejected(fixture, mutate_after_candidate=selected)
+
+
+class VerifyRuntimeEvidenceTests(unittest.TestCase):
+    def fixture(self) -> RuntimeEvidenceFixture:
+        temporary = tempfile.TemporaryDirectory(prefix="compiler-sdk-runtime-evidence.")
+        self.addCleanup(temporary.cleanup)
+        return RuntimeEvidenceFixture(Path(temporary.name))
+
+    def assert_runtime_rejected(self, fixture: RuntimeEvidenceFixture, *,
+                                host: str | None = None,
+                                record: dict | None = None,
+                                exception=(start.StartError, start.RUNTIME.RuntimeError,
+                                           start.INTERFACE.PreflightError, ADMISSION.AdmissionError,
+                                           OSError)) -> None:
+        with self.assertRaises(exception):
+            fixture.verify(host=host, record=record)
+
+    def test_positive_binding_runs_real_extracted_verifier_without_external_actions(self) -> None:
+        fixture = self.fixture()
+        with mock.patch.object(start.RUNTIME, "verify_extracted_frozen",
+                               wraps=start.RUNTIME.verify_extracted_frozen) as extracted, \
+                mock.patch.object(start.RUNTIME, "run",
+                                  side_effect=AssertionError("runtime subprocess helper used")), \
+                mock.patch.object(start.RUNTIME, "verify_signature",
+                                  side_effect=AssertionError("runtime signature verifier used")), \
+                mock.patch.object(start.RUNTIME, "verify_attestation",
+                                  side_effect=AssertionError("runtime attestation verifier used")), \
+                mock.patch.object(start.RUNTIME.subprocess, "run",
+                                  side_effect=AssertionError("subprocess.run used")), \
+                mock.patch.object(start.RUNTIME.subprocess, "Popen",
+                                  side_effect=AssertionError("subprocess.Popen used")), \
+                mock.patch.object(ADMISSION, "api",
+                                  side_effect=AssertionError("network observation used")), \
+                mock.patch.object(start, "bounded_gh",
+                                  side_effect=AssertionError("signature authentication used")), \
+                mock.patch.object(ORIGIN, "gh_json",
+                                  side_effect=AssertionError("provider authentication used")):
+            fixture.verify()
+        extracted.assert_called_once_with(fixture.lock, fixture.record["runtime"]["lock_sha256"],
+                                          fixture.host, fixture.directory)
+
+    def test_signed_runtime_digests_bind_each_retained_file(self) -> None:
+        for selected in ("lock", "receipt", "executable", "interface"):
+            with self.subTest(selected=selected):
+                fixture = self.fixture()
+                if selected == "lock":
+                    fixture.lock_path.write_bytes(fixture.lock_path.read_bytes() + b" ")
+                elif selected == "receipt":
+                    fixture.receipt_path.write_bytes(fixture.receipt_path.read_bytes() + b" ")
+                elif selected == "executable":
+                    fixture.executable_path.write_bytes(fixture.executable_path.read_bytes() + b"changed\n")
+                else:
+                    fixture.interface_path.write_bytes(fixture.interface_path.read_bytes() + b" ")
+                self.assert_runtime_rejected(fixture)
+
+    def test_frozen_runtime_repository_and_selected_host_are_required(self) -> None:
+        fixture = self.fixture()
+        fixture.lock["repository"] = "example/aros-tools"
+        workflow = "example/aros-tools/.github/workflows/release.yml"
+        fixture.lock["signer_workflow"] = workflow
+        fixture.lock["certificate_identity"] = (
+            f"https://github.com/{workflow}@refs/tags/{fixture.lock['tag']}"
+        )
+        fixture.lock_path.write_text(json.dumps(fixture.lock, sort_keys=True, indent=2) + "\n",
+                                     encoding="utf-8")
+        fixture.write_receipt()
+        fixture.refresh_digest("lock_sha256", fixture.lock_path)
+        fixture.refresh_digest("receipt_sha256", fixture.receipt_path)
+        with self.assertRaisesRegex(start.StartError, "repository or independently selected host"):
+            fixture.verify()
+
+        wrong_host = self.fixture()
+        self.assert_runtime_rejected(wrong_host, host="linux-aarch64")
+
+    def test_interface_schema_assurance_runtime_version_and_checks_are_closed(self) -> None:
+        mutations = (
+            ("schema", lambda value: value.update(schema="unexpected-interface-v1")),
+            ("assurance", lambda value: value.update(assurance="runtime-authenticated")),
+            ("extra field", lambda value: value.update(unexpected=True)),
+            ("runtime digest", lambda value: value["runtime"].update(sha256="0" * 64)),
+            ("runtime version", lambda value: value["runtime"].update(version="99.0.0")),
+            ("version selector", lambda value: value["checks"][0]["checked_selectors"].update(
+                expected_version="99.0.0")),
+            ("command selector", lambda value: value["checks"][1]["checked_selectors"].update(
+                command=["toolchain", "producer", "unexpected"])),
+        )
+        for label, mutate in mutations:
+            with self.subTest(label=label):
+                fixture = self.fixture()
+                receipt = json.loads(fixture.interface_path.read_text(encoding="utf-8"))
+                mutate(receipt)
+                fixture.write_interface(receipt)
+                # The synthetic signed digest has been updated; rejection must
+                # come from its schema or binding, not from a stale digest.
+                fixture.refresh_digest("interface_sha256", fixture.interface_path)
+                self.assert_runtime_rejected(fixture)
+
+    def test_interface_identity_and_complete_selector_set_are_required(self) -> None:
+        changes = (
+            ("bool size", lambda value: value["runtime"]["file_identity"].update(size=True)),
+            ("wrong mode", lambda value: value["runtime"]["file_identity"].update(mode=0o100644)),
+            ("relative path", lambda value: value["runtime"].update(path="bin/aros")),
+            ("noncanonical path", lambda value: value["runtime"].update(path="/tmp//runtime/aros")),
+            ("limitations removed", lambda value: value.update(limitations=[])),
+            ("missing check", lambda value: value["checks"].pop()),
+            ("failed check", lambda value: value["checks"][1].update(result="failed")),
+            ("missing option", lambda value: value["checks"][1]["checked_selectors"]["required_options"].pop()),
+        )
+        for label, mutate in changes:
+            with self.subTest(label=label):
+                fixture = self.fixture()
+                interface = fixture.interface_receipt()
+                mutate(interface)
+                fixture.write_interface(interface)
+                fixture.refresh_digest("interface_sha256", fixture.interface_path)
+                with self.assertRaises(start.StartError):
+                    fixture.verify()
+
+    def test_late_evidence_replacement_is_rejected_by_readback(self) -> None:
+        for name in ("lock_path", "receipt_path", "interface_path"):
+            with self.subTest(name=name):
+                fixture = self.fixture()
+                real_held = start.INTERFACE.HeldExecutable
+
+                def replace_after_open(*args, **kwargs):
+                    held = real_held(*args, **kwargs)
+                    path = getattr(fixture, name)
+                    path.write_bytes(path.read_bytes() + b" ")
+                    return held
+
+                with mock.patch.object(start.INTERFACE, "HeldExecutable", side_effect=replace_after_open), \
+                        self.assertRaisesRegex(start.StartError, "evidence changed during verification"):
+                    fixture.verify()
+
+    def test_original_interface_path_is_not_executed_on_the_reader(self) -> None:
+        fixture = self.fixture()
+        interface = fixture.interface_receipt()
+        interface["runtime"]["path"] = "/unused-original-start-root/bin/aros"
+        fixture.write_interface(interface)
+        fixture.refresh_digest("interface_sha256", fixture.interface_path)
+        with mock.patch.object(start.INTERFACE, "HeldExecutable",
+                               wraps=start.INTERFACE.HeldExecutable) as held:
+            fixture.verify()
+        held.assert_called_once_with(fixture.executable_path.absolute(),
+                                     fixture.record["runtime"]["executable_sha256"])
+
+    def test_frozen_closure_never_reopens_the_lock_or_changes_modes(self) -> None:
+        fixture = self.fixture()
+        original_modes = {path: path.stat().st_mode for path in fixture.directory.rglob("*")}
+        with mock.patch.object(start.RUNTIME, "read_json",
+                               side_effect=AssertionError("lock pathname reopened")), \
+                mock.patch.object(start.RUNTIME, "sha256_file",
+                                  side_effect=AssertionError("pathname hashing used")), \
+                mock.patch.object(start.RUNTIME.os, "fchmod",
+                                  side_effect=AssertionError("verification changed a mode")):
+            start.RUNTIME.verify_extracted_frozen(fixture.lock, fixture.record["runtime"]["lock_sha256"],
+                                                  fixture.host, fixture.directory)
+        self.assertEqual(original_modes,
+                         {path: path.stat().st_mode for path in fixture.directory.rglob("*")})
+
+    def test_late_other_payload_mutation_is_rejected_by_held_closure_recheck(self) -> None:
+        fixture = self.fixture()
+        real_hash = start.RUNTIME._hash_fd
+        modified = False
+
+        def mutate_after_first_hash(fd, label, **kwargs):
+            nonlocal modified
+            result = real_hash(fd, label, **kwargs)
+            if label == "README.md" and not modified:
+                modified = True
+                path = fixture.directory / label
+                data = path.read_bytes()
+                path.write_bytes(bytes([data[0] ^ 1]) + data[1:])
+            return result
+
+        with mock.patch.object(start.RUNTIME, "_hash_fd", side_effect=mutate_after_first_hash), \
+                self.assertRaisesRegex(start.RUNTIME.RuntimeError, "differs from signed manifest"):
+            fixture.verify()
+        self.assertTrue(modified)
+
+    def test_change_after_an_early_final_hash_is_rejected_by_final_state_check(self) -> None:
+        fixture = self.fixture()
+        real_hash = start.RUNTIME._hash_fd
+        reads = 0
+
+        def mutate_after_second_hash(fd, label, **kwargs):
+            nonlocal reads
+            result = real_hash(fd, label, **kwargs)
+            if label == "LICENSE":
+                reads += 1
+                if reads == 2:
+                    path = fixture.directory / label
+                    data = path.read_bytes()
+                    path.write_bytes(bytes([data[0] ^ 1]) + data[1:])
+            return result
+
+        with mock.patch.object(start.RUNTIME, "_hash_fd", side_effect=mutate_after_second_hash), \
+                self.assertRaisesRegex(start.RUNTIME.RuntimeError, "changed during frozen closure verification"):
+            fixture.verify()
+        self.assertEqual(reads, 2)
+
+    def test_added_entry_during_final_hashes_is_rejected_by_directory_readback(self) -> None:
+        fixture = self.fixture()
+        real_hash = start.RUNTIME._hash_fd
+        reads = 0
+
+        def add_after_second_hash(fd, label, **kwargs):
+            nonlocal reads
+            result = real_hash(fd, label, **kwargs)
+            if label == "LICENSE":
+                reads += 1
+                if reads == 2:
+                    (fixture.directory / "unlisted-during-inspection").write_bytes(b"unexpected\n")
+            return result
+
+        with mock.patch.object(start.RUNTIME, "_hash_fd", side_effect=add_after_second_hash), \
+                self.assertRaisesRegex(start.RUNTIME.RuntimeError, "file set differs"):
+            fixture.verify()
+        self.assertEqual(reads, 2)
+
+    def test_runtime_closure_rejects_symlink_roots_and_unlisted_files(self) -> None:
+        linked = self.fixture()
+        real_directory = linked.root / "runtime-real"
+        linked.directory.rename(real_directory)
+        linked.directory = linked.root / "runtime-link"
+        linked.directory.symlink_to(real_directory, target_is_directory=True)
+        self.assert_runtime_rejected(linked)
+
+        extra = self.fixture()
+        (extra.directory / "unlisted-runtime-file").write_bytes(b"outside the manifest\n")
+        self.assert_runtime_rejected(extra)
 
 
 if __name__ == "__main__":
