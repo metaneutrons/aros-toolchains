@@ -15,6 +15,7 @@ import hashlib
 import importlib.util
 from pathlib import Path
 import sys
+import tempfile
 
 
 sys.dont_write_bytecode = True
@@ -257,23 +258,52 @@ def verify_runtime_evidence(record: dict, *, lock_path: Path, directory: Path,
 
 def verify_start(record_path: Path, bundle_path: Path, source_context: dict, *,
                  runtime_lock: Path, runtime_directory: Path, runtime_interface: Path,
-                 runtime_host: str) -> dict:
+                 runtime_host: str, expected_record_sha256: str | None = None,
+                 expected_bundle_sha256: str | None = None) -> dict:
+    require((expected_record_sha256 is None) == (expected_bundle_sha256 is None),
+            "start byte selection requires both record and bundle digests")
     require(record_path.absolute() != bundle_path.absolute(),
             "start record and signature bundle must be separate files")
     raw = ADMISSION.read_regular_file(record_path, "signed start record", MAX_RECORD)
     bundle = ADMISSION.read_regular_file(bundle_path, "start signature bundle", MAX_BUNDLE)
+    if expected_record_sha256 is not None:
+        require(hashlib.sha256(raw).hexdigest() == digest(expected_record_sha256, "selected start record")
+                and hashlib.sha256(bundle).hexdigest() == digest(expected_bundle_sha256, "selected start bundle"),
+                "start record or bundle differs from the independently selected bytes")
     record = validate_start(ADMISSION.parse_json(raw, "signed start", maximum=MAX_RECORD), source_context)
     context = record["context"]
     observe_start_run(context)
-    expected = ORIGIN.select_source_job(ORIGIN.jobs_for(context), context,
-                                       {"id": record["job"]["id"], "name": JOB})
+    def source_job() -> dict:
+        pages = ORIGIN.jobs_for(context)
+        selected_job = ORIGIN.select_source_job(pages, context,
+                                               {"id": record["job"]["id"], "name": JOB})
+        provider_job = next(item for item in ORIGIN.complete_jobs(pages) if item["id"] == selected_job["id"])
+        require(provider_job.get("labels") == ["ubuntu-24.04"],
+                "signed start provider runner label differs")
+        return selected_job
+
+    expected = source_job()
     require(expected == record["job"], "completed provider job differs from the signed start")
-    verified = bounded_gh([
-        "attestation", "verify", str(record_path), "--bundle", str(bundle_path),
-        "--repo", context["repository"], "--signer-workflow", f'{context["repository"]}/{WORKFLOW}',
-        "--signer-digest", context["producer_commit"], "--source-digest", context["producer_commit"],
-        "--source-ref", ADMISSION.MAIN_REF, "--deny-self-hosted-runners", "--format", "json",
-    ], "start signature authentication")
+    # gh reopens its inputs by pathname. Verify private copies of the selected
+    # bytes, not mutable caller paths; preserve the signed subject basename.
+    with tempfile.TemporaryDirectory(prefix="aros-start-signature-") as temporary:
+        private_root = Path(temporary)
+        record_root = private_root / "record"
+        record_root.mkdir(mode=0o700)
+        private_record = record_root / record_path.name
+        signature_root = private_root / "signature"
+        signature_root.mkdir(mode=0o700)
+        private_bundle = signature_root / "bundle.json"
+        for path, data in ((private_record, raw), (private_bundle, bundle)):
+            with path.open("xb") as handle:
+                handle.write(data)
+            path.chmod(0o600)
+        verified = bounded_gh([
+            "attestation", "verify", str(private_record), "--bundle", str(private_bundle),
+            "--repo", context["repository"], "--signer-workflow", f'{context["repository"]}/{WORKFLOW}',
+            "--signer-digest", context["producer_commit"], "--source-digest", context["producer_commit"],
+            "--source-ref", ADMISSION.MAIN_REF, "--deny-self-hosted-runners", "--format", "json",
+        ], "start signature authentication")
     require(type(verified) is list and len(verified) == 1, "start requires exactly one verified signature")
     result = verified[0]["verificationResult"]
     invocation = f'https://github.com/{context["repository"]}/actions/runs/{context["run_id"]}/attempts/1'
@@ -290,8 +320,7 @@ def verify_start(record_path: Path, bundle_path: Path, source_context: dict, *,
     verify_runtime_evidence(record, **runtime_selection)
     observe_candidate(record)
     observe_start_run(context)
-    require(ORIGIN.select_source_job(ORIGIN.jobs_for(context), context,
-            {"id": record["job"]["id"], "name": JOB}) == expected,
+    require(source_job() == expected,
             "provider start job changed during authentication")
     observe_candidate(record)
     verify_runtime_evidence(record, **runtime_selection)
