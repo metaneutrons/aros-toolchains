@@ -62,44 +62,48 @@ env:
 
 jobs:
   v2-prepare:
-    name: Prepare compiler and SDK diagnostic
-    if: github.event_name == 'workflow_dispatch' && (inputs.mode == 'qualify-v2' || inputs.mode == 'qualify-v2-full')
+    name: Prepare compiler and SDK qualification
+    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && (inputs.mode == 'qualify-v2' || inputs.mode == 'qualify-v2-full'))
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     permissions:
       contents: read
+      attestations: read
     outputs:
       matrix: ${{ steps.matrix.outputs.verify_matrix }}
       build_matrix: ${{ steps.matrix.outputs.build_matrix }}
       host_matrix: ${{ steps.matrix.outputs.host_matrix }}
       source_commit: ${{ steps.selection.outputs.source_commit }}
       tools_commit: ${{ steps.selection.outputs.tools_commit }}
+      release_id: ${{ steps.selection.outputs.release_id }}
+      runtime_kind: ${{ steps.selection.outputs.runtime_kind }}
+      full_matrix: ${{ steps.selection.outputs.full_matrix }}
+      prerelease: ${{ steps.selection.outputs.prerelease }}
+      tag_object: ${{ steps.selection.outputs.tag_object }}
+      tag_epoch: ${{ steps.selection.outputs.tag_epoch }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
       - id: selection
-        name: Select committed diagnostic inputs; reject publishing and unsupported host scopes
+        name: Authenticate the exact route before source checkout or runtime materialization
         env:
+          GH_TOKEN: ${{ github.token }}
           REQUESTED_SCOPE: ${{ inputs.scope }}
           REQUESTED_MODE: ${{ inputs.mode }}
           REQUESTED_GROUP: ${{ inputs.diagnostic_group }}
         run: |
           set -euo pipefail
-          [[ "$GITHUB_EVENT_NAME" == workflow_dispatch && "$GITHUB_REF_TYPE" == branch ]]
-          case "$REQUESTED_MODE:$REQUESTED_SCOPE" in
-            qualify-v2:linux-x86_64) ;;
-            qualify-v2-full:full) [[ -z "$REQUESTED_GROUP" ]] ;;
-            *) exit 1;;
-          esac
-          selection=toolchains/compiler-sdk-ci-selection-v2.json
-          jq -e '.schema == "aros-compiler-sdk-ci-selection-v2"' "$selection" >/dev/null
-          for key in source_commit tools_commit; do
-            value=$(jq -er --arg key "$key" '.[$key]' "$selection")
-            [[ "$value" =~ ^[0-9a-f]{40}$ ]]
-            printf '%s=%s\n' "$key" "$value" >> "$GITHUB_OUTPUT"
-          done
+          python3 -B scripts/toolchain/select-compiler-sdk-route-v2.py \
+            --event "$GITHUB_EVENT_NAME" --ref-type "$GITHUB_REF_TYPE" --source-ref "$GITHUB_REF" \
+            --repository "$GITHUB_REPOSITORY" --producer-commit "$GITHUB_SHA" \
+            --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --producer-dir "$GITHUB_WORKSPACE" \
+            --selection "$GITHUB_WORKSPACE/toolchains/compiler-sdk-ci-selection-v2.json" \
+            --runtime-lock "$GITHUB_WORKSPACE/$TOOLS_RUNTIME_LOCK" \
+            --mode "$REQUESTED_MODE" --scope "$REQUESTED_SCOPE" --group "$REQUESTED_GROUP" \
+            --github-output "$GITHUB_OUTPUT"
       - uses: ./.github/actions/checkout-pinned-recursive-source
         with:
           repository: metaneutrons/AROS-NX
@@ -117,14 +121,29 @@ jobs:
         uses: ./.github/actions/select-native-rust-toolchain
         with:
           producer-dir: ${{ github.workspace }}
-      - id: runtime
+      - id: runtime_development
+        if: steps.selection.outputs.runtime_kind == 'development'
         uses: ./.github/actions/materialize-development-aros-tools
         with:
           source-dir: ${{ github.workspace }}/dependencies/aros-tools
           commit: ${{ steps.selection.outputs.tools_commit }}
           destination: ${{ runner.temp }}/diagnostic-runtime
+      - id: runtime_release
+        if: steps.selection.outputs.runtime_kind == 'released'
+        uses: ./.github/actions/materialize-aros-tools-runtime
+        with:
+          host: linux-x86_64
+          destination: ${{ runner.temp }}/diagnostic-runtime
+      - uses: ./.github/actions/verify-aros-tools-runtime-transport
+        with:
+          runtime-kind: ${{ steps.selection.outputs.runtime_kind }}
+          root: ${{ runner.temp }}/diagnostic-runtime
+          host: linux-x86_64
+      - id: runtime
+        name: Bind the verified runtime root without fallback
+        run: printf 'root=%s/diagnostic-runtime\n' "$RUNNER_TEMP" >> "$GITHUB_OUTPUT"
       - name: Check portable readback interface before full qualification
-        if: inputs.mode == 'qualify-v2-full'
+        if: steps.selection.outputs.full_matrix == 'true'
         env:
           READBACK_AROS: ${{ steps.runtime.outputs.root }}/bin/aros
         run: |
@@ -142,6 +161,9 @@ jobs:
           REQUESTED_GROUP: ${{ inputs.diagnostic_group }}
           REQUESTED_SCOPE: ${{ inputs.scope }}
           REQUESTED_MODE: ${{ inputs.mode }}
+          SELECTED_EVENT: ${{ steps.selection.outputs.event }}
+          SELECTED_SCOPE: ${{ steps.selection.outputs.scope }}
+          FULL_QUALIFICATION: ${{ steps.selection.outputs.full_qualification }}
         run: |
           set -euo pipefail
           producer="$RUNNER_TEMP/diagnostic-producer"
@@ -164,7 +186,7 @@ jobs:
             --tools-commit "${{ steps.selection.outputs.tools_commit }}" \
             > "$RUNNER_TEMP/diagnostic-required-paths.json"
           group_arguments=()
-          if [[ "$REQUESTED_MODE" == qualify-v2-full ]]; then
+          if [[ "$FULL_QUALIFICATION" == true ]]; then
             group_arguments+=(--full-qualification)
           fi
           if [[ -n "$REQUESTED_GROUP" ]]; then
@@ -174,7 +196,7 @@ jobs:
             --plan "$RUNNER_TEMP/diagnostic-inputs/plan.json" --plan-sha256 "$plan_sha" \
             --inputs-sha256 "$inputs_sha" --producer-commit "$GITHUB_SHA" \
             --tools-commit "${{ steps.selection.outputs.tools_commit }}" \
-            --event workflow_dispatch --scope "$REQUESTED_SCOPE" --github-output "$GITHUB_OUTPUT" \
+            --event "$SELECTED_EVENT" --scope "$SELECTED_SCOPE" --github-output "$GITHUB_OUTPUT" \
             "${group_arguments[@]}" \
             > "$RUNNER_TEMP/diagnostic-inputs/matrix.json"
       - name: Retain independent required-payload selection
@@ -188,6 +210,7 @@ jobs:
         with:
           name: diagnostic-v2-runtime
           path: ${{ steps.runtime.outputs.root }}/
+          include-hidden-files: true
           if-no-files-found: error
           retention-days: 7
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -226,13 +249,16 @@ jobs:
         uses: ./.github/actions/select-native-rust-toolchain
         with:
           producer-dir: ${{ github.workspace }}
+      - uses: ./.github/actions/verify-aros-tools-runtime-transport
+        with:
+          runtime-kind: ${{ needs.v2-prepare.outputs.runtime_kind }}
+          root: ${{ runner.temp }}/diagnostic-runtime
+          host: linux-x86_64
       - id: cache
         name: Verify runtime bytes and prepare every selected compiler/SDK cache
         run: |
           set -euo pipefail
           runtime="$RUNNER_TEMP/diagnostic-runtime"
-          (cd "$runtime" && sha256sum -c SHA256SUMS)
-          chmod +x "$runtime"/bin/*
           aros="$runtime/bin/aros"
           producer="$RUNNER_TEMP/diagnostic-producer"
           git worktree add --detach "$producer" "$GITHUB_SHA"
@@ -272,7 +298,7 @@ jobs:
           retention-days: 7
 
   v2-runtimes:
-    name: Build native non-publishing tools (${{ matrix.host }})
+    name: Materialize selected native tools (${{ matrix.host }})
     needs: v2-prepare
     strategy:
       fail-fast: false
@@ -281,6 +307,7 @@ jobs:
     timeout-minutes: 60
     permissions:
       contents: read
+      attestations: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -296,22 +323,38 @@ jobs:
       - uses: ./.github/actions/select-native-rust-toolchain
         with:
           producer-dir: ${{ github.workspace }}
-      - id: runtime
+      - id: runtime_development
+        if: needs.v2-prepare.outputs.runtime_kind == 'development'
         uses: ./.github/actions/materialize-development-aros-tools
         with:
           source-dir: ${{ github.workspace }}/dependencies/aros-tools
           commit: ${{ needs.v2-prepare.outputs.tools_commit }}
           destination: ${{ runner.temp }}/diagnostic-runtime
+      - id: runtime_release
+        if: needs.v2-prepare.outputs.runtime_kind == 'released'
+        uses: ./.github/actions/materialize-aros-tools-runtime
+        with:
+          host: ${{ matrix.host }}
+          destination: ${{ runner.temp }}/diagnostic-runtime
+      - uses: ./.github/actions/verify-aros-tools-runtime-transport
+        with:
+          runtime-kind: ${{ needs.v2-prepare.outputs.runtime_kind }}
+          root: ${{ runner.temp }}/diagnostic-runtime
+          host: ${{ matrix.host }}
+      - id: runtime
+        name: Bind the verified runtime root without fallback
+        run: printf 'root=%s/diagnostic-runtime\n' "$RUNNER_TEMP" >> "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: diagnostic-v2-native-runtime-${{ matrix.host }}
           path: ${{ steps.runtime.outputs.root }}/
+          include-hidden-files: true
           if-no-files-found: error
           retention-days: 7
 
   v2-build:
     name: Native compiler (${{ matrix.group_id }}, ${{ matrix.host }}, ${{ matrix.profile }}, ${{ matrix.copy }})
-    if: inputs.mode == 'qualify-v2-full'
+    if: needs.v2-prepare.outputs.full_matrix == 'true'
     needs: [v2-prepare, v2-sources, v2-runtimes]
     strategy:
       fail-fast: false
@@ -362,6 +405,11 @@ jobs:
         uses: ./.github/actions/select-native-rust-toolchain
         with:
           producer-dir: ${{ github.workspace }}
+      - uses: ./.github/actions/verify-aros-tools-runtime-transport
+        with:
+          runtime-kind: ${{ needs.v2-prepare.outputs.runtime_kind }}
+          root: ${{ runner.temp }}/diagnostic-runtime
+          host: ${{ matrix.host }}
       - id: lane
         name: Select the exact original compiler lane
         env:
@@ -369,12 +417,11 @@ jobs:
           SELECTED_HOST: ${{ matrix.host }}
           SELECTED_PRESET: ${{ matrix.profile }}
           SELECTED_COPY: ${{ matrix.copy }}
+          SELECTED_RELEASE_ID: ${{ needs.v2-prepare.outputs.release_id }}
           CACHE_ARCHIVE_SHA256: ${{ needs.v2-sources.outputs.cache_archive_sha256 }}
         run: |
           set -euo pipefail
           runtime="$RUNNER_TEMP/diagnostic-runtime"
-          (cd "$runtime" && shasum -a 256 -c SHA256SUMS)
-          chmod +x "$runtime"/bin/*
           producer="$RUNNER_TEMP/diagnostic-producer"
           git worktree add --detach "$producer" "$GITHUB_SHA"
           python3 -B scripts/toolchain/cache-archive-transport.py \
@@ -395,13 +442,12 @@ jobs:
           lock_file=$(jq -er '.source_lock.file' <<< "$group")
           profiles_file=$(jq -er '.profiles.file' <<< "$group")
           runtime_sha=$(shasum -a 256 "$runtime/bin/aros" | awk '{print $1}')
-          producer_short=$(git -C "$producer" rev-parse --short=12 HEAD)
           {
             printf 'recipe=%s/%s\n' "$inputs" "$recipe_file"
             printf 'lock=%s/%s\n' "$inputs" "$lock_file"
             printf 'profiles=%s/%s\n' "$inputs" "$profiles_file"
             printf 'runtime-sha256=%s\n' "$runtime_sha"
-            printf 'release-id=toolchain-dev-%s\n' "$producer_short"
+            printf 'release-id=%s\n' "$SELECTED_RELEASE_ID"
           } >> "$GITHUB_OUTPUT"
       - uses: ./.github/actions/build-native-lane-v2
         with:
@@ -438,7 +484,7 @@ jobs:
 
   v2-sdk:
     name: SDK from owned compilers (${{ matrix.group_id }}, ${{ matrix.host }}, ${{ matrix.profile }})
-    if: inputs.mode == 'qualify-v2-full'
+    if: needs.v2-prepare.outputs.full_matrix == 'true'
     needs: [v2-prepare, v2-sources, v2-runtimes, v2-build]
     strategy:
       fail-fast: false
@@ -495,6 +541,11 @@ jobs:
         uses: ./.github/actions/select-native-rust-toolchain
         with:
           producer-dir: ${{ github.workspace }}
+      - uses: ./.github/actions/verify-aros-tools-runtime-transport
+        with:
+          runtime-kind: ${{ needs.v2-prepare.outputs.runtime_kind }}
+          root: ${{ runner.temp }}/diagnostic-runtime
+          host: ${{ matrix.host }}
       - id: sdk
         name: Authenticate both original compilers before comparison and SDK generation
         env:
@@ -503,12 +554,11 @@ jobs:
           SELECTED_HOST: ${{ matrix.host }}
           SELECTED_PRESET: ${{ matrix.profile }}
           CURRENT_JOB: SDK from owned compilers (${{ matrix.group_id }}, ${{ matrix.host }}, ${{ matrix.profile }})
+          SELECTED_RELEASE_ID: ${{ needs.v2-prepare.outputs.release_id }}
           CACHE_ARCHIVE_SHA256: ${{ needs.v2-sources.outputs.cache_archive_sha256 }}
         run: |
           set -euo pipefail
           runtime="$RUNNER_TEMP/diagnostic-runtime"
-          (cd "$runtime" && shasum -a 256 -c SHA256SUMS)
-          chmod +x "$runtime"/bin/*
           producer="$RUNNER_TEMP/diagnostic-producer"
           git worktree add --detach "$producer" "$GITHUB_SHA"
           runtime_sha=$(shasum -a 256 "$runtime/bin/aros" | awk '{print $1}')
@@ -555,6 +605,7 @@ jobs:
             --group "$SELECTED_GROUP" --preset "$SELECTED_PRESET" --host "$SELECTED_HOST" \
             --owner-a-selection "$selectors/a.json" --owner-b-selection "$selectors/b.json" \
             --source-workflow .github/workflows/toolchain-release.yml --source-ref "$GITHUB_REF" \
+            --release-id "$SELECTED_RELEASE_ID" \
             --workflow .github/workflows/toolchain-release.yml --job-name "$CURRENT_JOB" --same-attempt \
             --root "$RUNNER_TEMP/owned-sdk-lane" --jobs 3 --timeout-seconds 20000
           sdk_ids=$(jq -cse '[.[].id] | sort | if length > 0 and . == unique then . else error("invalid SDK lane selection") end' \
@@ -593,7 +644,7 @@ jobs:
 
   v2-readback:
     name: Read back original compiler and SDK owners
-    if: inputs.mode == 'qualify-v2-full'
+    if: needs.v2-prepare.outputs.full_matrix == 'true'
     needs: [v2-prepare, v2-runtimes, v2-build, v2-sdk]
     runs-on: ubuntu-24.04
     timeout-minutes: 120
@@ -622,17 +673,21 @@ jobs:
           ref: ${{ needs.v2-prepare.outputs.tools_commit }}
           persist-credentials: false
           path: dependencies/aros-tools-fixtures
+      - uses: ./.github/actions/verify-aros-tools-runtime-transport
+        with:
+          runtime-kind: ${{ needs.v2-prepare.outputs.runtime_kind }}
+          root: ${{ runner.temp }}/diagnostic-runtime
+          host: linux-x86_64
       - name: Authenticate the complete SDK owner matrix
         id: candidate
         env:
           GH_TOKEN: ${{ github.token }}
           EXPECTED_TOOLS: ${{ needs.v2-prepare.outputs.tools_commit }}
+          SELECTED_RELEASE_ID: ${{ needs.v2-prepare.outputs.release_id }}
           CURRENT_JOB: Read back original compiler and SDK owners
         run: |
           set -euo pipefail
           runtime="$RUNNER_TEMP/diagnostic-runtime"
-          (cd "$runtime" && shasum -a 256 -c SHA256SUMS)
-          chmod +x "$runtime"/bin/*
           python3 -B - <<'PY'
           import importlib.util
           import os
@@ -656,7 +711,7 @@ jobs:
             --source-context "$context" --source-context-sha256 "$context_sha" \
             --source-workflow .github/workflows/toolchain-release.yml --source-ref "$GITHUB_REF" \
             --workflow .github/workflows/toolchain-release.yml --job-name "$CURRENT_JOB" --same-attempt \
-            --release-id "toolchain-dev-${GITHUB_SHA:0:12}" \
+            --release-id "$SELECTED_RELEASE_ID" \
             --forbidden-prefix "$GITHUB_WORKSPACE" --forbidden-prefix "$RUNNER_TEMP" \
             --root "$RUNNER_TEMP/complete-compiler-readback"
           bash scripts/toolchain/collect-sdk-owners-v2.sh \
@@ -713,8 +768,8 @@ jobs:
             --required-paths "$required_paths" --required-paths-sha256 "$required_paths_sha" \
             --support-dir "$support" --manifest-schema-sha256 "$manifest_schema_sha" \
             --tree-fixture-sha256 "$tree_fixture_sha" \
-            --release-id "toolchain-dev-${GITHUB_SHA:0:12}" \
-            --base-url "https://github.com/$GITHUB_REPOSITORY/releases/download/toolchain-dev-${GITHUB_SHA:0:12}" \
+            --release-id "$SELECTED_RELEASE_ID" \
+            --base-url "https://github.com/$GITHUB_REPOSITORY/releases/download/$SELECTED_RELEASE_ID" \
             --forbidden-prefix "$GITHUB_WORKSPACE" --forbidden-prefix "$RUNNER_TEMP" \
             --root "$RUNNER_TEMP/release-candidate" > "$candidate_summary"
           compiler_lanes="$RUNNER_TEMP/release-candidate/compiler-stage/compiler-index-lanes.json"
@@ -755,6 +810,7 @@ jobs:
           EXPECTED_INDEX_SHA: ${{ steps.candidate.outputs.index_sha256 }}
           EXPECTED_SUBJECT_SHA: ${{ steps.candidate.outputs.subject_sha256 }}
           EXPECTED_SELECTION_SHA: ${{ steps.candidate.outputs.selection_sha256 }}
+          SELECTED_RELEASE_ID: ${{ needs.v2-prepare.outputs.release_id }}
           EXPECTED_SUMMARY_SHA: ${{ steps.candidate.outputs.summary_sha256 }}
           EXPECTED_INPUTS_SHA: ${{ steps.candidate.outputs.inputs_sha256 }}
           EXPECTED_RUNTIME_SHA: ${{ steps.candidate.outputs.runtime_sha256 }}
@@ -853,8 +909,8 @@ jobs:
             --output "$RUNNER_TEMP/verified-staged-combined-provenance.json"
           check_sha "$runtime" "$EXPECTED_RUNTIME_SHA"
           (ulimit -f 8192; timeout --signal=KILL 3600 "$runtime" toolchain producer index \
-            --directory "$release" --release-id "toolchain-dev-${GITHUB_SHA:0:12}" \
-            --base-url "https://github.com/$GITHUB_REPOSITORY/releases/download/toolchain-dev-${GITHUB_SHA:0:12}" \
+            --directory "$release" --release-id "$SELECTED_RELEASE_ID" \
+            --base-url "https://github.com/$GITHUB_REPOSITORY/releases/download/$SELECTED_RELEASE_ID" \
             --release-format family-v2 --lane-inputs "$candidate/lane-inputs.json" \
             --subject-manifest "$subject" --subject-manifest-sha256 "$EXPECTED_SUBJECT_SHA" \
             --forbidden-prefix "$GITHUB_WORKSPACE" --forbidden-prefix "$RUNNER_TEMP" \
@@ -862,8 +918,8 @@ jobs:
           check_sha "$runtime" "$EXPECTED_RUNTIME_SHA"
           check_sha "$selection" "$EXPECTED_SELECTION_SHA"
           (ulimit -f 8192; timeout --signal=KILL 5400 "$runtime" toolchain producer verify-release-evidence \
-            --directory "$release" --release-id "toolchain-dev-${GITHUB_SHA:0:12}" \
-            --base-url "https://github.com/$GITHUB_REPOSITORY/releases/download/toolchain-dev-${GITHUB_SHA:0:12}" \
+            --directory "$release" --release-id "$SELECTED_RELEASE_ID" \
+            --base-url "https://github.com/$GITHUB_REPOSITORY/releases/download/$SELECTED_RELEASE_ID" \
             --inputs-sha256 "$EXPECTED_INPUTS_SHA" --index-sha256 "$EXPECTED_INDEX_SHA" \
             --selection "$selection" --selection-sha256 "$EXPECTED_SELECTION_SHA" \
             --subject-manifest "$subject" --subject-manifest-sha256 "$EXPECTED_SUBJECT_SHA" \
@@ -879,7 +935,7 @@ jobs:
           staged_bundle_size=$(wc -c < "$release/toolchain-provenance.sigstore.json" | tr -d '[:space:]')
           [[ "$staged_bundle_sha" == "$bundle_sha" ]]
           jq -e --arg index "$EXPECTED_INDEX_SHA" --arg subject "$EXPECTED_SUBJECT_SHA" \
-            --arg release_id "toolchain-dev-${GITHUB_SHA:0:12}" --arg index_path "$release/toolchain-index-v2.json" \
+            --arg release_id "$SELECTED_RELEASE_ID" --arg index_path "$release/toolchain-index-v2.json" \
             --arg subject_path "$subject" --arg checksums_path "$release/SHA256SUMS" \
             --arg checksums "$checksums_sha" --arg provenance "$staged_bundle_sha" \
             --argjson provenance_size "$staged_bundle_size" \
@@ -897,7 +953,7 @@ jobs:
           ' "$final_index" >/dev/null
           jq -e --arg inputs "$EXPECTED_INPUTS_SHA" --arg index "$EXPECTED_INDEX_SHA" \
             --arg selection "$EXPECTED_SELECTION_SHA" --arg subject "$EXPECTED_SUBJECT_SHA" \
-            --arg release_id "toolchain-dev-${GITHUB_SHA:0:12}" --arg checksums "$checksums_sha" --arg provenance "$staged_bundle_sha" \
+            --arg release_id "$SELECTED_RELEASE_ID" --arg checksums "$checksums_sha" --arg provenance "$staged_bundle_sha" \
             --slurpfile summary "$summary" --slurpfile selected "$selection" '
             .schema == "aros-toolchain-producer-stage-v2" and .operation == "verify-release-evidence" and
             .release_format == "family-v2" and .assurance == "byte-consistency-only" and
@@ -926,8 +982,8 @@ jobs:
                 .record.sha256 == $generation.generation_record_sha256 and
                 .compatibility.manifest_sha256 == $generation.compatibility_manifest_sha256))
           ' "$final_evidence" >/dev/null
-          # Branch attestation and complete byte readback are diagnostic evidence,
-          # never a tagged qualification record or permission to publish.
+          # Ref-bound attestation and complete byte readback still do not issue
+          # a qualification record or permission to publish.
       - name: Retain diagnostic selection metadata only
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -1028,6 +1084,11 @@ jobs:
         uses: ./.github/actions/select-native-rust-toolchain
         with:
           producer-dir: ${{ github.workspace }}
+      - uses: ./.github/actions/verify-aros-tools-runtime-transport
+        with:
+          runtime-kind: ${{ needs.v2-prepare.outputs.runtime_kind }}
+          root: ${{ runner.temp }}/diagnostic-runtime
+          host: ${{ matrix.host }}
       - id: qualify
         name: Execute fresh native compiler A/B and source-bound SDK qualification
         env:
@@ -1038,8 +1099,6 @@ jobs:
         run: |
           set -euo pipefail
           runtime="$RUNNER_TEMP/diagnostic-runtime"
-          (cd "$runtime" && shasum -a 256 -c SHA256SUMS)
-          chmod +x "$runtime"/bin/*
           producer="$RUNNER_TEMP/diagnostic-producer"
           git worktree add --detach "$producer" "$GITHUB_SHA"
           runtime_sha=$(shasum -a 256 "$runtime/bin/aros" | awk '{print $1}')
@@ -1096,7 +1155,7 @@ jobs:
           retention-days: 7
 
   plan:
-    if: github.event_name != 'workflow_dispatch' || (inputs.mode != 'recover' && inputs.mode != 'qualify-v2' && inputs.mode != 'qualify-v2-full')
+    if: github.event_name == 'workflow_dispatch' && inputs.mode == 'produce'
     runs-on: ubuntu-24.04
     outputs:
       host_matrix: ${{ steps.matrix.outputs.host_matrix }}

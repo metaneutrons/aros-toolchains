@@ -23,6 +23,7 @@ aros='' inputs='' selection='' source='' producer='' tools='' cache='' upstream=
 group='' preset='' host='' root='' jobs='' deadline='' runtime_sha=''
 owner_a_selection='' owner_b_selection='' source_workflow='' source_ref=''
 workflow='' job_name='' same_attempt=false owner_mode=false
+requested_release_id=''
 seen='|'
 while (( $# )); do
     if [[ "$1" == --same-attempt ]]; then
@@ -47,6 +48,7 @@ while (( $# )); do
         --owner-b-selection) owner_b_selection=$value;;
         --source-workflow) source_workflow=$value;; --source-ref) source_ref=$value;;
         --workflow) workflow=$value;; --job-name) job_name=$value;;
+        --release-id) requested_release_id=$value;;
         *) fail "unknown option $key";;
     esac
     shift 2
@@ -111,6 +113,13 @@ for directory in "$inputs" "$source" "$producer" "$tools" "$cache" "$upstream"; 
     canonical=$(cd "$directory" && pwd -P)
     [[ "$root" != "$canonical" && "$root" != "$canonical/"* && "$canonical" != "$root/"* ]] || fail 'operation root overlaps selected input'
 done
+default_release_id="toolchain-dev-$(git -C "$producer" rev-parse --short=12 HEAD)"
+if [[ "$owner_mode" == true && "$source_ref" == refs/tags/* ]]; then
+    [[ "$requested_release_id" == "${source_ref#refs/tags/}" ]] || fail 'tag-bound owner release ID differs from its source ref'
+else
+    [[ -z "$requested_release_id" || "$requested_release_id" == "$default_release_id" ]] || fail 'diagnostic release ID differs from its producer commit'
+fi
+release_id=${requested_release_id:-$default_release_id}
 mkdir "$root"
 collection_sha=$(digest "$inputs/toolchain-release-inputs-v2.json")
 "$aros" toolchain producer release-plan --directory "$inputs" --inputs-sha256 "$collection_sha" --format json > "$root/plan.json"
@@ -123,7 +132,6 @@ profiles="$inputs/$(jq -r '.profiles.file' <<< "$selected_group")"
 ports_relative=$(jq -er --arg group "$group" '.groups | map(select(.id == $group)) | if length == 1 then .[0].ports_lock else error("ambiguous ports selection") end' "$selection")
 [[ "$ports_relative" =~ ^toolchains/[a-z0-9._-]+\.json$ ]] || fail 'unsafe ports selection'
 ports="$producer/$ports_relative"
-release_id="toolchain-dev-$(git -C "$producer" rev-parse --short=12 HEAD)"
 for copy in a b; do
     if [[ "$owner_mode" == true ]]; then
         owner_selection=$owner_a_selection

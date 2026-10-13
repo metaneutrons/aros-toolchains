@@ -65,6 +65,9 @@ def final_candidate_shell():
     marker = "        run: |\n"
     if step.count(marker) != 1:
         raise AssertionError("workflow step must have one literal run block")
+    release_id_binding = "          SELECTED_RELEASE_ID: ${{ needs.v2-prepare.outputs.release_id }}\n"
+    if step.split(marker, 1)[0].count(release_id_binding) != 1:
+        raise AssertionError("workflow step must bind SELECTED_RELEASE_ID to the selected route output")
     block = step.split(marker, 1)[1]
     lines = block.splitlines()
     if any(line and not line.startswith("          ") for line in lines):
@@ -508,6 +511,7 @@ class FinalCandidateWorkflow(unittest.TestCase):
             "FAKE_SUBJECT": str(subject_path),
             "FAKE_EVIDENCE_DIGESTS": json.dumps(DIGESTS, sort_keys=True),
             "FAKE_RELEASE_ID": RELEASE_ID,
+            "SELECTED_RELEASE_ID": RELEASE_ID,
             "FAKE_INPUTS_SHA": sha256(release / "toolchain-release-inputs-v2.json"),
             "PYTHONDONTWRITEBYTECODE": "1",
         }
@@ -545,6 +549,13 @@ class FinalCandidateWorkflow(unittest.TestCase):
     def assert_no_native_cli(self, fixture):
         self.assertEqual(self.lines(fixture["native_calls"]), [])
         self.assertFalse((fixture["root"] / "final-combined-index.json").exists())
+        self.assertFalse((fixture["root"] / "final-combined-evidence.json").exists())
+
+    def test_selected_route_release_id_must_match_the_native_candidate(self):
+        fixture = self.fixture()
+        completed = self.run_shell(fixture, env={"SELECTED_RELEASE_ID": "v99.0.0"})
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertEqual([call[2] for call in self.lines(fixture["native_calls"])], ["index"])
         self.assertFalse((fixture["root"] / "final-combined-evidence.json").exists())
 
     def test_actual_shell_verifies_synthetic_provenance_then_both_native_stages(self):
