@@ -91,7 +91,7 @@ fi
 [[ "$source_ref" =~ ^refs/(heads|tags)/[A-Za-z0-9._/-]+$ ]] \
     || fail 'source ref is not a canonical Git branch or tag ref'
 [[ "$subject_manifest_mode" == 1 || -z "$exclude_subject" \
-    || "$exclude_subject" =~ ^[A-Za-z0-9._-]+$ ]] \
+    || "$exclude_subject" =~ ^[A-Za-z0-9._+-]+$ ]] \
     || fail 'excluded subject must be a basename'
 if [[ "$run_selection_set" == 1 ]]; then
     [[ "$run_id" =~ ^[1-9][0-9]*$ && "$run_attempt" =~ ^[1-9][0-9]*$ ]] \
@@ -186,7 +186,7 @@ else
 fi
 
 while IFS= read -r line || [[ -n "$line" ]]; do
-    [[ "$line" =~ ^([0-9a-f]{64})\ \ ([A-Za-z0-9._-]+)$ ]] \
+    [[ "$line" =~ ^([0-9a-f]{64})\ \ ([A-Za-z0-9._+-]+)$ ]] \
         || fail "checksum document has a noncanonical entry: $line"
     digest=${BASH_REMATCH[1]}
     subject=${BASH_REMATCH[2]}
