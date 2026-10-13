@@ -33,6 +33,7 @@ GOV_TOKEN = "governance-secret-fixture"
 JOB_TOKEN = "job-token-fixture"
 
 BRANCH_PATH = f"repos/{REPOSITORY}/branches/main"
+REPOSITORY_PATH = f"repos/{REPOSITORY}"
 COMMIT_PULLS_PATH = ""
 PR_FILES_PATH = f"repos/{REPOSITORY}/pulls/{PR_NUMBER}/files"
 CLOSED_PULLS_PATH = f"repos/{REPOSITORY}/pulls"
@@ -236,6 +237,12 @@ class ReleaseAdmissionTests(unittest.TestCase):
         commit_date = datetime.fromtimestamp(epoch, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         workflow_run = self._workflow_run()
         self.responses: dict[str, object] = {
+            REPOSITORY_PATH: {
+                "full_name": REPOSITORY,
+                "archived": False,
+                "disabled": False,
+                "default_branch": "main",
+            },
             BRANCH_PATH: {"protected": True, "commit": {"sha": self.head}},
             RULESETS_PATH: [{"id": RULESET_ID, "target": "tag", "enforcement": "active"}],
             RULESET_PATH: {
@@ -434,6 +441,94 @@ class ReleaseAdmissionTests(unittest.TestCase):
             for entry in log
         ))
         self.assertFalse(any("releases/assets" in entry["endpoint"] for entry in log))
+
+    def test_repository_root_allowlist_accepts_only_the_exact_root(self) -> None:
+        probe = (
+            "import json,runpy,sys; "
+            "module=runpy.run_path(sys.argv[1],run_name='api_allowlist_probe'); "
+            "print(json.dumps(module['api'](sys.argv[2])))"
+        )
+        script = str(self.repo / "scripts/toolchain/release-admission-v2.py")
+        valid = subprocess.run(
+            [sys.executable, "-B", "-c", probe, script, REPOSITORY_PATH],
+            cwd=self.repo, env=self._environment(), capture_output=True, text=True, check=False, timeout=30,
+        )
+        self.assertEqual(valid.returncode, 0, valid.stderr)
+        self.assertEqual(json.loads(valid.stdout)["full_name"], REPOSITORY)
+        for endpoint in (
+            f"{REPOSITORY_PATH}?per_page=100",
+            f"{REPOSITORY_PATH}-extra",
+            "repos/metaneutrons-extra/aros-toolchains",
+        ):
+            with self.subTest(endpoint=endpoint):
+                invalid = subprocess.run(
+                    [sys.executable, "-B", "-c", probe, script, endpoint],
+                    cwd=self.repo, env=self._environment(), capture_output=True, text=True,
+                    check=False, timeout=30,
+                )
+                self.assertNotEqual(invalid.returncode, 0)
+        log = [json.loads(line) for line in self.log_path.read_text(encoding="utf-8").splitlines()]
+        self.assertEqual([entry["endpoint"] for entry in log], [REPOSITORY_PATH])
+
+    def test_repository_must_be_explicitly_active_and_match_identity(self) -> None:
+        active = self.responses[REPOSITORY_PATH]
+        assert isinstance(active, dict)
+        cases = [
+            ("archived", {**active, "archived": True}),
+            ("disabled", {**active, "disabled": True}),
+            ("missing archived", {key: value for key, value in active.items() if key != "archived"}),
+            ("missing disabled", {key: value for key, value in active.items() if key != "disabled"}),
+            ("malformed archived", {**active, "archived": "false"}),
+            ("malformed disabled", {**active, "disabled": 0}),
+            ("wrong repository", {**active, "full_name": "metaneutrons/aros-toolchains-extra"}),
+            ("wrong default branch", {**active, "default_branch": "trunk"}),
+        ]
+        for label, metadata in cases:
+            with self.subTest(label=label):
+                self._api_route(REPOSITORY_PATH, metadata)
+                result, output, github_output = self._run_admit()
+                self._assert_rejected(result)
+                self.assertFalse(output.exists())
+                self.assertEqual(github_output.read_bytes(), b"")
+                log = [json.loads(line) for line in self.log_path.read_text(encoding="utf-8").splitlines()]
+                endpoints = [entry["endpoint"] for entry in log]
+                self.assertIn(REPOSITORY_PATH, endpoints)
+                self.assertNotIn(f"repos/{REPOSITORY}/git/ref/tags/{TAG}", endpoints)
+                self.assertFalse(any(endpoint.startswith(RELEASES_PATH) for endpoint in endpoints))
+
+    def test_repository_archived_during_absence_survey_is_rejected_before_output(self) -> None:
+        active = self.responses[REPOSITORY_PATH]
+        assert isinstance(active, dict)
+        self._api_route(REPOSITORY_PATH, {"__sequence": [
+            active,
+            {**active, "archived": True},
+        ]})
+        result, output, github_output = self._run_admit()
+        self._assert_rejected(result)
+        self.assertFalse(output.exists())
+        self.assertEqual(github_output.read_bytes(), b"")
+        log = [json.loads(line) for line in self.log_path.read_text(encoding="utf-8").splitlines()]
+        endpoints = [entry["endpoint"] for entry in log]
+        self.assertEqual(endpoints.count(REPOSITORY_PATH), 2)
+        tag_ref_path = f"repos/{REPOSITORY}/git/ref/tags/{TAG}"
+        releases_page_path = RELEASES_PATH + "?per_page=100&page=1"
+        self.assertLess(endpoints.index(REPOSITORY_PATH), endpoints.index(tag_ref_path))
+        self.assertLess(endpoints.index(tag_ref_path), endpoints.index(releases_page_path))
+        self.assertLess(endpoints.index(releases_page_path), len(endpoints) - 1)
+        self.assertEqual(endpoints[-1], REPOSITORY_PATH)
+
+    def test_repository_root_errors_never_mean_candidate_absence(self) -> None:
+        for status in (404, 401, 403, 429):
+            with self.subTest(status=status):
+                self._api_error(REPOSITORY_PATH, status)
+                result, output, github_output = self._run_admit()
+                self._assert_rejected(result)
+                self.assertFalse(output.exists())
+                self.assertEqual(github_output.read_bytes(), b"")
+                log = [json.loads(line) for line in self.log_path.read_text(encoding="utf-8").splitlines()]
+                endpoints = [entry["endpoint"] for entry in log]
+                self.assertIn(REPOSITORY_PATH, endpoints)
+                self.assertNotIn(f"repos/{REPOSITORY}/git/ref/tags/{TAG}", endpoints)
 
     def test_recheck_repeats_metadata_gates_and_preserves_receipt(self) -> None:
         admitted, admission_path, _ = self._run_admit()
@@ -813,6 +908,11 @@ class ReleaseAdmissionTests(unittest.TestCase):
         self.assertEqual(sentinel_output.read_text(encoding="utf-8"), "receipt sentinel\n")
         self.assertEqual(github_output.read_text(encoding="utf-8"), "workflow sentinel\n")
         self._api_error(tag_ref, None)
+        result, _, _ = self._run_admit(output=sentinel_output, github_output=github_output)
+        self._assert_rejected(result)
+        self.assertEqual(sentinel_output.read_text(encoding="utf-8"), "receipt sentinel\n")
+        self.assertEqual(github_output.read_text(encoding="utf-8"), "workflow sentinel\n")
+        self._api_error(REPOSITORY_PATH, 404)
         result, _, _ = self._run_admit(output=sentinel_output, github_output=github_output)
         self._assert_rejected(result)
         self.assertEqual(sentinel_output.read_text(encoding="utf-8"), "receipt sentinel\n")
