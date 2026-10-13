@@ -167,14 +167,9 @@ done < "$root/host-tool-roles.txt"
 (( ${#host_tools[@]} > 0 )) || fail 'empty host command closure'
 jq -ce --arg group "$group" --arg preset "$preset" '.sdks[] | select(any(.compiler_profiles[]; .group_id == $group and .profile == $preset))' "$root/plan.json" > "$root/sdk-selections.jsonl"
 [[ -s "$root/sdk-selections.jsonl" ]] || fail 'compiler lane has no selected SDK'
-while IFS= read -r sdk; do
-    id=$(jq -er '.id' <<< "$sdk")
-    identity="$inputs/$(jq -r '.identity.file' <<< "$sdk")"
-    identity_sha=$(jq -er '.identity.sha256' <<< "$sdk")
-    source_preset=$(jq -er '.source_preset' <<< "$sdk")
-    operation="$root/sdk-$id"
-    mkdir "$operation" "$operation/engine-work"
-    "$aros" sdk build --identity "$identity" --identity-sha256 "$identity_sha" \
+build_sdk_with_diagnostics() {
+    local sdk_status
+    if "$aros" sdk build --identity "$identity" --identity-sha256 "$identity_sha" \
         --source-dir "$source" --materialized-source-dir "$root/source-projection" \
         --source-preset "$source_preset" --recipe "$recipe" --source-lock "$lock" \
         --profiles "$profiles" --preset "$preset" --release-id "$release_id" --host "$host" \
@@ -196,7 +191,26 @@ while IFS= read -r sdk; do
         --sdk-forbidden-prefix "$parent" --sdk-forbidden-prefix "$source" \
         --sdk-forbidden-prefix "$producer" --sdk-forbidden-prefix "$tools" \
         --sdk-forbidden-prefix "$upstream" --sdk-forbidden-prefix "$inputs" \
-        --sdk-forbidden-prefix "$cache" --evidence-dir "$operation/local-evidence" --format json > "$operation/result.json"
+        --sdk-forbidden-prefix "$cache" --evidence-dir "$operation/local-evidence" --format json \
+        > "$operation/result.json"; then
+        return 0
+    else
+        sdk_status=$?
+        if ! python3 -B "$producer/scripts/toolchain/retain-sdk-config-logs.py" \
+            --operation-dir "$operation"; then
+            printf 'Compiler/SDK diagnostic: unable to retain upstream SDK config.log files\n' >&2
+        fi
+        exit "$sdk_status"
+    fi
+}
+while IFS= read -r sdk; do
+    id=$(jq -er '.id' <<< "$sdk")
+    identity="$inputs/$(jq -r '.identity.file' <<< "$sdk")"
+    identity_sha=$(jq -er '.identity.sha256' <<< "$sdk")
+    source_preset=$(jq -er '.source_preset' <<< "$sdk")
+    operation="$root/sdk-$id"
+    mkdir "$operation" "$operation/engine-work"
+    build_sdk_with_diagnostics
 done < "$root/sdk-selections.jsonl"
 [[ "$(digest "$aros")" == "$runtime_sha" ]] || fail 'runtime changed during qualification'
 printf 'Compiler A/B and SDK local generation completed. No release admission or publication.\n'

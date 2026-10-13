@@ -56,6 +56,13 @@ These diagnostic files remain outside each compiler's closed `payload/`
 inventory and are retained through the operation root's JSON upload. They must
 not be added to an owning-job compiler transport or its admitted evidence set.
 
+If SDK generation fails, the diagnostic also retains the upstream root and
+target-feature Autoconf `config.log` files under that SDK's `reports/` directory,
+when present. Only those two explicit files are selected; each is bounded to
+4 MiB and must be a regular file with no linked path components. The original
+SDK command remains failed. These logs explain subordinate compiler/linker
+errors; they are not execution receipts or release evidence.
+
 The current selection derives eight compiler builds, four comparisons and
 four SDK candidates on this host. The scheduler does not hardcode those counts.
 All four SDK products start at `0.1.0`; this does not select a future repository
