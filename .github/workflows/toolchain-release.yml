@@ -155,6 +155,14 @@ jobs:
             --projection-dir "$RUNNER_TEMP/diagnostic-source-projection"
           inputs_sha=$(sha256sum "$RUNNER_TEMP/diagnostic-inputs/toolchain-release-inputs-v2.json" | awk '{print $1}')
           plan_sha=$(sha256sum "$RUNNER_TEMP/diagnostic-inputs/plan.json" | awk '{print $1}')
+          policy="$producer/toolchains/compiler-required-payload-v1.json"
+          policy_sha=$(sha256sum "$policy" | awk '{print $1}')
+          python3 -B scripts/toolchain/required-compiler-payload-v2.py \
+            --policy "$policy" --policy-sha256 "$policy_sha" \
+            --plan "$RUNNER_TEMP/diagnostic-inputs/plan.json" --plan-sha256 "$plan_sha" \
+            --inputs-sha256 "$inputs_sha" --producer-commit "$GITHUB_SHA" \
+            --tools-commit "${{ steps.selection.outputs.tools_commit }}" \
+            > "$RUNNER_TEMP/diagnostic-required-paths.json"
           group_arguments=()
           if [[ "$REQUESTED_MODE" == qualify-v2-full ]]; then
             group_arguments+=(--full-qualification)
@@ -169,6 +177,13 @@ jobs:
             --event workflow_dispatch --scope "$REQUESTED_SCOPE" --github-output "$GITHUB_OUTPUT" \
             "${group_arguments[@]}" \
             > "$RUNNER_TEMP/diagnostic-inputs/matrix.json"
+      - name: Retain independent required-payload selection
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: diagnostic-v2-required-paths
+          path: ${{ runner.temp }}/diagnostic-required-paths.json
+          if-no-files-found: error
+          retention-days: 7
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: diagnostic-v2-runtime

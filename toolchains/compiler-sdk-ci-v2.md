@@ -17,6 +17,9 @@ contracts remain owned by AROS-NX.
 2. Use native recipe creation, source materialization and `sdk verify-source`
    to bind all compiler groups and SDK identity documents. Native `release-plan`
    validates the collection before the bounded scheduler projects its matrix.
+   The independently hash-bound [required payload policy](compiler-required-payload.md)
+   must cover the complete native compiler plan before scheduling starts. Its
+   retained selection is metadata only, not package or release qualification.
 3. Fetch and verify the selected compiler, compatibility, Python and Cargo
    inputs once. No native build phase is allowed to populate missing inputs.
    Transfer this cache as one archive whose SHA-256 is retained by the source
