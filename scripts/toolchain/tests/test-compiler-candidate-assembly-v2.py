@@ -65,6 +65,76 @@ FINISHED_RECEIPT_SHA = "2" * 64
 RAW_PAYLOAD_SHA = "3" * 64
 
 
+FAKE_GH_SOURCE = '''#!/usr/bin/env python3
+import json
+import os
+from pathlib import Path
+import sys
+
+if sys.argv[1:] != ["api", os.environ["FAKE_GH_ENDPOINT"]]:
+    raise SystemExit(64)
+if os.environ.get("FAKE_GH_FAIL") == "1":
+    raise SystemExit(65)
+counter = Path(os.environ["FAKE_GH_CALLS"])
+call = int(counter.read_text()) if counter.exists() else 0
+counter.write_text(str(call + 1))
+responses = json.loads(os.environ["FAKE_GH_RESPONSES"])
+response = responses[min(call, len(responses) - 1)]
+with Path(os.environ["FAKE_GH_EVENT_LOG"]).open("a", encoding="utf-8") as handle:
+    handle.write(str(response.get("event", "<missing>")) + "\\n")
+sys.stdout.write(json.dumps(response, separators=(",", ":")))
+'''
+
+
+def provider_run(context: dict, event: str = "workflow_dispatch") -> dict:
+    source_ref = context["source_ref"]
+    return {
+        "id": context["run_id"], "run_attempt": context["run_attempt"],
+        "head_sha": context["producer_commit"],
+        "head_branch": source_ref.split("/", 2)[2],
+        "path": context["workflow"], "event": event,
+        "head_repository": {
+            "id": context["repository_id"], "full_name": context["repository"],
+        },
+    }
+
+
+def install_fake_gh(base: Path) -> Path:
+    binary_dir = base / "fake-gh-bin"
+    binary_dir.mkdir(exist_ok=True)
+    binary = binary_dir / "gh"
+    binary.write_text(FAKE_GH_SOURCE, encoding="utf-8")
+    binary.chmod(0o700)
+    return binary_dir
+
+
+def provider_environment(base: Path, context: dict, *,
+                        responses: list[dict] | None = None,
+                        fail: bool = False) -> dict[str, str]:
+    binary_dir = install_fake_gh(base)
+    calls = base / "fake-gh-calls"
+    calls.write_text("0", encoding="ascii")
+    event_log = base / "fake-gh-events"
+    event_log.write_text("", encoding="utf-8")
+    response_values = responses or [provider_run(
+        context, "push" if context["source_ref"].startswith("refs/tags/")
+        else "workflow_dispatch"
+    )]
+    env = dict(os.environ)
+    env.update({
+        "PATH": str(binary_dir) + os.pathsep + env.get("PATH", ""),
+        "FAKE_GH_ENDPOINT": (
+            f"repos/{context['repository']}/actions/runs/{context['run_id']}"
+            f"/attempts/{context['run_attempt']}"
+        ),
+        "FAKE_GH_CALLS": str(calls),
+        "FAKE_GH_EVENT_LOG": str(event_log),
+        "FAKE_GH_RESPONSES": json.dumps(response_values),
+        "FAKE_GH_FAIL": "1" if fail else "0",
+    })
+    return env
+
+
 def digest(raw: bytes) -> str:
     return hashlib.sha256(raw).hexdigest()
 
@@ -207,6 +277,9 @@ class Fixture:
         }
         self.context_raw = origin.canonical(self.context)
         self.context_sha = digest(self.context_raw)
+        self.context_path = self.base / "source-context.json"
+        self.context_path.write_bytes(self.context_raw)
+        install_fake_gh(self.base)
         self._make_plan_and_inputs()
         self._make_native_executable()
         self._write_matrix()
@@ -520,7 +593,10 @@ class Fixture:
             "--aros-sha256", self.aros_sha, "--plan", str(self.plan_path),
             "--plan-sha256", self.plan_sha, "--inputs-dir", str(self.inputs),
             "--inputs-sha256", self.inputs_sha, "--producer-commit", PRODUCER,
-            "--tools-commit", TOOLS, "--fragment", str(self.fragment_path),
+            "--tools-commit", TOOLS,
+            "--source-context", str(self.context_path),
+            "--source-context-sha256", self.context_sha,
+            "--fragment", str(self.fragment_path),
             "--fragment-sha256", digest(self.fragment_path.read_bytes()),
             "--owner-root", str(self.owner_root), "--required-paths", str(self.required_path),
             "--required-paths-sha256", self.required_sha,
@@ -528,12 +604,17 @@ class Fixture:
             "--root", str(root),
         ]
 
-    def run(self, root: Path, **environment: str) -> subprocess.CompletedProcess[str]:
+    def run(self, root: Path, *, replace: dict[str, str] | None = None,
+            **environment: str) -> subprocess.CompletedProcess[str]:
         child_environment = dict(os.environ)
         child_environment["PYTHONDONTWRITEBYTECODE"] = "1"
         child_environment["FAKE_AROS_LOG"] = str(self.log)
+        child_environment.update(provider_environment(self.base, self.context))
         child_environment.update(environment)
-        return subprocess.run(self.args(root), capture_output=True, text=True,
+        arguments = self.args(root)
+        for option, value in (replace or {}).items():
+            arguments[arguments.index(option) + 1] = value
+        return subprocess.run(arguments, capture_output=True, text=True,
                               env=child_environment, check=False, timeout=120)
 
 
@@ -555,12 +636,95 @@ class CompilerCandidateAssemblyTests(unittest.TestCase):
             self.assertFalse((root / "release").exists())
 
     def test_branch_and_tag_refs_select_only_existing_full_projection_modes(self) -> None:
-        self.assertEqual(assembler._projection_route("refs/heads/main"),
+        self.assertEqual(assembler._projection_route("refs/heads/main", "workflow_dispatch"),
                          ("workflow_dispatch", True))
-        self.assertEqual(assembler._projection_route("refs/tags/v2.4.0"),
+        self.assertEqual(assembler._projection_route("refs/tags/v2.4.0", "push"),
                          ("push", False))
-        with self.assertRaises(assembler.AssemblyError):
-            assembler._projection_route("refs/pull/17/merge")
+        self.assertEqual(assembler._projection_route("refs/tags/v2.4.0", "workflow_dispatch"),
+                         ("workflow_dispatch", True))
+        for source_ref, event in (
+            ("refs/heads/main", "push"),
+            ("refs/heads/main", "workflow_run"),
+            ("refs/tags/v2.4.0", "workflow_run"),
+            ("refs/pull/17/merge", "workflow_dispatch"),
+        ):
+            with self.subTest(source_ref=source_ref, event=event):
+                with self.assertRaises(assembler.AssemblyError):
+                    assembler._projection_route(source_ref, event)
+
+    def test_tag_workflow_dispatch_uses_the_provider_event_and_full_projection(self) -> None:
+        base = self.base / "tag-dispatch-fixture"
+        base.mkdir()
+        fixture = Fixture(base, source_ref=TAG_REF)
+        root = self.base / "tag-dispatch-operation"
+        result = fixture.run(
+            root,
+            FAKE_GH_RESPONSES=json.dumps([
+                provider_run(fixture.context, "workflow_dispatch"),
+                provider_run(fixture.context, "workflow_dispatch"),
+            ]),
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len(result.stdout.splitlines()), 1)
+        summary = json.loads(result.stdout)
+        self.assertEqual(summary["schema"], "aros-toolchain-compiler-candidate-assembly-v2")
+
+    def test_provider_identity_and_event_mismatches_fail_without_json(self) -> None:
+        cases = (
+            ("provider-error", None, True),
+            ("missing-event", "missing", False),
+            ("unknown-event", "unknown", False),
+            ("workflow-run", "workflow_run", False),
+            ("branch-push", "push", False),
+            ("head-ref", "workflow_dispatch", False),
+            ("commit", "workflow_dispatch", False),
+            ("repository-id", "workflow_dispatch", False),
+            ("repository-name", "workflow_dispatch", False),
+            ("attempt", "workflow_dispatch", False),
+        )
+        for index, (name, event, fail) in enumerate(cases):
+            with self.subTest(case=name):
+                base = self.base / f"provider-{index}"
+                base.mkdir()
+                fixture = Fixture(base)
+                record = provider_run(fixture.context, event or "workflow_dispatch")
+                if event == "missing":
+                    record.pop("event")
+                elif event == "unknown":
+                    record["event"] = "unknown-event"
+                if name == "head-ref":
+                    record["head_branch"] = "other"
+                elif name == "commit":
+                    record["head_sha"] = "f" * 40
+                elif name == "repository-id":
+                    record["head_repository"]["id"] += 1
+                elif name == "repository-name":
+                    record["head_repository"]["full_name"] = "other/project"
+                elif name == "attempt":
+                    record["run_attempt"] += 1
+                root = base / "operation"
+                environment = {"FAKE_GH_FAIL": "1"} if fail else {
+                    "FAKE_GH_RESPONSES": json.dumps([record]),
+                }
+                result = fixture.run(root, **environment)
+                self.assert_rejected(result, root)
+
+    def test_source_context_digest_mismatch_fails_without_json(self) -> None:
+        root = self.base / "context-digest-mismatch"
+        result = self.fixture.run(root, replace={"--source-context-sha256": "0" * 64})
+        self.assert_rejected(result, root)
+
+    def test_changed_provider_event_fails_at_the_final_output_barrier(self) -> None:
+        root = self.base / "changed-provider-event"
+        result = self.fixture.run(
+            root,
+            FAKE_GH_RESPONSES=json.dumps([
+                provider_run(self.fixture.context, "workflow_dispatch"),
+                provider_run(self.fixture.context, "push"),
+            ]),
+        )
+        self.assert_rejected(result, root, release_absent=False)
+        self.assertIn("source run event changed", result.stderr)
 
     def test_full_generic_three_host_matrix_reverifies_compares_and_stages_only_a(self) -> None:
         root = self.base / "operation"
@@ -732,7 +896,9 @@ class CompilerCandidateAssemblyTests(unittest.TestCase):
                             output.write(b" ")
                     return selector
 
-                with mock.patch.dict(os.environ, {"FAKE_AROS_LOG": str(fixture.log)}):
+                provider_env = provider_environment(fixture.base, fixture.context)
+                provider_env["FAKE_AROS_LOG"] = str(fixture.log)
+                with mock.patch.dict(os.environ, provider_env):
                     with mock.patch.object(assembler, "_write_owned", side_effect=mutate_after_write):
                         with self.assertRaisesRegex(assembler.AssemblyError, "changed after.*owned write"):
                             assembler.assemble(arguments)

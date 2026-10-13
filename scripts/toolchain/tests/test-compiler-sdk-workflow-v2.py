@@ -873,6 +873,7 @@ def validate_v2_policy(documents: Documents) -> dict[str, int]:
             '--plan "$plan" --plan-sha256 "$plan_sha"',
             '--inputs-dir "$RUNNER_TEMP/diagnostic-inputs" --inputs-sha256 "$inputs_sha"',
             '--producer-commit "$GITHUB_SHA" --tools-commit "$EXPECTED_TOOLS"',
+            '--source-context "$context" --source-context-sha256 "$context_sha"',
             '--compiler-fragment "$compiler_fragment" --compiler-fragment-sha256 "$compiler_fragment_sha"',
             '--compiler-owner-root "$RUNNER_TEMP/complete-compiler-readback"',
             '--sdk-fragment "$fragment" --sdk-fragment-sha256 "$fragment_sha"',
@@ -909,6 +910,7 @@ def validate_v2_policy(documents: Documents) -> dict[str, int]:
             '--plan "$plan" --plan-sha256 "$plan_sha"',
             '--inputs-dir "$RUNNER_TEMP/diagnostic-inputs" --inputs-sha256 "$inputs_sha"',
             '--producer-commit "$GITHUB_SHA" --tools-commit "$EXPECTED_TOOLS"',
+            '--source-context "$context" --source-context-sha256 "$context_sha"',
             '--compiler-lanes "$compiler_lanes" --compiler-lanes-sha256 "$compiler_lanes_sha"',
             '--compiler-evidence "$compiler_evidence" --compiler-evidence-sha256 "$compiler_evidence_sha"',
             '--sdk-fragment "$fragment" --sdk-fragment-sha256 "$fragment_sha"',
@@ -1842,6 +1844,34 @@ class CompilerSdkWorkflowV2Tests(unittest.TestCase):
                 documents.set_text(WORKFLOW, mutate_job(documents.text(WORKFLOW), "v2-readback", before, after))
                 with self.assertRaisesRegex(PolicyViolation, "native evidence selection"):
                     validate_v2_policy(documents)
+
+    def test_rejects_removed_or_changed_candidate_source_context_arguments(self) -> None:
+        commands = (
+            ("python3 -B scripts/toolchain/assemble-release-candidate-v2.py",
+             '> "$candidate_summary"', "combined candidate assembly"),
+            ("python3 -B scripts/toolchain/select-native-release-evidence-v2.py",
+             '> "$evidence_selection"', "native evidence selection"),
+        )
+        mutations = (
+            '--source-context "$context"',
+            '--source-context "$other_context" --source-context-sha256 "$context_sha"',
+            '--source-context "$context" --source-context-sha256 stale',
+        )
+        for marker, ending, message in commands:
+            for replacement in mutations:
+                with self.subTest(command=marker, replacement=replacement):
+                    documents = self.new_documents()
+                    workflow = documents.text(WORKFLOW)
+                    prefix, tail = workflow.split(marker, 1)
+                    command, suffix = tail.split(ending, 1)
+                    self.assertIn('--source-context "$context" --source-context-sha256 "$context_sha"', command)
+                    command = command.replace(
+                        '--source-context "$context" --source-context-sha256 "$context_sha"',
+                        replacement, 1,
+                    )
+                    documents.set_text(WORKFLOW, prefix + marker + command + ending + suffix)
+                    with self.assertRaisesRegex(PolicyViolation, message):
+                        validate_v2_policy(documents)
 
     def test_rejects_disconnected_final_native_diagnostic(self) -> None:
         for before, after in (

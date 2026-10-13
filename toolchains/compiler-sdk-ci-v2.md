@@ -140,6 +140,13 @@ Readers require the caller's exact role; no role is inferred or promoted from
 a signed payload. Neither role substitutes for the complete native SDK matrix
 and release-admission gates.
 
+Candidate assembly and native evidence selection require `--source-context`
+and `--source-context-sha256`. They bind the unchanged canonical run context to
+the compiler and SDK owner fragments, query that exact provider attempt for its
+actual event, and recheck it before output. Tag pushes and branch/tag dispatches
+select distinct complete-matrix routes; unsupported pairs fail without JSON.
+These checks do not authorize publication or convert diagnostics into releases.
+
 Dispatch only after both exact tools and source commits are remotely available,
 the selected tools checks and producer contracts are green, and the source
 SDK exporters, source-contract/hygiene and locked-source checks have passed.

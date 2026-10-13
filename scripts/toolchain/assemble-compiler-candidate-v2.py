@@ -71,12 +71,11 @@ def _require(condition: bool, message: str) -> None:
         raise AssemblyError(message)
 
 
-def _projection_route(source_ref: str) -> tuple[str, bool]:
-    if source_ref.startswith("refs/tags/"):
-        return "push", False
-    if source_ref.startswith("refs/heads/"):
-        return "workflow_dispatch", True
-    raise AssemblyError("collector source ref does not select a release route")
+def _projection_route(source_ref: str, event: str) -> tuple[str, bool]:
+    try:
+        return _COMPILER_MATRIX._projection_route(source_ref, event)
+    except _COMPILER_MATRIX.artifact_origin.OriginError as error:
+        raise AssemblyError(str(error)) from error
 
 
 def _digest(value: object, label: str) -> str:
@@ -190,6 +189,21 @@ def _read_bound_inputs(args: argparse.Namespace) -> dict:
     selected_files: dict[Path, tuple[int, dict, tuple[int, ...]]] = {}
     snapshots: dict[Path, tuple[tuple[int, ...], dict[str, str]]] = {}
 
+    source_context_sha = _digest(args.source_context_sha256, "selected source-context digest")
+    source_context_path = _canonical_existing(args.source_context, "source context", directory=False)
+    source_context, source_context_raw, source_context_measurement = _read_json(
+        source_context_path, _ORIGIN.MAX_METADATA, "source context", selected_files
+    )
+    _require(source_context_measurement["sha256"] == source_context_sha,
+             "source context bytes differ from the selected digest")
+    source_context = _ORIGIN.validate_context(source_context)
+    _require(source_context_raw == _ORIGIN.canonical(source_context),
+             "source context is not canonical JSON")
+    _require(source_context["producer_commit"] == producer,
+             "source context producer commit differs from the selected producer")
+    source_event = _ORIGIN.observe_run_event(source_context)
+    event, full_qualification = _projection_route(source_context["source_ref"], source_event)
+
     aros = _canonical_existing(args.aros, "native CLI", directory=False)
     aros_metadata = aros.lstat()
     _require(bool(stat.S_IMODE(aros_metadata.st_mode) & 0o111),
@@ -262,7 +276,11 @@ def _read_bound_inputs(args: argparse.Namespace) -> dict:
              and fragment["inputs_sha256"] == inputs_sha
              and fragment["producer_commit"] == producer
              and fragment["tools_commit"] == tools
-             and fragment["source_producer_commit"] == producer,
+             and fragment["source_producer_commit"] == producer
+             and fragment["source_context_sha256"] == source_context_sha
+             and fragment["source_producer_commit"] == source_context["producer_commit"]
+             and fragment["source_workflow"] == source_context["workflow"]
+             and fragment["source_ref"] == source_context["source_ref"],
              "compiler collector fragment bindings differ from selected inputs")
     _digest(fragment["source_context_sha256"], "fragment source-context digest")
     for field in ("source_workflow", "workflow"):
@@ -280,7 +298,6 @@ def _read_bound_inputs(args: argparse.Namespace) -> dict:
              and type(fragment["publication"]) is bool and not fragment["publication"],
              "compiler collector fragment has a release or publication authority mismatch")
 
-    event, full_qualification = _projection_route(fragment["source_ref"])
     projection = _MATRIX.project(
         raw=plan_raw, plan=plan, plan_sha256=plan_sha, inputs_sha256=inputs_sha,
         producer_commit=producer, tools_commit=tools, event=event,
@@ -420,7 +437,8 @@ def _read_bound_inputs(args: argparse.Namespace) -> dict:
         pass
     else:
         raise AssemblyError("operation root must be absent")
-    for selected_path in (aros, plan_path, inputs_dir, fragment_path, owner_root, required_path):
+    for selected_path in (aros, plan_path, inputs_dir, source_context_path,
+                          fragment_path, owner_root, required_path):
         _require(root != selected_path and root not in selected_path.parents
                  and selected_path not in root.parents,
                  "operation root overlaps a selected input")
@@ -433,6 +451,8 @@ def _read_bound_inputs(args: argparse.Namespace) -> dict:
         "plan_sha256": plan_sha, "plan": plan, "inputs_dir": inputs_dir,
         "inputs_sha256": inputs_sha, "collection_path": collection_path,
         "producer_commit": producer, "tools_commit": tools,
+        "source_context_path": source_context_path, "source_context": source_context,
+        "source_context_sha256": source_context_sha, "source_event": source_event,
         "fragment_path": fragment_path, "fragment_sha256": fragment_sha,
         "fragment": fragment, "owner_root": owner_root,
         "required_path": required_path, "required_paths_sha256": required_sha,
@@ -1352,6 +1372,12 @@ def assemble(args: argparse.Namespace) -> dict:
     _verify_directories(data["snapshots"])
     _verify_staged(staged, release_dir)
     _verify_owned_result_files(root, data["selected_files"])
+    try:
+        final_source_event = _ORIGIN.observe_run_event(data["source_context"])
+    except _ORIGIN.OriginError as error:
+        raise AssemblyError(str(error)) from error
+    _require(final_source_event == data["source_event"],
+             "source run event changed during compiler assembly")
     return summary
 
 
@@ -1392,6 +1418,8 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--inputs-sha256", required=True)
     parser.add_argument("--producer-commit", required=True)
     parser.add_argument("--tools-commit", required=True)
+    parser.add_argument("--source-context", type=Path, required=True)
+    parser.add_argument("--source-context-sha256", required=True)
     parser.add_argument("--fragment", type=Path, required=True)
     parser.add_argument("--fragment-sha256", required=True)
     parser.add_argument("--owner-root", type=Path, required=True)

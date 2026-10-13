@@ -39,6 +39,14 @@ assert SDK_TEST_SPEC is not None and SDK_TEST_SPEC.loader is not None
 sdk_tests = importlib.util.module_from_spec(SDK_TEST_SPEC)
 sys.modules[SDK_TEST_SPEC.name] = sdk_tests
 SDK_TEST_SPEC.loader.exec_module(sdk_tests)
+COMPILER_TEST_PATH = Path(__file__).with_name("test-compiler-candidate-assembly-v2.py")
+COMPILER_TEST_SPEC = importlib.util.spec_from_file_location(
+    "native_release_evidence_compiler_fixtures", COMPILER_TEST_PATH
+)
+assert COMPILER_TEST_SPEC is not None and COMPILER_TEST_SPEC.loader is not None
+compiler_tests = importlib.util.module_from_spec(COMPILER_TEST_SPEC)
+sys.modules[COMPILER_TEST_SPEC.name] = compiler_tests
+COMPILER_TEST_SPEC.loader.exec_module(compiler_tests)
 
 
 def digest(raw: bytes) -> str:
@@ -63,10 +71,26 @@ def measured(path: Path) -> dict:
 
 
 class Fixture:
-    def __init__(self, base: Path) -> None:
+    def __init__(self, base: Path, *, source_ref: str = "refs/heads/main") -> None:
         self.base = base.resolve()
         self.sdk = sdk_tests.Fixture(self.base)
         self._bind_valid_plan_documents()
+        self.source_context = {
+            "repository": "example/project", "repository_id": 7890,
+            "producer_commit": sdk_tests.PRODUCER, "source_ref": source_ref,
+            "workflow": self.sdk.fragment["source_workflow"],
+            "run_id": 321456, "run_attempt": 2,
+        }
+        self.source_context_raw = canonical(self.source_context)
+        self.source_context_sha256 = digest(self.source_context_raw)
+        self.source_context_path = self.base / "source-context.json"
+        write(self.source_context_path, self.source_context_raw)
+        self.sdk.fragment["source_context_sha256"] = self.source_context_sha256
+        self.sdk.fragment["source_producer_commit"] = self.source_context["producer_commit"]
+        self.sdk.fragment["source_workflow"] = self.source_context["workflow"]
+        self.sdk.fragment["source_ref"] = self.source_context["source_ref"]
+        self.sdk.write_fragment()
+        compiler_tests.install_fake_gh(self.base)
         self.compiler_root = self.base / "compiler-candidate"
         self.compiler_root.mkdir(mode=0o700)
         self.native_dir = self.compiler_root / "native"
@@ -306,6 +330,8 @@ class Fixture:
             "--plan", str(self.sdk.plan_path), "--plan-sha256", self.sdk.plan_sha256,
             "--inputs-dir", str(self.sdk.inputs), "--inputs-sha256", self.sdk.inputs_sha256,
             "--producer-commit", sdk_tests.PRODUCER, "--tools-commit", sdk_tests.TOOLS,
+            "--source-context", str(self.source_context_path),
+            "--source-context-sha256", self.source_context_sha256,
             "--compiler-lanes", str(self.lanes_path),
             "--compiler-lanes-sha256", digest(self.lanes_path.read_bytes()),
             "--compiler-evidence", str(self.evidence_path),
@@ -318,12 +344,18 @@ class Fixture:
 
     def run(self, *, extra: list[str] | None = None,
             replace: dict[str, str] | None = None,
-            environment: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
+            environment: dict[str, str] | None = None,
+            provider_responses: list[dict] | None = None) -> subprocess.CompletedProcess[str]:
         arguments = self.arguments()
         for option, value in (replace or {}).items():
             arguments[arguments.index(option) + 1] = value
+        child_environment = dict(os.environ)
+        child_environment.update(compiler_tests.provider_environment(
+            self.base, self.source_context, responses=provider_responses,
+        ))
+        child_environment.update(environment or {})
         return subprocess.run([*arguments, *(extra or [])], capture_output=True,
-                              text=True, check=False, env=environment)
+                              text=True, check=False, env=child_environment)
 
     def run_mutating_after_final_sdk_selection(self, path: Path) -> subprocess.CompletedProcess[str]:
         hook_dir = self.base / "site-hook"
@@ -423,6 +455,65 @@ class NativeReleaseEvidenceSelectionTests(unittest.TestCase):
                 self.assertEqual(lane["llvm_sdk_id"], "sdk-b")
                 self.assertFalse(lane["compatibility"]["native_sdk_required"])
 
+    def test_tag_push_and_manual_tag_dispatch_use_the_provider_event(self) -> None:
+        for index, event in enumerate(("push", "workflow_dispatch")):
+            with self.subTest(event=event):
+                base = self.fixture.base / f"tag-event-{index}"
+                base.mkdir()
+                fixture = Fixture(base, source_ref=compiler_tests.TAG_REF)
+                responses = [compiler_tests.provider_run(fixture.source_context, event)] * 2
+                result = fixture.run(provider_responses=responses)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(len(result.stdout.splitlines()), 1)
+                self.assertEqual(
+                    json.loads(result.stdout)["schema"],
+                    "aros-toolchain-release-evidence-selection-v2",
+                )
+
+    def test_provider_failure_and_identity_mismatch_emit_no_json(self) -> None:
+        failed = self.fixture.run(environment={"FAKE_GH_FAIL": "1"})
+        self.assertNotEqual(failed.returncode, 0, failed.stdout)
+        self.assertEqual(failed.stdout, "")
+        self.assertIn("native release evidence selection failed:", failed.stderr)
+
+        wrong_identity = compiler_tests.provider_run(self.fixture.source_context)
+        wrong_identity["run_attempt"] += 1
+        mismatch = self.fixture.run(provider_responses=[wrong_identity])
+        self.assertNotEqual(mismatch.returncode, 0, mismatch.stdout)
+        self.assertEqual(mismatch.stdout, "")
+        self.assertIn("native release evidence selection failed:", mismatch.stderr)
+
+    def test_context_digest_and_sdk_source_selectors_are_bound(self) -> None:
+        result = self.fixture.run(replace={"--source-context-sha256": "0" * 64})
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertEqual(result.stdout, "")
+        self.assertIn("native release evidence selection failed:", result.stderr)
+
+        for field, value in (
+            ("source_workflow", ".github/workflows/other.yml"),
+            ("source_ref", "refs/heads/other"),
+            ("source_producer_commit", "f" * 40),
+        ):
+            with self.subTest(field=field):
+                base = self.fixture.base / f"sdk-context-{field}"
+                base.mkdir()
+                fixture = Fixture(base)
+                fixture.sdk.fragment[field] = value
+                fixture.sdk.write_fragment()
+                result = fixture.run()
+                self.assertNotEqual(result.returncode, 0, result.stdout)
+                self.assertEqual(result.stdout, "")
+                self.assertIn("native release evidence selection failed:", result.stderr)
+
+    def test_changed_provider_event_fails_at_the_final_evidence_barrier(self) -> None:
+        result = self.fixture.run(provider_responses=[
+            compiler_tests.provider_run(self.fixture.source_context, "workflow_dispatch"),
+            compiler_tests.provider_run(self.fixture.source_context, "push"),
+        ])
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertEqual(result.stdout, "")
+        self.assertIn("source run event changed", result.stderr)
+
     def test_rejects_duplicate_cli_options_before_selecting(self) -> None:
         self.assert_rejected(extra=["--plan", str(self.fixture.sdk.plan_path)])
 
@@ -507,12 +598,14 @@ class NativeReleaseEvidenceSelectionTests(unittest.TestCase):
         write(self.fixture.evidence_path, canonical(evidence))
         self.assert_rejected()
 
-    def test_rejects_input_comparison_and_sdk_record_changes_at_final_barrier(self) -> None:
+    def test_rejects_input_comparison_sdk_record_and_source_context_changes_at_final_barrier(
+            self) -> None:
         targets = (
             self.fixture.sdk.inputs / self.fixture.plan["groups"][0]["recipe"]["file"],
             Path(next(iter(self.fixture.evidence["assets"].values()))["comparison"][
                 "selectedFile"]["path"]),
             Path(self.fixture.sdk.fragment["sdk_generations"][0]["record"]["path"]),
+            self.fixture.source_context_path,
         )
         for target_index, target in enumerate(targets):
             with self.subTest(target=target.name):
@@ -526,6 +619,7 @@ class NativeReleaseEvidenceSelectionTests(unittest.TestCase):
                         Path(next(iter(self.fixture.evidence["assets"].values()))["comparison"][
                             "selectedFile"]["path"]),
                         Path(self.fixture.sdk.fragment["sdk_generations"][0]["record"]["path"]),
+                        self.fixture.source_context_path,
                     )
                     target = targets[target_index]
                 result = self.fixture.run_mutating_after_final_sdk_selection(target)
