@@ -1,26 +1,33 @@
-name: Deterministic AROS Toolchain Producer
+name: AROS Compiler and SDK Producer
 
 on:
   workflow_dispatch:
     inputs:
       mode:
-        description: Produce a host tier or recover a packaging-only failed run
+        description: Select non-publishing qualification or packaging recovery
         required: true
         default: produce
         type: choice
         options:
           - produce
           - recover
+          - qualify-v2
+          - qualify-v2-full
       scope:
-        description: Diagnostic host tier (manual runs never publish or exercise all hosts)
+        description: Host tier; full requires non-publishing qualify-v2-full mode
         required: true
         default: linux-x86_64
         type: choice
         options:
           - linux-x86_64
           - linux
+          - full
       source_run_id:
         description: Recovery only - qualified producer run ID
+        required: false
+        type: string
+      diagnostic_group:
+        description: qualify-v2 only - exact plan group ID; omit for all compiler groups
         required: false
         type: string
       source_tag:
@@ -54,8 +61,839 @@ env:
   TOOLS_RUNTIME_LOCK: toolchains/aros-tools-runtime-v1.json
 
 jobs:
+  v2-prepare:
+    name: Prepare compiler and SDK diagnostic
+    if: github.event_name == 'workflow_dispatch' && (inputs.mode == 'qualify-v2' || inputs.mode == 'qualify-v2-full')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    outputs:
+      matrix: ${{ steps.matrix.outputs.verify_matrix }}
+      build_matrix: ${{ steps.matrix.outputs.build_matrix }}
+      host_matrix: ${{ steps.matrix.outputs.host_matrix }}
+      source_commit: ${{ steps.selection.outputs.source_commit }}
+      tools_commit: ${{ steps.selection.outputs.tools_commit }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - id: selection
+        name: Select committed diagnostic inputs; reject publishing and unsupported host scopes
+        env:
+          REQUESTED_SCOPE: ${{ inputs.scope }}
+          REQUESTED_MODE: ${{ inputs.mode }}
+          REQUESTED_GROUP: ${{ inputs.diagnostic_group }}
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_EVENT_NAME" == workflow_dispatch && "$GITHUB_REF_TYPE" == branch ]]
+          case "$REQUESTED_MODE:$REQUESTED_SCOPE" in
+            qualify-v2:linux-x86_64) ;;
+            qualify-v2-full:full) [[ -z "$REQUESTED_GROUP" ]] ;;
+            *) exit 1;;
+          esac
+          selection=toolchains/compiler-sdk-ci-selection-v2.json
+          jq -e '.schema == "aros-compiler-sdk-ci-selection-v2"' "$selection" >/dev/null
+          for key in source_commit tools_commit; do
+            value=$(jq -er --arg key "$key" '.[$key]' "$selection")
+            [[ "$value" =~ ^[0-9a-f]{40}$ ]]
+            printf '%s=%s\n' "$key" "$value" >> "$GITHUB_OUTPUT"
+          done
+      - uses: ./.github/actions/checkout-pinned-recursive-source
+        with:
+          repository: metaneutrons/AROS-NX
+          ref: ${{ steps.selection.outputs.source_commit }}
+          fetch-depth: 0
+          path: dependencies/aros
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: metaneutrons/aros-tools
+          ref: ${{ steps.selection.outputs.tools_commit }}
+          fetch-depth: 0
+          persist-credentials: false
+          path: dependencies/aros-tools
+      - id: rust
+        uses: ./.github/actions/select-native-rust-toolchain
+        with:
+          producer-dir: ${{ github.workspace }}
+      - id: runtime
+        uses: ./.github/actions/materialize-development-aros-tools
+        with:
+          source-dir: ${{ github.workspace }}/dependencies/aros-tools
+          commit: ${{ steps.selection.outputs.tools_commit }}
+          destination: ${{ runner.temp }}/diagnostic-runtime
+      - name: Check portable readback interface before full qualification
+        if: inputs.mode == 'qualify-v2-full'
+        env:
+          READBACK_AROS: ${{ steps.runtime.outputs.root }}/bin/aros
+        run: |
+          set -euo pipefail
+          readback_help=$("$READBACK_AROS" toolchain producer verify-package --help)
+          for option in package-measurement package-measurement-sha256 executor-contract-sha256 executor-binary-sha256; do
+            if ! grep -Eq "^[[:space:]]*--$option([[:space:]]|$)" <<< "$readback_help"; then
+              echo "Selected tools lack the portable readback option --$option; full qualification cannot start." >&2
+              exit 1
+            fi
+          done
+      - id: matrix
+        name: Bind native recipes, source SDK identities and compiler/SDK selections
+        env:
+          REQUESTED_GROUP: ${{ inputs.diagnostic_group }}
+          REQUESTED_SCOPE: ${{ inputs.scope }}
+          REQUESTED_MODE: ${{ inputs.mode }}
+        run: |
+          set -euo pipefail
+          producer="$RUNNER_TEMP/diagnostic-producer"
+          git worktree add --detach "$producer" "$GITHUB_SHA"
+          python3 -B scripts/toolchain/prepare-compiler-sdk-inputs-v2.py \
+            --aros "${{ steps.runtime.outputs.root }}/bin/aros" \
+            --source-dir "$GITHUB_WORKSPACE/dependencies/aros" \
+            --producer-dir "$producer" --tools-dir "$GITHUB_WORKSPACE/dependencies/aros-tools" \
+            --selection "$producer/toolchains/compiler-sdk-ci-selection-v2.json" \
+            --output-dir "$RUNNER_TEMP/diagnostic-inputs" \
+            --projection-dir "$RUNNER_TEMP/diagnostic-source-projection"
+          inputs_sha=$(sha256sum "$RUNNER_TEMP/diagnostic-inputs/toolchain-release-inputs-v2.json" | awk '{print $1}')
+          plan_sha=$(sha256sum "$RUNNER_TEMP/diagnostic-inputs/plan.json" | awk '{print $1}')
+          policy="$producer/toolchains/compiler-required-payload-v1.json"
+          policy_sha=$(sha256sum "$policy" | awk '{print $1}')
+          python3 -B scripts/toolchain/required-compiler-payload-v2.py \
+            --policy "$policy" --policy-sha256 "$policy_sha" \
+            --plan "$RUNNER_TEMP/diagnostic-inputs/plan.json" --plan-sha256 "$plan_sha" \
+            --inputs-sha256 "$inputs_sha" --producer-commit "$GITHUB_SHA" \
+            --tools-commit "${{ steps.selection.outputs.tools_commit }}" \
+            > "$RUNNER_TEMP/diagnostic-required-paths.json"
+          group_arguments=()
+          if [[ "$REQUESTED_MODE" == qualify-v2-full ]]; then
+            group_arguments+=(--full-qualification)
+          fi
+          if [[ -n "$REQUESTED_GROUP" ]]; then
+            group_arguments+=(--diagnostic-group "$REQUESTED_GROUP")
+          fi
+          python3 -B scripts/toolchain/select-release-matrix-v2.py \
+            --plan "$RUNNER_TEMP/diagnostic-inputs/plan.json" --plan-sha256 "$plan_sha" \
+            --inputs-sha256 "$inputs_sha" --producer-commit "$GITHUB_SHA" \
+            --tools-commit "${{ steps.selection.outputs.tools_commit }}" \
+            --event workflow_dispatch --scope "$REQUESTED_SCOPE" --github-output "$GITHUB_OUTPUT" \
+            "${group_arguments[@]}" \
+            > "$RUNNER_TEMP/diagnostic-inputs/matrix.json"
+      - name: Retain independent required-payload selection
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: diagnostic-v2-required-paths
+          path: ${{ runner.temp }}/diagnostic-required-paths.json
+          if-no-files-found: error
+          retention-days: 7
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: diagnostic-v2-runtime
+          path: ${{ steps.runtime.outputs.root }}/
+          if-no-files-found: error
+          retention-days: 7
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: diagnostic-v2-inputs
+          path: ${{ runner.temp }}/diagnostic-inputs/
+          if-no-files-found: error
+          retention-days: 7
+
+  v2-sources:
+    name: Prepare verified compiler and SDK sources
+    needs: v2-prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    outputs:
+      cache_archive_sha256: ${{ steps.cache.outputs.cache_archive_sha256 }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: metaneutrons/aros-tools
+          ref: ${{ needs.v2-prepare.outputs.tools_commit }}
+          fetch-depth: 0
+          persist-credentials: false
+          path: dependencies/aros-tools
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: diagnostic-v2-runtime
+          path: ${{ runner.temp }}/diagnostic-runtime
+      - id: rust
+        uses: ./.github/actions/select-native-rust-toolchain
+        with:
+          producer-dir: ${{ github.workspace }}
+      - id: cache
+        name: Verify runtime bytes and prepare every selected compiler/SDK cache
+        run: |
+          set -euo pipefail
+          runtime="$RUNNER_TEMP/diagnostic-runtime"
+          (cd "$runtime" && sha256sum -c SHA256SUMS)
+          chmod +x "$runtime"/bin/*
+          aros="$runtime/bin/aros"
+          producer="$RUNNER_TEMP/diagnostic-producer"
+          git worktree add --detach "$producer" "$GITHUB_SHA"
+          cache="$RUNNER_TEMP/diagnostic-cache"
+          mkdir "$cache"
+          while IFS= read -r lock; do
+            "$aros" cache sources fetch --source-lock "$producer/$lock" --dir "$cache"
+            "$aros" cache sources fetch --source-lock "$producer/$lock" --dir "$cache" --offline
+            "$aros" cache sources verify --source-lock "$producer/$lock" --dir "$cache"
+          done < <(jq -r '.groups[].source_lock' "$producer/toolchains/compiler-sdk-ci-selection-v2.json")
+          while IFS= read -r lock; do
+            bash scripts/toolchain/seed-compatibility-zlib.sh "$producer/$lock" "$cache" \
+              "$producer/toolchains/source-seeds/chromium-zlib-da752eb2.tar.gz"
+            for attempt in 1 2 3; do
+              if "$aros" cache sources fetch --compatibility-ports-lock "$producer/$lock" --dir "$cache"; then break; fi
+              [[ "$attempt" != 3 ]] || exit 1
+              sleep "$((attempt * 10))"
+            done
+            "$aros" cache sources fetch --compatibility-ports-lock "$producer/$lock" --dir "$cache" --offline
+            "$aros" cache sources verify --compatibility-ports-lock "$producer/$lock" --dir "$cache"
+          done < <(jq -r '.groups[].ports_lock' "$producer/toolchains/compiler-sdk-ci-selection-v2.json" | sort -u)
+          "$aros" cache cargo fetch --producer-dir "$producer" --tools-dir "$GITHUB_WORKSPACE/dependencies/aros-tools" \
+            --dir "$cache" --cargo "${{ steps.rust.outputs.cargo }}"
+          "$aros" cache cargo verify --producer-dir "$producer" --tools-dir "$GITHUB_WORKSPACE/dependencies/aros-tools" \
+            --dir "$cache" --cargo "${{ steps.rust.outputs.cargo }}"
+          # Directory artifacts normalize modes and omit empty directories.
+          # Preserve the vendor receipt's exact tree in one archive instead.
+          tar -C "$cache" -czf "$RUNNER_TEMP/diagnostic-cache.tar.gz" .
+          archive_sha=$(sha256sum "$RUNNER_TEMP/diagnostic-cache.tar.gz" | awk '{print $1}')
+          printf 'cache_archive_sha256=%s\n' "$archive_sha" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: diagnostic-v2-cache
+          path: ${{ runner.temp }}/diagnostic-cache.tar.gz
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 7
+
+  v2-runtimes:
+    name: Build native non-publishing tools (${{ matrix.host }})
+    needs: v2-prepare
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.v2-prepare.outputs.host_matrix) }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: metaneutrons/aros-tools
+          ref: ${{ needs.v2-prepare.outputs.tools_commit }}
+          fetch-depth: 0
+          persist-credentials: false
+          path: dependencies/aros-tools
+      - uses: ./.github/actions/select-native-rust-toolchain
+        with:
+          producer-dir: ${{ github.workspace }}
+      - id: runtime
+        uses: ./.github/actions/materialize-development-aros-tools
+        with:
+          source-dir: ${{ github.workspace }}/dependencies/aros-tools
+          commit: ${{ needs.v2-prepare.outputs.tools_commit }}
+          destination: ${{ runner.temp }}/diagnostic-runtime
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: diagnostic-v2-native-runtime-${{ matrix.host }}
+          path: ${{ steps.runtime.outputs.root }}/
+          if-no-files-found: error
+          retention-days: 7
+
+  v2-build:
+    name: Native compiler (${{ matrix.group_id }}, ${{ matrix.host }}, ${{ matrix.profile }}, ${{ matrix.copy }})
+    if: inputs.mode == 'qualify-v2-full'
+    needs: [v2-prepare, v2-sources, v2-runtimes]
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix: ${{ fromJSON(needs.v2-prepare.outputs.build_matrix) }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 360
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: ./.github/actions/checkout-pinned-recursive-source
+        with:
+          repository: metaneutrons/AROS-NX
+          ref: ${{ needs.v2-prepare.outputs.source_commit }}
+          fetch-depth: 0
+          path: dependencies/aros
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: metaneutrons/aros-tools
+          ref: ${{ needs.v2-prepare.outputs.tools_commit }}
+          fetch-depth: 0
+          persist-credentials: false
+          path: dependencies/aros-tools
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: diagnostic-v2-native-runtime-${{ matrix.host }}
+          path: ${{ runner.temp }}/diagnostic-runtime
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: diagnostic-v2-inputs
+          path: ${{ runner.temp }}/diagnostic-inputs
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: diagnostic-v2-cache
+          path: ${{ runner.temp }}/diagnostic-cache-input
+      - uses: ./.github/actions/disable-google-chrome-apt-source
+        if: runner.os == 'Linux'
+      - name: Install native compiler prerequisites
+        run: bash dependencies/aros/scripts/ci/install-build-prerequisites.sh
+      - id: rust
+        uses: ./.github/actions/select-native-rust-toolchain
+        with:
+          producer-dir: ${{ github.workspace }}
+      - id: lane
+        name: Select the exact original compiler lane
+        env:
+          SELECTED_GROUP: ${{ matrix.group_id }}
+          SELECTED_HOST: ${{ matrix.host }}
+          SELECTED_PRESET: ${{ matrix.profile }}
+          SELECTED_COPY: ${{ matrix.copy }}
+          CACHE_ARCHIVE_SHA256: ${{ needs.v2-sources.outputs.cache_archive_sha256 }}
+        run: |
+          set -euo pipefail
+          runtime="$RUNNER_TEMP/diagnostic-runtime"
+          (cd "$runtime" && shasum -a 256 -c SHA256SUMS)
+          chmod +x "$runtime"/bin/*
+          producer="$RUNNER_TEMP/diagnostic-producer"
+          git worktree add --detach "$producer" "$GITHUB_SHA"
+          python3 -B scripts/toolchain/cache-archive-transport.py \
+            --archive "$RUNNER_TEMP/diagnostic-cache-input/diagnostic-cache.tar.gz" \
+            --archive-sha256 "$CACHE_ARCHIVE_SHA256" --output-dir "$RUNNER_TEMP/diagnostic-cache"
+          "$runtime/bin/aros" cache cargo verify --producer-dir "$producer" \
+            --tools-dir "$GITHUB_WORKSPACE/dependencies/aros-tools" --dir "$RUNNER_TEMP/diagnostic-cache" \
+            --cargo "${{ steps.rust.outputs.cargo }}"
+          inputs="$RUNNER_TEMP/diagnostic-inputs"
+          inputs_sha=$(shasum -a 256 "$inputs/toolchain-release-inputs-v2.json" | awk '{print $1}')
+          "$runtime/bin/aros" toolchain producer release-plan --directory "$inputs" \
+            --inputs-sha256 "$inputs_sha" --format json > "$RUNNER_TEMP/build-plan.json"
+          jq -e --arg group "$SELECTED_GROUP" --arg host "$SELECTED_HOST" --arg profile "$SELECTED_PRESET" \
+            'any(.lanes[]; .group_id == $group and .host == $host and .target_profile == $profile)' \
+            "$RUNNER_TEMP/build-plan.json" >/dev/null
+          group=$(jq -ce --arg group "$SELECTED_GROUP" '.groups | map(select(.group_id == $group)) | if length == 1 then .[0] else error("ambiguous group") end' "$RUNNER_TEMP/build-plan.json")
+          recipe_file=$(jq -er '.recipe.file' <<< "$group")
+          lock_file=$(jq -er '.source_lock.file' <<< "$group")
+          profiles_file=$(jq -er '.profiles.file' <<< "$group")
+          runtime_sha=$(shasum -a 256 "$runtime/bin/aros" | awk '{print $1}')
+          producer_short=$(git -C "$producer" rev-parse --short=12 HEAD)
+          {
+            printf 'recipe=%s/%s\n' "$inputs" "$recipe_file"
+            printf 'lock=%s/%s\n' "$inputs" "$lock_file"
+            printf 'profiles=%s/%s\n' "$inputs" "$profiles_file"
+            printf 'runtime-sha256=%s\n' "$runtime_sha"
+            printf 'release-id=toolchain-dev-%s\n' "$producer_short"
+          } >> "$GITHUB_OUTPUT"
+      - uses: ./.github/actions/build-native-lane-v2
+        with:
+          aros: ${{ runner.temp }}/diagnostic-runtime/bin/aros
+          aros-sha256: ${{ steps.lane.outputs.runtime-sha256 }}
+          recipe: ${{ steps.lane.outputs.recipe }}
+          source-lock: ${{ steps.lane.outputs.lock }}
+          profiles: ${{ steps.lane.outputs.profiles }}
+          source-dir: ${{ github.workspace }}/dependencies/aros
+          producer-dir: ${{ runner.temp }}/diagnostic-producer
+          tools-dir: ${{ github.workspace }}/dependencies/aros-tools
+          cache-dir: ${{ runner.temp }}/diagnostic-cache
+          group: ${{ matrix.group_id }}
+          preset: ${{ matrix.profile }}
+          host: ${{ matrix.host }}
+          copy: ${{ matrix.copy }}
+          release-id: ${{ steps.lane.outputs.release-id }}
+          jobs: '3'
+          timeout-seconds: '20000'
+          root: ${{ runner.temp }}/native-lane-${{ matrix.copy }}
+          workflow: .github/workflows/toolchain-release.yml
+          job-name: Native compiler (${{ matrix.group_id }}, ${{ matrix.host }}, ${{ matrix.profile }}, ${{ matrix.copy }})
+      - name: Retain native owner failure diagnostics outside the signed payload
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: diagnostic-v2-native-${{ matrix.group_id }}-${{ matrix.host }}-${{ matrix.profile }}-${{ matrix.copy }}
+          path: |
+            ${{ runner.temp }}/native-lane-${{ matrix.copy }}/work/native-lifecycle/logs/
+            ${{ runner.temp }}/native-lane-${{ matrix.copy }}/work/native-lifecycle/receipts/
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 7
+
+  v2-sdk:
+    name: SDK from owned compilers (${{ matrix.group_id }}, ${{ matrix.host }}, ${{ matrix.profile }})
+    if: inputs.mode == 'qualify-v2-full'
+    needs: [v2-prepare, v2-sources, v2-runtimes, v2-build]
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix: ${{ fromJSON(needs.v2-prepare.outputs.matrix) }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 360
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: ./.github/actions/checkout-pinned-recursive-source
+        with:
+          repository: metaneutrons/AROS-NX
+          ref: ${{ needs.v2-prepare.outputs.source_commit }}
+          fetch-depth: 0
+          path: dependencies/aros
+      - uses: ./.github/actions/checkout-pinned-recursive-source
+        with:
+          repository: metaneutrons/AROS-NX
+          ref: ${{ needs.v2-prepare.outputs.source_commit }}
+          fetch-depth: 0
+          path: dependencies/upstream-aros
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: metaneutrons/aros-tools
+          ref: ${{ needs.v2-prepare.outputs.tools_commit }}
+          fetch-depth: 0
+          persist-credentials: false
+          path: dependencies/aros-tools
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: diagnostic-v2-native-runtime-${{ matrix.host }}
+          path: ${{ runner.temp }}/diagnostic-runtime
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: diagnostic-v2-inputs
+          path: ${{ runner.temp }}/diagnostic-inputs
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: diagnostic-v2-cache
+          path: ${{ runner.temp }}/diagnostic-cache-input
+      - uses: ./.github/actions/disable-google-chrome-apt-source
+        if: runner.os == 'Linux'
+      - name: Install native SDK consumer prerequisites
+        run: bash dependencies/aros/scripts/ci/install-build-prerequisites.sh
+      - id: rust
+        uses: ./.github/actions/select-native-rust-toolchain
+        with:
+          producer-dir: ${{ github.workspace }}
+      - id: sdk
+        name: Authenticate both original compilers before comparison and SDK generation
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SELECTED_GROUP: ${{ matrix.group_id }}
+          SELECTED_HOST: ${{ matrix.host }}
+          SELECTED_PRESET: ${{ matrix.profile }}
+          CURRENT_JOB: SDK from owned compilers (${{ matrix.group_id }}, ${{ matrix.host }}, ${{ matrix.profile }})
+          CACHE_ARCHIVE_SHA256: ${{ needs.v2-sources.outputs.cache_archive_sha256 }}
+        run: |
+          set -euo pipefail
+          runtime="$RUNNER_TEMP/diagnostic-runtime"
+          (cd "$runtime" && shasum -a 256 -c SHA256SUMS)
+          chmod +x "$runtime"/bin/*
+          producer="$RUNNER_TEMP/diagnostic-producer"
+          git worktree add --detach "$producer" "$GITHUB_SHA"
+          runtime_sha=$(shasum -a 256 "$runtime/bin/aros" | awk '{print $1}')
+          python3 -B scripts/toolchain/cache-archive-transport.py \
+            --archive "$RUNNER_TEMP/diagnostic-cache-input/diagnostic-cache.tar.gz" \
+            --archive-sha256 "$CACHE_ARCHIVE_SHA256" --output-dir "$RUNNER_TEMP/diagnostic-cache"
+          "$runtime/bin/aros" cache cargo verify --producer-dir "$producer" \
+            --tools-dir "$GITHUB_WORKSPACE/dependencies/aros-tools" --dir "$RUNNER_TEMP/diagnostic-cache" \
+            --cargo "${{ steps.rust.outputs.cargo }}"
+          python3 -B - <<'PY'
+          import importlib.util
+          import os
+          from pathlib import Path
+          spec = importlib.util.spec_from_file_location('origin', 'scripts/toolchain/artifact-origin.py')
+          origin = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(origin)
+          root = Path(os.environ['RUNNER_TEMP']).resolve() / 'compiler-owner-selectors'
+          root.mkdir(mode=0o700)
+          context = origin.context_from_environment('.github/workflows/toolchain-release.yml')
+          with (root / 'context.json').open('xb') as handle:
+              handle.write(origin.canonical(context))
+          PY
+          selectors="$RUNNER_TEMP/compiler-owner-selectors"
+          context_sha=$(shasum -a 256 "$selectors/context.json" | awk '{print $1}')
+          for copy in a b; do
+            lane_sha=$(printf '%s\0' "$SELECTED_GROUP" "$SELECTED_HOST" "$SELECTED_PRESET" "$copy" | shasum -a 256 | awk '{print $1}')
+            python3 -B scripts/toolchain/select-owner-artifacts-v2.py \
+              --source-context "$selectors/context.json" --source-context-sha256 "$context_sha" \
+              --job-name "Native compiler ($SELECTED_GROUP, $SELECTED_HOST, $SELECTED_PRESET, $copy)" \
+              --payload-name "native-v2-$lane_sha-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" \
+              --proof-name "native-v2-proof-$lane_sha-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" \
+              --role build --group "$SELECTED_GROUP" --host "$SELECTED_HOST" \
+              --profile="$SELECTED_PRESET" --copy "$copy" > "$selectors/$copy.json"
+          done
+          jq -se 'length == 2 and .[0].job.id != .[1].job.id' \
+            "$selectors/a.json" "$selectors/b.json" >/dev/null
+          bash scripts/toolchain/qualify-compiler-sdk-lane-v2.sh \
+            --aros "$runtime/bin/aros" --runtime-sha256 "$runtime_sha" \
+            --inputs-dir "$RUNNER_TEMP/diagnostic-inputs" \
+            --selection "$producer/toolchains/compiler-sdk-ci-selection-v2.json" \
+            --source-dir "$GITHUB_WORKSPACE/dependencies/aros" --producer-dir "$producer" \
+            --tools-dir "$GITHUB_WORKSPACE/dependencies/aros-tools" --cache-dir "$RUNNER_TEMP/diagnostic-cache" \
+            --upstream-source-dir "$GITHUB_WORKSPACE/dependencies/upstream-aros" \
+            --group "$SELECTED_GROUP" --preset "$SELECTED_PRESET" --host "$SELECTED_HOST" \
+            --owner-a-selection "$selectors/a.json" --owner-b-selection "$selectors/b.json" \
+            --source-workflow .github/workflows/toolchain-release.yml --source-ref "$GITHUB_REF" \
+            --workflow .github/workflows/toolchain-release.yml --job-name "$CURRENT_JOB" --same-attempt \
+            --root "$RUNNER_TEMP/owned-sdk-lane" --jobs 3 --timeout-seconds 20000
+          sdk_ids=$(jq -cse '[.[].id] | sort | if length > 0 and . == unique then . else error("invalid SDK lane selection") end' \
+            "$RUNNER_TEMP/owned-sdk-lane/sdk-selections.jsonl")
+          printf 'sdk-ids=%s\n' "$sdk_ids" >> "$GITHUB_OUTPUT"
+      - uses: ./.github/actions/retain-sdk-owner-payload-v2
+        with:
+          operation-root: ${{ runner.temp }}/owned-sdk-lane
+          sdk-ids: ${{ steps.sdk.outputs.sdk-ids }}
+          group: ${{ matrix.group_id }}
+          preset: ${{ matrix.profile }}
+          host: ${{ matrix.host }}
+          owner-role: sdk
+          root: ${{ runner.temp }}/owned-sdk-origin
+          workflow: .github/workflows/toolchain-release.yml
+          job-name: SDK from owned compilers (${{ matrix.group_id }}, ${{ matrix.host }}, ${{ matrix.profile }})
+      - name: Retain SDK owner readback and failure diagnostics
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: diagnostic-v2-owned-sdk-${{ matrix.group_id }}-${{ matrix.host }}-${{ matrix.profile }}
+          path: |
+            ${{ runner.temp }}/compiler-owner-selectors/
+            ${{ runner.temp }}/owned-sdk-lane/*.json
+            ${{ runner.temp }}/owned-sdk-lane/compiler-*/observation.json
+            ${{ runner.temp }}/owned-sdk-lane/compiler-*/native-verification.json
+            ${{ runner.temp }}/owned-sdk-lane/compiler-*/origin-verification.log
+            ${{ runner.temp }}/owned-sdk-lane/sdk-*/result.json
+            ${{ runner.temp }}/owned-sdk-lane/sdk-*/generation.json
+            ${{ runner.temp }}/owned-sdk-lane/sdk-*/reports/
+            ${{ runner.temp }}/owned-sdk-lane/sdk-*/cmake/**/*.log
+            ${{ runner.temp }}/owned-sdk-lane/sdk-*/cmake/**/CMakeConfigureLog.yaml
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 7
+
+  v2-readback:
+    name: Read back original compiler and SDK owners
+    if: inputs.mode == 'qualify-v2-full'
+    needs: [v2-prepare, v2-runtimes, v2-build, v2-sdk]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+      attestations: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: diagnostic-v2-native-runtime-linux-x86_64
+          path: ${{ runner.temp }}/diagnostic-runtime
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: diagnostic-v2-inputs
+          path: ${{ runner.temp }}/diagnostic-inputs
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: metaneutrons/aros-tools
+          ref: ${{ needs.v2-prepare.outputs.tools_commit }}
+          persist-credentials: false
+          path: dependencies/aros-tools-fixtures
+      - name: Authenticate the complete SDK owner matrix
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_TOOLS: ${{ needs.v2-prepare.outputs.tools_commit }}
+          CURRENT_JOB: Read back original compiler and SDK owners
+        run: |
+          set -euo pipefail
+          runtime="$RUNNER_TEMP/diagnostic-runtime"
+          (cd "$runtime" && shasum -a 256 -c SHA256SUMS)
+          chmod +x "$runtime"/bin/*
+          python3 -B - <<'PY'
+          import importlib.util
+          import os
+          from pathlib import Path
+          spec = importlib.util.spec_from_file_location('origin', 'scripts/toolchain/artifact-origin.py')
+          origin = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(origin)
+          root = Path(os.environ['RUNNER_TEMP']).resolve() / 'sdk-owner-context'
+          root.mkdir(mode=0o700)
+          with (root / 'context.json').open('xb') as handle:
+              handle.write(origin.canonical(origin.context_from_environment('.github/workflows/toolchain-release.yml')))
+          PY
+          context="$RUNNER_TEMP/sdk-owner-context/context.json"
+          context_sha=$(shasum -a 256 "$context" | awk '{print $1}')
+          runtime_sha=$(shasum -a 256 "$runtime/bin/aros" | awk '{print $1}')
+          inputs_sha=$(shasum -a 256 "$RUNNER_TEMP/diagnostic-inputs/toolchain-release-inputs-v2.json" | awk '{print $1}')
+          bash scripts/toolchain/collect-compiler-owners-v2.sh \
+            --aros "$runtime/bin/aros" --aros-sha256 "$runtime_sha" \
+            --inputs-dir "$RUNNER_TEMP/diagnostic-inputs" --inputs-sha256 "$inputs_sha" \
+            --producer-commit "$GITHUB_SHA" --tools-commit "$EXPECTED_TOOLS" \
+            --source-context "$context" --source-context-sha256 "$context_sha" \
+            --source-workflow .github/workflows/toolchain-release.yml --source-ref "$GITHUB_REF" \
+            --workflow .github/workflows/toolchain-release.yml --job-name "$CURRENT_JOB" --same-attempt \
+            --release-id "toolchain-dev-${GITHUB_SHA:0:12}" \
+            --forbidden-prefix "$GITHUB_WORKSPACE" --forbidden-prefix "$RUNNER_TEMP" \
+            --root "$RUNNER_TEMP/complete-compiler-readback"
+          bash scripts/toolchain/collect-sdk-owners-v2.sh \
+            --aros "$runtime/bin/aros" --aros-sha256 "$runtime_sha" \
+            --inputs-dir "$RUNNER_TEMP/diagnostic-inputs" --inputs-sha256 "$inputs_sha" \
+            --producer-commit "$GITHUB_SHA" --tools-commit "$EXPECTED_TOOLS" \
+            --source-context "$context" --source-context-sha256 "$context_sha" \
+            --source-workflow .github/workflows/toolchain-release.yml --source-ref "$GITHUB_REF" \
+            --workflow .github/workflows/toolchain-release.yml --job-name "$CURRENT_JOB" --same-attempt \
+            --root "$RUNNER_TEMP/complete-sdk-readback"
+          plan="$RUNNER_TEMP/sdk-index-native-plan.json"
+          package_inputs="$RUNNER_TEMP/sdk-package-inputs.json"
+          test ! -e "$plan" && test ! -L "$plan"
+          test ! -e "$package_inputs" && test ! -L "$package_inputs"
+          set -C
+          "$runtime/bin/aros" toolchain producer release-plan \
+            --directory "$RUNNER_TEMP/diagnostic-inputs" --inputs-sha256 "$inputs_sha" \
+            --format json > "$plan"
+          plan_sha=$(shasum -a 256 "$plan" | awk '{print $1}')
+          fragment="$RUNNER_TEMP/complete-sdk-readback/selection-fragment.json"
+          fragment_sha=$(shasum -a 256 "$fragment" | awk '{print $1}')
+          python3 -B scripts/toolchain/select-sdk-package-inputs-v2.py \
+            --plan "$plan" --plan-sha256 "$plan_sha" \
+            --inputs-dir "$RUNNER_TEMP/diagnostic-inputs" --inputs-sha256 "$inputs_sha" \
+            --producer-commit "$GITHUB_SHA" --tools-commit "$EXPECTED_TOOLS" \
+            --fragment "$fragment" --fragment-sha256 "$fragment_sha" \
+            --owner-root "$RUNNER_TEMP/complete-sdk-readback" > "$package_inputs"
+          required_paths="$RUNNER_TEMP/compiler-candidate-required-paths.json"
+          candidate_summary="$RUNNER_TEMP/release-candidate-summary.json"
+          test ! -e "$required_paths" && test ! -L "$required_paths"
+          test ! -e "$candidate_summary" && test ! -L "$candidate_summary"
+          policy="$GITHUB_WORKSPACE/toolchains/compiler-required-payload-v1.json"
+          policy_sha=$(shasum -a 256 "$policy" | awk '{print $1}')
+          python3 -B scripts/toolchain/required-compiler-payload-v2.py \
+            --policy "$policy" --policy-sha256 "$policy_sha" \
+            --plan "$plan" --plan-sha256 "$plan_sha" \
+            --inputs-sha256 "$inputs_sha" --producer-commit "$GITHUB_SHA" \
+            --tools-commit "$EXPECTED_TOOLS" > "$required_paths"
+          required_paths_sha=$(shasum -a 256 "$required_paths" | awk '{print $1}')
+          compiler_fragment="$RUNNER_TEMP/complete-compiler-readback/selection-fragment.json"
+          compiler_fragment_sha=$(shasum -a 256 "$compiler_fragment" | awk '{print $1}')
+          support="$GITHUB_WORKSPACE/dependencies/aros-tools-fixtures/crates/aros-common/tests/fixtures"
+          manifest_schema_sha=$(shasum -a 256 "$support/toolchain-manifest-v2.schema.json" | awk '{print $1}')
+          tree_fixture_sha=$(shasum -a 256 "$support/tree-digest-v1.fixture.json" | awk '{print $1}')
+          python3 -B scripts/toolchain/assemble-release-candidate-v2.py \
+            --aros "$runtime/bin/aros" --aros-sha256 "$runtime_sha" \
+            --plan "$plan" --plan-sha256 "$plan_sha" \
+            --inputs-dir "$RUNNER_TEMP/diagnostic-inputs" --inputs-sha256 "$inputs_sha" \
+            --producer-commit "$GITHUB_SHA" --tools-commit "$EXPECTED_TOOLS" \
+            --compiler-fragment "$compiler_fragment" --compiler-fragment-sha256 "$compiler_fragment_sha" \
+            --compiler-owner-root "$RUNNER_TEMP/complete-compiler-readback" \
+            --sdk-fragment "$fragment" --sdk-fragment-sha256 "$fragment_sha" \
+            --sdk-owner-root "$RUNNER_TEMP/complete-sdk-readback" \
+            --required-paths "$required_paths" --required-paths-sha256 "$required_paths_sha" \
+            --support-dir "$support" --manifest-schema-sha256 "$manifest_schema_sha" \
+            --tree-fixture-sha256 "$tree_fixture_sha" \
+            --release-id "toolchain-dev-${GITHUB_SHA:0:12}" \
+            --base-url "https://github.com/$GITHUB_REPOSITORY/releases/download/toolchain-dev-${GITHUB_SHA:0:12}" \
+            --forbidden-prefix "$GITHUB_WORKSPACE" --forbidden-prefix "$RUNNER_TEMP" \
+            --root "$RUNNER_TEMP/release-candidate" > "$candidate_summary"
+          compiler_lanes="$RUNNER_TEMP/release-candidate/compiler-stage/compiler-index-lanes.json"
+          compiler_evidence="$RUNNER_TEMP/release-candidate/compiler-stage/compiler-evidence-fragment.json"
+          candidate_index="$RUNNER_TEMP/release-candidate/release/toolchain-index-v2.json"
+          evidence_selection="$RUNNER_TEMP/native-release-evidence-selection.json"
+          test ! -e "$evidence_selection" && test ! -L "$evidence_selection"
+          compiler_lanes_sha=$(shasum -a 256 "$compiler_lanes" | awk '{print $1}')
+          compiler_evidence_sha=$(shasum -a 256 "$compiler_evidence" | awk '{print $1}')
+          candidate_index_sha=$(shasum -a 256 "$candidate_index" | awk '{print $1}')
+          python3 -B scripts/toolchain/select-native-release-evidence-v2.py \
+            --plan "$plan" --plan-sha256 "$plan_sha" \
+            --inputs-dir "$RUNNER_TEMP/diagnostic-inputs" --inputs-sha256 "$inputs_sha" \
+            --producer-commit "$GITHUB_SHA" --tools-commit "$EXPECTED_TOOLS" \
+            --compiler-lanes "$compiler_lanes" --compiler-lanes-sha256 "$compiler_lanes_sha" \
+            --compiler-evidence "$compiler_evidence" --compiler-evidence-sha256 "$compiler_evidence_sha" \
+            --sdk-fragment "$fragment" --sdk-fragment-sha256 "$fragment_sha" \
+            --sdk-owner-root "$RUNNER_TEMP/complete-sdk-readback" \
+            --index "$candidate_index" --index-sha256 "$candidate_index_sha" > "$evidence_selection"
+      - name: Retain diagnostic selection metadata only
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: diagnostic-v2-sdk-owner-selection
+          path: |
+            ${{ runner.temp }}/sdk-owner-context/
+            ${{ runner.temp }}/sdk-index-native-plan.json
+            ${{ runner.temp }}/sdk-package-inputs.json
+            ${{ runner.temp }}/compiler-candidate-required-paths.json
+            ${{ runner.temp }}/release-candidate-summary.json
+            ${{ runner.temp }}/native-release-evidence-selection.json
+            ${{ runner.temp }}/release-candidate/lane-inputs.json
+            ${{ runner.temp }}/release-candidate/subject-manifest.json
+            ${{ runner.temp }}/release-candidate/release/toolchain-index-v2.json
+            ${{ runner.temp }}/release-candidate/compiler-stage/compiler-index-lanes.json
+            ${{ runner.temp }}/release-candidate/compiler-stage/compiler-evidence-fragment.json
+            ${{ runner.temp }}/release-candidate/compiler-stage/reports/
+            ${{ runner.temp }}/release-candidate/compiler-stage/native/
+            ${{ runner.temp }}/release-candidate/sdk-stage/native/
+            ${{ runner.temp }}/release-candidate/native/
+            ${{ runner.temp }}/complete-compiler-readback/matrix.json
+            ${{ runner.temp }}/complete-compiler-readback/selection-fragment.json
+            ${{ runner.temp }}/complete-compiler-readback/owners/*/selection.json
+            ${{ runner.temp }}/complete-compiler-readback/owners/*/readback/observation.json
+            ${{ runner.temp }}/complete-compiler-readback/owners/*/readback/origin-verification.log
+            ${{ runner.temp }}/complete-sdk-readback/matrix.json
+            ${{ runner.temp }}/complete-sdk-readback/selection-fragment.json
+            ${{ runner.temp }}/complete-sdk-readback/owners/*/selection.json
+            ${{ runner.temp }}/complete-sdk-readback/owners/*/readback/readback.json
+            ${{ runner.temp }}/complete-sdk-readback/owners/*/readback/origin-verification.log
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 7
+
+  v2-qualify:
+    name: Compiler A/B and SDK (${{ matrix.group_id }}, ${{ matrix.host }}, ${{ matrix.profile }})
+    if: inputs.mode == 'qualify-v2'
+    needs: [v2-prepare, v2-sources, v2-runtimes]
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix: ${{ fromJSON(needs.v2-prepare.outputs.matrix) }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 360
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: ./.github/actions/checkout-pinned-recursive-source
+        with:
+          repository: metaneutrons/AROS-NX
+          ref: ${{ needs.v2-prepare.outputs.source_commit }}
+          fetch-depth: 0
+          path: dependencies/aros
+      - uses: ./.github/actions/checkout-pinned-recursive-source
+        with:
+          repository: metaneutrons/AROS-NX
+          ref: ${{ needs.v2-prepare.outputs.source_commit }}
+          fetch-depth: 0
+          path: dependencies/upstream-aros
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: metaneutrons/aros-tools
+          ref: ${{ needs.v2-prepare.outputs.tools_commit }}
+          fetch-depth: 0
+          persist-credentials: false
+          path: dependencies/aros-tools
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: diagnostic-v2-native-runtime-${{ matrix.host }}
+          path: ${{ runner.temp }}/diagnostic-runtime
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: diagnostic-v2-inputs
+          path: ${{ runner.temp }}/diagnostic-inputs
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: diagnostic-v2-cache
+          path: ${{ runner.temp }}/diagnostic-cache-input
+      - uses: ./.github/actions/disable-google-chrome-apt-source
+        if: runner.os == 'Linux'
+      - name: Install compiler and SDK consumer prerequisites
+        run: bash dependencies/aros/scripts/ci/install-build-prerequisites.sh
+      - id: rust
+        uses: ./.github/actions/select-native-rust-toolchain
+        with:
+          producer-dir: ${{ github.workspace }}
+      - id: qualify
+        name: Execute fresh native compiler A/B and source-bound SDK qualification
+        env:
+          SELECTED_GROUP: ${{ matrix.group_id }}
+          SELECTED_PRESET: ${{ matrix.profile }}
+          SELECTED_HOST: ${{ matrix.host }}
+          CACHE_ARCHIVE_SHA256: ${{ needs.v2-sources.outputs.cache_archive_sha256 }}
+        run: |
+          set -euo pipefail
+          runtime="$RUNNER_TEMP/diagnostic-runtime"
+          (cd "$runtime" && shasum -a 256 -c SHA256SUMS)
+          chmod +x "$runtime"/bin/*
+          producer="$RUNNER_TEMP/diagnostic-producer"
+          git worktree add --detach "$producer" "$GITHUB_SHA"
+          runtime_sha=$(shasum -a 256 "$runtime/bin/aros" | awk '{print $1}')
+          python3 -B scripts/toolchain/cache-archive-transport.py \
+            --archive "$RUNNER_TEMP/diagnostic-cache-input/diagnostic-cache.tar.gz" \
+            --archive-sha256 "$CACHE_ARCHIVE_SHA256" --output-dir "$RUNNER_TEMP/diagnostic-cache"
+          "$runtime/bin/aros" cache cargo verify --producer-dir "$producer" \
+            --tools-dir "$GITHUB_WORKSPACE/dependencies/aros-tools" --dir "$RUNNER_TEMP/diagnostic-cache" \
+            --cargo "${{ steps.rust.outputs.cargo }}"
+          bash scripts/toolchain/qualify-compiler-sdk-lane-v2.sh \
+            --aros "$runtime/bin/aros" --runtime-sha256 "$runtime_sha" \
+            --inputs-dir "$RUNNER_TEMP/diagnostic-inputs" \
+            --selection "$producer/toolchains/compiler-sdk-ci-selection-v2.json" \
+            --source-dir "$GITHUB_WORKSPACE/dependencies/aros" --producer-dir "$producer" \
+            --tools-dir "$GITHUB_WORKSPACE/dependencies/aros-tools" --cache-dir "$RUNNER_TEMP/diagnostic-cache" \
+            --upstream-source-dir "$GITHUB_WORKSPACE/dependencies/upstream-aros" \
+            --group "$SELECTED_GROUP" --preset "$SELECTED_PRESET" --host "$SELECTED_HOST" \
+            --root "$RUNNER_TEMP/diagnostic-lane" --jobs 3 --timeout-seconds 20000
+          sdk_ids=$(jq -cse '[.[].id] | sort | if length > 0 and . == unique then . else error("invalid SDK lane selection") end' \
+            "$RUNNER_TEMP/diagnostic-lane/sdk-selections.jsonl")
+          printf 'sdk-ids=%s\n' "$sdk_ids" >> "$GITHUB_OUTPUT"
+      - id: sdk-origin
+        name: Retain successful SDK payloads with original owning-job provenance
+        uses: ./.github/actions/retain-sdk-owner-payload-v2
+        with:
+          operation-root: ${{ runner.temp }}/diagnostic-lane
+          sdk-ids: ${{ steps.qualify.outputs.sdk-ids }}
+          group: ${{ matrix.group_id }}
+          preset: ${{ matrix.profile }}
+          host: ${{ matrix.host }}
+          root: ${{ runner.temp }}/diagnostic-sdk-origin
+          workflow: .github/workflows/toolchain-release.yml
+          job-name: Compiler A/B and SDK (${{ matrix.group_id }}, ${{ matrix.host }}, ${{ matrix.profile }})
+      - name: Retain diagnostic results and failure logs; never release assets
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: diagnostic-v2-${{ matrix.group_id }}-${{ matrix.host }}-${{ matrix.profile }}
+          path: |
+            ${{ runner.temp }}/diagnostic-lane/*.json
+            ${{ runner.temp }}/diagnostic-lane/compiler-*/payload/
+            ${{ runner.temp }}/diagnostic-lane/compiler-*/work/native-lifecycle/logs/
+            ${{ runner.temp }}/diagnostic-lane/compiler-*/work/native-lifecycle/receipts/
+            ${{ runner.temp }}/diagnostic-lane/compiler-*/work/native-lifecycle/verified-source-usage.log
+            ${{ runner.temp }}/diagnostic-lane/sdk-*/package/
+            ${{ runner.temp }}/diagnostic-lane/sdk-*/reports/
+            ${{ runner.temp }}/diagnostic-lane/sdk-*/local-evidence/
+            ${{ runner.temp }}/diagnostic-lane/sdk-*/result.json
+            ${{ runner.temp }}/diagnostic-lane/sdk-*/generation.json
+            ${{ runner.temp }}/diagnostic-lane/sdk-*/cmake/**/*.log
+            ${{ runner.temp }}/diagnostic-lane/sdk-*/cmake/**/CMakeConfigureLog.yaml
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 7
+
   plan:
-    if: github.event_name != 'workflow_dispatch' || inputs.mode != 'recover'
+    if: github.event_name != 'workflow_dispatch' || (inputs.mode != 'recover' && inputs.mode != 'qualify-v2' && inputs.mode != 'qualify-v2-full')
     runs-on: ubuntu-24.04
     outputs:
       host_matrix: ${{ steps.matrix.outputs.host_matrix }}
@@ -64,6 +902,11 @@ jobs:
       release_id: ${{ steps.matrix.outputs.release_id }}
       prerelease: ${{ steps.release_tag.outputs.prerelease || 'false' }}
     steps:
+      - name: Reject legacy publication during the V2 compiler and SDK migration
+        if: github.event_name == 'push'
+        run: |
+          echo 'Compiler and SDK V2 release admission is not qualified. Use the non-publishing qualify-v2 dispatch; no tag publication is permitted.' >&2
+          exit 1
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0

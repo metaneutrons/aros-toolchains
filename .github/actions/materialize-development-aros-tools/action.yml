@@ -1,0 +1,56 @@
+name: Materialize diagnostic aros-tools
+description: Build an exact development checkout for non-publishing supported native-host qualification only; never a released runtime.
+inputs:
+  source-dir:
+    description: Clean exact tools checkout
+    required: true
+  commit:
+    description: Independently selected exact tools commit
+    required: true
+  destination:
+    description: Absent diagnostic runtime directory
+    required: true
+outputs:
+  root:
+    description: Development-only runtime root
+    value: ${{ steps.build.outputs.root }}
+runs:
+  using: composite
+  steps:
+    - id: build
+      shell: bash
+      env:
+        TOOLS_SOURCE: ${{ inputs.source-dir }}
+        TOOLS_COMMIT: ${{ inputs.commit }}
+        RUNTIME_ROOT: ${{ inputs.destination }}
+        CARGO_INCREMENTAL: '0'
+      run: |
+        set -euo pipefail
+        [[ "${GITHUB_EVENT_NAME:-}" == workflow_dispatch ]]
+        case "${RUNNER_OS:-}:${RUNNER_ARCH:-}" in
+          Linux:X64|Linux:ARM64|macOS:ARM64) ;;
+          *) exit 1 ;;
+        esac
+        [[ "$TOOLS_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+        test "$(git -C "$TOOLS_SOURCE" rev-parse HEAD)" = "$TOOLS_COMMIT"
+        test -z "$(git -C "$TOOLS_SOURCE" status --porcelain)"
+        selected_channel=$(sed -nE 's/^channel = "([0-9]+\.[0-9]+\.[0-9]+)"$/\1/p' "$TOOLS_SOURCE/rust-toolchain.toml")
+        [[ "$selected_channel" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+        [[ "$(cargo --version)" == "cargo $selected_channel "* ]]
+        [[ "$(rustc --version)" == "rustc $selected_channel "* ]]
+        [[ "$RUNTIME_ROOT" == /* && ! -e "$RUNTIME_ROOT" && ! -L "$RUNTIME_ROOT" ]]
+        export CARGO_TARGET_DIR="$RUNNER_TEMP/diagnostic-tools-target"
+        cargo build --manifest-path "$TOOLS_SOURCE/Cargo.toml" --locked --release --workspace --bins
+        mkdir -p "$RUNTIME_ROOT/bin"
+        cargo metadata --manifest-path "$TOOLS_SOURCE/Cargo.toml" --locked --no-deps --format-version 1 |
+          jq -er '.packages[].targets[] | select(.kind == ["bin"]) | .name' > "$RUNNER_TEMP/diagnostic-bin-names"
+        while IFS= read -r name; do
+          [[ "$name" =~ ^[A-Za-z0-9_-]+$ ]]
+          test -f "$CARGO_TARGET_DIR/release/$name" && test ! -L "$CARGO_TARGET_DIR/release/$name"
+          install -m 0755 "$CARGO_TARGET_DIR/release/$name" "$RUNTIME_ROOT/bin/$name"
+        done < "$RUNNER_TEMP/diagnostic-bin-names"
+        test -x "$RUNTIME_ROOT/bin/aros"
+        (cd "$RUNTIME_ROOT" && shasum -a 256 bin/* > SHA256SUMS)
+        printf 'development-only tools commit: %s\n' "$TOOLS_COMMIT" > "$RUNTIME_ROOT/DEVELOPMENT_RUNTIME.txt"
+        test -z "$(git -C "$TOOLS_SOURCE" status --porcelain)"
+        printf 'root=%s\n' "$RUNTIME_ROOT" >> "$GITHUB_OUTPUT"

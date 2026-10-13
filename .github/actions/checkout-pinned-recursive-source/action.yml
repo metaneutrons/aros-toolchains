@@ -25,6 +25,7 @@ runs:
         repository: ${{ inputs.repository }}
         ref: ${{ inputs.ref }}
         fetch-depth: ${{ inputs.fetch-depth }}
+        persist-credentials: false
         submodules: false
         path: ${{ inputs.path }}
     - name: Initialize recursive submodules with bounded network retries

@@ -15,6 +15,7 @@ done
 python3 - "$source_root/.github/workflows/toolchain-release.yml" <<'PY'
 from pathlib import Path
 import json
+import hashlib
 import re
 import sys
 import tomllib
@@ -22,6 +23,13 @@ import tomllib
 workflow_path = Path(sys.argv[1])
 source_root = workflow_path.parents[2]
 workflow = workflow_path.read_text(encoding="utf-8")
+diagnostic_workflow = workflow
+# The retained V1 graph remains separately audited, but cannot publish during
+# migration. Development-only V2 jobs have their own closed policy probes.
+workflow = re.sub(
+    r"^  v2-(?:prepare|sources|runtimes|qualify|build|sdk|readback):\n.*?(?=^  [a-zA-Z0-9_-]+:|\Z)",
+    "", workflow, flags=re.MULTILINE | re.DOTALL,
+)
 
 
 def fail(message: str) -> None:
@@ -38,8 +46,23 @@ executor_record = tomllib.loads(executor.read_text(encoding="utf-8"))
 
 
 def require_runtime_binding(declaration: dict, runtime: dict) -> None:
-    if declaration.get("tools_commit") != runtime.get("source_commit"):
-        fail("native executor tools commit must match the released runtime source commit")
+    if declaration.get("schema_version") == 1:
+        expected = runtime.get("source_commit")
+    elif declaration.get("schema_version") == 2:
+        selection = json.loads((source_root / "toolchains/compiler-sdk-ci-selection-v2.json").read_text())
+        expected = selection.get("tools_commit")
+        if "Reject legacy publication during the V2 compiler and SDK migration" not in diagnostic_workflow:
+            fail("development-only native executor must block legacy tag publication")
+        if declaration.get("groups") is None:
+            fail("multi-family native executor requires committed input groups")
+        for group in declaration["groups"]:
+            for field in ("source_lock", "profiles"):
+                if hashlib.sha256((source_root / group[field]).read_bytes()).hexdigest() != group[field + "_sha256"]:
+                    fail("multi-family native executor document digest differs from its selected input")
+    else:
+        fail("native executor uses an unsupported selection schema")
+    if declaration.get("tools_commit") != expected:
+        fail("native executor tools commit must match its selected runtime source commit")
 
 
 require_runtime_binding(executor_record, runtime_lock)
@@ -48,7 +71,7 @@ bad_executor["tools_commit"] = "0" * 40
 try:
     require_runtime_binding(bad_executor, runtime_lock)
 except SystemExit as error:
-    if str(error) != "native executor tools commit must match the released runtime source commit":
+    if str(error) != "native executor tools commit must match its selected runtime source commit":
         raise
 else:
     fail("native executor runtime binding accepted a mismatched tools commit")
@@ -405,9 +428,50 @@ provenance_verifier="$source_root/scripts/toolchain/verify-provenance-attestatio
 [[ -f "$provenance_verifier" && ! -L "$provenance_verifier" ]]
 bash -n "$provenance_verifier"
 bash "$source_root/scripts/toolchain/tests/test-provenance-run-attempt.sh"
+bash "$source_root/scripts/toolchain/tests/test-provenance-subject-manifest.sh"
 bash "$source_root/scripts/toolchain/tests/test-workflow-job-attempt.sh"
 python3 -B "$source_root/scripts/toolchain/tests/test-artifact-origin.py"
+python3 -B "$source_root/scripts/toolchain/tests/test-origin-retention-workflow.py"
 python3 -B "$source_root/scripts/toolchain/tests/test-artifact-origin-source.py"
+python3 -B "$source_root/scripts/toolchain/tests/test-release-matrix-v2.py"
+python3 -B "$source_root/scripts/toolchain/tests/test-required-compiler-payload-v2.py"
+python3 -B "$source_root/scripts/toolchain/tests/test-compiler-required-payload-policy.py"
+python3 -B "$source_root/scripts/toolchain/tests/test-prepare-compiler-sdk-inputs-v2.py"
+python3 -B "$source_root/scripts/toolchain/tests/test-compiler-sdk-workflow-v2.py"
+python3 -B "$source_root/scripts/toolchain/tests/test-qualify-owned-compiler-lane-v2.py"
+python3 -B "$source_root/scripts/toolchain/tests/test-retain-sdk-config-logs.py"
+python3 -B "$source_root/scripts/toolchain/tests/test-read-native-owner-v2.py"
+bash -n "$source_root/scripts/toolchain/read-native-owner-v2.sh"
+shellcheck "$source_root/scripts/toolchain/read-native-owner-v2.sh"
+python3 -B "$source_root/scripts/toolchain/tests/test-development-runtime-hosts.py"
+python3 -B "$source_root/scripts/toolchain/tests/test-select-owner-artifacts-v2.py"
+python3 -B "$source_root/scripts/toolchain/tests/test-sdk-owner-matrix-v2.py"
+python3 -B "$source_root/scripts/toolchain/tests/test-sdk-package-inputs-v2.py"
+python3 -B "$source_root/scripts/toolchain/tests/test-compiler-candidate-assembly-v2.py"
+python3 -B "$source_root/scripts/toolchain/tests/test-sdk-candidate-assembly-v2.py"
+python3 -B "$source_root/scripts/toolchain/tests/test-release-candidate-assembly-v2.py"
+python3 -B "$source_root/scripts/toolchain/tests/test-native-release-evidence-selection-v2.py"
+python3 -B "$source_root/scripts/toolchain/tests/test-compiler-owner-matrix-v2.py"
+python3 -B "$source_root/scripts/toolchain/tests/test-collect-compiler-owners-v2.py"
+bash -n "$source_root/scripts/toolchain/collect-compiler-owners-v2.sh"
+shellcheck "$source_root/scripts/toolchain/collect-compiler-owners-v2.sh"
+python3 -B "$source_root/scripts/toolchain/tests/test-collect-sdk-owners-v2.py"
+bash -n "$source_root/scripts/toolchain/collect-sdk-owners-v2.sh"
+shellcheck "$source_root/scripts/toolchain/collect-sdk-owners-v2.sh"
+python3 -B "$source_root/scripts/toolchain/tests/test-gcc-checksum-inputs.py"
+python3 -B "$source_root/scripts/toolchain/tests/test-gcc-checksum-caller.py"
+python3 -B "$source_root/scripts/toolchain/tests/test-sdk-owner-action-v2.py"
+python3 -B "$source_root/scripts/toolchain/tests/test-stage-sdk-owner-payload-v2.py"
+python3 -B "$source_root/scripts/toolchain/tests/test-sdk-owner-transport-v2.py"
+python3 -B "$source_root/scripts/toolchain/tests/test-read-sdk-owner-v2.py"
+bash -n "$source_root/scripts/toolchain/read-sdk-owner-v2.sh"
+shellcheck "$source_root/scripts/toolchain/read-sdk-owner-v2.sh"
+python3 -B "$source_root/scripts/toolchain/tests/test-cache-archive-transport.py"
+python3 -B "$source_root/scripts/toolchain/tests/test-build-lane-v2.py"
+python3 -B "$source_root/scripts/toolchain/tests/test-native-lane-transport.py"
+python3 -B "$source_root/scripts/toolchain/tests/test-admit-lane-v2.py"
+bash -n "$source_root/scripts/toolchain/admit-lane-v2.sh"
+shellcheck "$source_root/scripts/toolchain/admit-lane-v2.sh"
 python3 - "$source_root/.github/workflows/toolchain-release.yml" \
     "$source_root/.github/workflows/toolchain-release-recovery.yml" \
     "$source_root/.github/workflows/toolchain-compatibility-replay.yml" <<'PY'
@@ -421,6 +485,10 @@ from tempfile import TemporaryDirectory
 release_path = Path(sys.argv[1])
 source_root = release_path.parents[2]
 workflow = release_path.read_text(encoding="utf-8")
+workflow = re.sub(
+    r"^  v2-(?:prepare|sources|runtimes|qualify|build|sdk|readback):\n.*?(?=^  [a-zA-Z0-9_-]+:|\Z)",
+    "", workflow, flags=re.MULTILINE | re.DOTALL,
+)
 recovery = Path(sys.argv[2]).read_text(encoding="utf-8")
 replay = Path(sys.argv[3]).read_text(encoding="utf-8")
 ports_lock = json.loads(
@@ -1137,7 +1205,9 @@ for required in (
         raise SystemExit(f"released runtime materializer lost required trust boundary: {required}")
 PY
 python3 -B "$script_dir/test-llvm-patch.py"
+python3 -B "$script_dir/test-compiler-unicode-closure.py"
 python3 -B "$script_dir/test-crosstools-release.py"
+python3 -B "$script_dir/test-gnu-rv32-inputs.py"
 python3 -B "$script_dir/test-aros-tools-runtime.py"
 temporary=$(mktemp -d "${TMPDIR:-/tmp}/aros-toolchain-producer-test.XXXXXX")
 case "$temporary" in

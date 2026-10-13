@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Mocked cross-run artifact recovery tests; no provider or signature is authenticated."""
+"""Mocked source-artifact recovery tests; no provider or signature is authenticated."""
 
 from __future__ import annotations
 
@@ -62,6 +62,8 @@ PAYLOAD_NAME = "toolchain-build"
 PROOF_NAME = "toolchain-origin-proof"
 LANE = {"role": "build", "group": "rv32", "host": "linux",
         "profile": "release", "copy": "a"}
+COMPATIBILITY_LANE = {"role": "compatibility", "group": "llvm",
+                      "host": "macos-aarch64", "profile": "arm-raspi", "copy": "none"}
 PAYLOAD_BYTES = b"synthetic executable payload\x00"
 BUNDLE_BYTES = b"synthetic signature bundle; mock only\n"
 
@@ -110,14 +112,14 @@ def caller_job() -> dict:
     }
 
 
-def source_job() -> dict:
+def source_job(ctx: dict = SOURCE) -> dict:
     return {
         "id": SOURCE_JOB_ID,
         "check_run_url": f"https://api.github.com/repos/{REPOSITORY}/check-runs/{SOURCE_CHECK_ID}",
         "name": SOURCE_JOB_NAME,
-        "head_sha": SOURCE["producer_commit"],
-        "run_id": SOURCE["run_id"],
-        "run_attempt": SOURCE["run_attempt"],
+        "head_sha": ctx["producer_commit"],
+        "run_id": ctx["run_id"],
+        "run_attempt": ctx["run_attempt"],
         "status": "completed",
         "conclusion": "success",
     }
@@ -139,8 +141,10 @@ def provider_artifact(ctx: dict, identity: dict) -> dict:
     }
 
 
-def fixture(root: Path) -> dict:
+def fixture(root: Path, *, same_attempt: bool = False, lane: dict | None = None) -> dict:
     root = root.resolve()
+    source_context = copy.deepcopy(CALLER if same_attempt else SOURCE)
+    selected_lane = copy.deepcopy(LANE if lane is None else lane)
     payload_zip = root / "payload.zip"
     payload_zip_bytes = write_zip(payload_zip, {"bin/tool": PAYLOAD_BYTES})
     payload = {
@@ -152,8 +156,8 @@ def fixture(root: Path) -> dict:
 
     origin_record = {
         "schema": origin.SCHEMA,
-        "context": copy.deepcopy(SOURCE),
-        "selection": dict(LANE),
+        "context": copy.deepcopy(source_context),
+        "selection": copy.deepcopy(selected_lane),
         "job": {"id": SOURCE_JOB_ID, "check_run_id": SOURCE_CHECK_ID,
                 "name": SOURCE_JOB_NAME},
         "artifact": dict(payload),
@@ -178,16 +182,16 @@ def fixture(root: Path) -> dict:
     }
     selection = {
         "schema": origin.SELECTION_SCHEMA,
-        "context": copy.deepcopy(SOURCE),
-        "selection": dict(LANE),
+        "context": copy.deepcopy(source_context),
+        "selection": copy.deepcopy(selected_lane),
         "job": {"id": SOURCE_JOB_ID, "name": SOURCE_JOB_NAME},
         "artifact": dict(payload),
         "proof": dict(proof),
     }
     selection_path = root / "source-selection.json"
     selection_path.write_bytes(origin.canonical(selection))
-    invocation = (f"https://github.com/{REPOSITORY}/actions/runs/{SOURCE['run_id']}"
-                  f"/attempts/{SOURCE['run_attempt']}")
+    invocation = (f"https://github.com/{REPOSITORY}/actions/runs/{source_context['run_id']}"
+                  f"/attempts/{source_context['run_attempt']}")
     verified = [{"verificationResult": {
         "signature": {"certificate": {"runInvocationURI": invocation}},
         "statement": {"subject": [{"name": origin_path.name,
@@ -195,7 +199,7 @@ def fixture(root: Path) -> dict:
     }}]
     return {
         "root": root,
-        "source": copy.deepcopy(SOURCE),
+        "source": source_context,
         "caller": copy.deepcopy(CALLER),
         "origin_record": origin_record,
         "origin_bytes": origin_bytes,
@@ -208,16 +212,26 @@ def fixture(root: Path) -> dict:
         "selection_path": selection_path,
         "payload": payload,
         "proof": proof,
-        "source_pages": [{"total_count": 1, "jobs": [source_job()]}],
+        "source_pages": [{"total_count": 1, "jobs": [source_job(source_context)]}],
         "caller_pages": [{"total_count": 1, "jobs": [caller_job()]}],
-        "proof_provider": provider_artifact(SOURCE, proof),
-        "payload_provider": provider_artifact(SOURCE, payload),
+        "proof_provider": provider_artifact(source_context, proof),
+        "payload_provider": provider_artifact(source_context, payload),
         "verified": verified,
         "args": argparse.Namespace(
             workflow=CALLER["workflow"], job_name=CALLER_JOB_NAME,
             source_selection=selection_path, origin=origin_path, bundle=bundle_path,
         ),
     }
+
+
+def same_attempt_pages(data: dict) -> list[dict]:
+    """A complete mocked shared job page for a same-attempt read."""
+    pages = [{"total_count": 2,
+              "jobs": [caller_job(), source_job(data["source"])]}]
+    data["caller_pages"] = pages
+    data["source_pages"] = pages
+    data["args"].same_attempt = True
+    return pages
 
 
 def environment_for(ctx: dict) -> dict[str, str]:
@@ -317,12 +331,16 @@ class CrossRunVerifySourceTests(unittest.TestCase):
                                                        (limit, limit))
                 stdout.write(downloads["proof"])
             elif selected_command[-1].endswith(f"/{PAYLOAD_ID}/zip"):
-                if preexec_fn is not None:
-                    raise AssertionError("payload download unexpectedly changed its process limit")
+                if preexec_fn is None:
+                    raise AssertionError("payload download omitted its child file-size cap")
+                with mock.patch.object(origin.resource, "setrlimit") as setrlimit:
+                    preexec_fn()
+                    limit = data["selection"]["artifact"]["size_in_bytes"] + 1
+                    setrlimit.assert_called_once_with(origin.resource.RLIMIT_FSIZE, (limit, limit))
                 stdout.write(downloads["payload"])
             else:
-                if preexec_fn is not None:
-                    raise AssertionError("unexpected child file-size cap on another download")
+                if preexec_fn is None:
+                    raise AssertionError("payload download omitted its child file-size cap")
                 # Dynamic selected identities still receive the relevant
                 # baseline synthetic bytes and must fail the independent check.
                 stdout.write(downloads["payload"])
@@ -333,6 +351,7 @@ class CrossRunVerifySourceTests(unittest.TestCase):
         verified_args: list[argparse.Namespace] = []
         materialized_dirs: list[tuple[Path, tuple[str, ...]]] = []
         materialized_bytes: list[tuple[bytes, bytes]] = []
+        captured_stdout = io.StringIO()
 
         def mocked_oidc(ctx: dict) -> int:
             oidc_calls.append(copy.deepcopy(ctx))
@@ -364,7 +383,7 @@ class CrossRunVerifySourceTests(unittest.TestCase):
                     mock.patch.object(origin, "gh_json", side_effect=mocked_gh_json), \
                     mock.patch.object(origin.subprocess, "run", side_effect=mocked_run), \
                     mock.patch.object(origin, "verify", side_effect=maybe_change_selection):
-                with redirect_stdout(io.StringIO()):
+                with redirect_stdout(captured_stdout):
                     origin.verify_source(data["args"], CALLER)
         finally:
             data["gh_calls"] = gh_calls
@@ -374,11 +393,16 @@ class CrossRunVerifySourceTests(unittest.TestCase):
             data["verified_args"] = verified_args
             data["materialized_dirs"] = materialized_dirs
             data["materialized_bytes"] = materialized_bytes
+            data["stdout"] = captured_stdout.getvalue()
         return gh_calls, download_calls
 
-    def run_rejected(self, data: dict, **options) -> None:
-        with self.assertRaises(origin.OriginError):
+    def run_rejected(self, data: dict, **options) -> origin.OriginError:
+        with self.assertRaises(origin.OriginError) as raised:
             self.run_source_verification(data, **options)
+        return raised.exception
+
+    def prepare_same_attempt(self, data: dict) -> list[dict]:
+        return same_attempt_pages(data)
 
     def test_positive_uses_source_for_signature_provider_and_downloads_caller_for_oidc_and_jobs(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -422,6 +446,76 @@ class CrossRunVerifySourceTests(unittest.TestCase):
                 ["gh", "api", f"repos/{REPOSITORY}/actions/artifacts/{PAYLOAD_ID}/zip"],
             ])
 
+    def test_positive_verifies_compatibility_none_owner_and_retains_exact_transport(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            data = fixture(Path(temporary), lane=COMPATIBILITY_LANE)
+            output = data["root"] / "verified-compatibility-transport"
+            data["args"].verified_output_dir = output
+            gh_calls, downloads = self.run_source_verification(data)
+
+            self.assertEqual(data["selection"]["selection"], COMPATIBILITY_LANE)
+            self.assertEqual(data["origin_record"]["selection"], COMPATIBILITY_LANE)
+            self.assertEqual(data["oidc_calls"], [CALLER])
+            verified_lane = {key: getattr(data["verified_args"][0], key)
+                             for key in ("role", "group", "host", "profile", "copy")}
+            self.assertEqual(verified_lane, COMPATIBILITY_LANE)
+            self.assertEqual(downloads, [
+                ["gh", "api", f"repos/{REPOSITORY}/actions/artifacts/{PROOF_ID}/zip"],
+                ["gh", "api", f"repos/{REPOSITORY}/actions/artifacts/{PAYLOAD_ID}/zip"],
+            ])
+            self.assertTrue(any(purpose == "origin signature authentication"
+                                for _, purpose in gh_calls))
+
+            expected = {
+                "payload.zip": data["payload_zip_bytes"],
+                "origin.json": data["origin_bytes"],
+                "origin.sigstore.json": data["bundle_bytes"],
+                "selection.json": data["selection_path"].read_bytes(),
+            }
+            self.assertEqual({path.name for path in output.iterdir()}, set(expected))
+            for name, raw in expected.items():
+                path = output / name
+                self.assertEqual(path.read_bytes(), raw)
+                self.assertEqual(stat.S_IMODE(path.stat().st_mode) & 0o077, 0)
+            self.assertFalse((output / "bin").exists())
+
+    def test_compatibility_none_rejects_role_copy_context_and_owner_substitutions(self) -> None:
+        cases = ("role", "copy", "context", "owner")
+        for case in cases:
+            with self.subTest(substitution=case), tempfile.TemporaryDirectory() as temporary:
+                data = fixture(Path(temporary), lane=COMPATIBILITY_LANE)
+                output = data["root"] / f"verified-{case}-rejection"
+                data["args"].verified_output_dir = output
+                selected = copy.deepcopy(data["selection"])
+                if case == "role":
+                    selected["selection"]["role"] = "diagnostic"
+                elif case == "copy":
+                    selected["selection"]["copy"] = "a"
+                elif case == "context":
+                    selected["context"]["producer_commit"] = "d" * 40
+                else:
+                    selected["job"]["id"] += 1
+                data["args"].source_selection.write_bytes(origin.canonical(selected))
+
+                failure = self.run_rejected(data)
+                self.assertFalse(output.exists())
+                self.assertNotIn(["gh", "api", f"repos/{REPOSITORY}/actions/artifacts/{PAYLOAD_ID}/zip"],
+                                 data["download_calls"])
+                if case == "copy":
+                    self.assertEqual(data["oidc_calls"], [])
+                    self.assertEqual(data["download_calls"], [])
+                elif case in ("context", "owner"):
+                    self.assertEqual(data["oidc_calls"], [CALLER])
+                    self.assertEqual(data["download_calls"], [])
+                    if case == "owner":
+                        self.assertIn("source job ID/name does not select one provider job",
+                                      str(failure))
+                else:
+                    self.assertEqual(data["oidc_calls"], [CALLER])
+                    self.assertEqual(data["download_calls"], [
+                        ["gh", "api", f"repos/{REPOSITORY}/actions/artifacts/{PROOF_ID}/zip"]
+                    ])
+
     def test_automatic_proof_download_materializes_only_fixed_files_and_cleans_private_temp(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             data = fixture(Path(temporary))
@@ -444,6 +538,176 @@ class CrossRunVerifySourceTests(unittest.TestCase):
             self.assertEqual(data["materialized_bytes"], [(
                 data["origin_bytes"], data["bundle_bytes"],
             )])
+
+    def test_verified_output_retains_only_exact_verified_transport_bytes(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            data = fixture(Path(temporary))
+            output = data["root"] / "verified-output"
+            data["args"].verified_output_dir = output
+            self.run_source_verification(data)
+
+            expected = {
+                "payload.zip": data["payload_zip_bytes"],
+                "origin.json": data["origin_bytes"],
+                "origin.sigstore.json": data["bundle_bytes"],
+                "selection.json": data["selection_path"].read_bytes(),
+            }
+            self.assertEqual({path.name for path in output.iterdir()}, set(expected))
+            self.assertTrue(stat.S_ISDIR(output.lstat().st_mode))
+            self.assertEqual(stat.S_IMODE(output.stat().st_mode) & 0o077, 0)
+            for name, raw in expected.items():
+                retained = output / name
+                self.assertEqual(retained.read_bytes(), raw)
+                self.assertTrue(stat.S_ISREG(retained.lstat().st_mode))
+                self.assertEqual(stat.S_IMODE(retained.stat().st_mode) & 0o077, 0)
+            # The ZIP is retained as transport bytes; its member is not unpacked.
+            self.assertFalse((output / "bin").exists())
+            with zipfile.ZipFile(output / "payload.zip") as archive:
+                self.assertEqual(archive.namelist(), ["bin/tool"])
+
+    def test_nonlocal_verified_output_keeps_selection_when_proof_member_is_larger(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            data = fixture(Path(temporary))
+            data["args"].origin = None
+            data["args"].bundle = None
+            initial_selection_size = data["selection_path"].stat().st_size
+            larger_bundle = origin.canonical({
+                "mock": "synthetic proof member " + "x" * (initial_selection_size + 256),
+            })
+            proof_bytes = proof_zip_bytes([
+                ("origin.json", data["origin_bytes"], None),
+                ("origin.sigstore.json", larger_bundle, None),
+            ])
+            self.rebind_proof(data, proof_bytes)
+            data["bundle_bytes"] = larger_bundle
+            selection_bytes = data["selection_path"].read_bytes()
+            self.assertGreater(len(larger_bundle), len(selection_bytes))
+            self.assertNotEqual(selection_bytes, data["origin_bytes"])
+            self.assertNotEqual(selection_bytes, larger_bundle)
+
+            output = data["root"] / "verified-output"
+            data["args"].verified_output_dir = output
+            self.run_source_verification(data)
+
+            self.assertEqual((output / "selection.json").read_bytes(), selection_bytes)
+            self.assertEqual((output / "origin.json").read_bytes(), data["origin_bytes"])
+            self.assertEqual((output / "origin.sigstore.json").read_bytes(), larger_bundle)
+
+    def test_verified_output_is_opt_in_and_default_leaves_no_retained_copy(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            data = fixture(Path(temporary))
+            output = data["root"] / "not-created-by-default"
+            self.assertFalse(hasattr(data["args"], "verified_output_dir"))
+            self.run_source_verification(data)
+            self.assertFalse(output.exists())
+
+    def test_verified_output_rejects_unsafe_targets_before_oidc_or_provider_access(self) -> None:
+        cases = ("relative", "existing", "linked-target", "linked-parent", "overlap")
+        for case in cases:
+            with self.subTest(target=case), tempfile.TemporaryDirectory() as temporary:
+                data = fixture(Path(temporary))
+                root = data["root"]
+                if case == "relative":
+                    output = Path("relative-retention-dir")
+                elif case == "existing":
+                    output = root / "existing"
+                    output.mkdir()
+                elif case == "linked-target":
+                    target = root / "target"
+                    target.mkdir()
+                    output = root / "linked-target"
+                    output.symlink_to(target, target_is_directory=True)
+                elif case == "linked-parent":
+                    target = root / "real-parent"
+                    target.mkdir()
+                    linked_parent = root / "linked-parent"
+                    linked_parent.symlink_to(target, target_is_directory=True)
+                    output = linked_parent / "retained"
+                else:
+                    output = data["selection_path"] / "retained"
+                data["args"].verified_output_dir = output
+                self.run_rejected(data)
+                self.assertEqual(data["oidc_calls"], [])
+                self.assertEqual(data["gh_calls"], [])
+                self.assertEqual(data["download_calls"], [])
+
+    def test_verified_output_is_absent_after_signature_failure_or_corrupt_payload(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            data = fixture(Path(temporary))
+            output = data["root"] / "signature-failure-output"
+            data["args"].verified_output_dir = output
+            data["verified"][0]["verificationResult"]["statement"]["subject"][0]["digest"]["sha256"] = "f" * 64
+            self.run_rejected(data)
+            self.assertFalse(output.exists())
+            self.assertEqual(data["download_calls"], [
+                ["gh", "api", f"repos/{REPOSITORY}/actions/artifacts/{PROOF_ID}/zip"]
+            ])
+
+        with tempfile.TemporaryDirectory() as temporary:
+            data = fixture(Path(temporary))
+            output = data["root"] / "corrupt-payload-output"
+            data["args"].verified_output_dir = output
+            self.run_rejected(data, download_overrides={
+                "payload": data["payload_zip_bytes"] + b"corrupt",
+            })
+            self.assertFalse(output.exists())
+            self.assertTrue(any(command[-1].endswith(f"/{PAYLOAD_ID}/zip")
+                                for command in data["download_calls"]))
+
+    def test_verified_output_rechecks_context_and_retained_bytes_then_cleans_owned_root(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            data = fixture(Path(temporary))
+            output = data["root"] / "context-drift-output"
+            data["args"].verified_output_dir = output
+            changed = copy.deepcopy(CALLER)
+            changed["producer_commit"] = "d" * 40
+            with mock.patch.object(origin, "context_from_environment",
+                                   side_effect=[CALLER, changed]):
+                self.run_rejected(data)
+            self.assertFalse(output.exists())
+            self.assertEqual(data["download_calls"], [
+                ["gh", "api", f"repos/{REPOSITORY}/actions/artifacts/{PROOF_ID}/zip"],
+                ["gh", "api", f"repos/{REPOSITORY}/actions/artifacts/{PAYLOAD_ID}/zip"],
+            ])
+
+        with tempfile.TemporaryDirectory() as temporary:
+            data = fixture(Path(temporary))
+            output = data["root"] / "byte-counterprobe-output"
+            data["args"].verified_output_dir = output
+            real_write = origin._write_retained_file
+
+            def mutate_after_write(root_fd, name, source, expected, limit, created):
+                real_write(root_fd, name, source, expected, limit, created)
+                if name == "payload.zip":
+                    with (output / name).open("ab") as handle:
+                        handle.write(b"x")
+
+            with mock.patch.object(origin, "_write_retained_file", side_effect=mutate_after_write):
+                self.run_rejected(data)
+            self.assertFalse(output.exists())
+
+        with tempfile.TemporaryDirectory() as temporary:
+            data = fixture(Path(temporary))
+            data["args"].origin = None
+            data["args"].bundle = None
+            output = data["root"] / "selection-counterprobe-output"
+            data["args"].verified_output_dir = output
+            real_write = origin._write_retained_file
+
+            def mutate_selection_after_write(root_fd, name, source, expected, limit, created):
+                real_write(root_fd, name, source, expected, limit, created)
+                if name == "selection.json":
+                    with (output / name).open("ab") as handle:
+                        handle.write(b"x")
+
+            with mock.patch.object(origin, "_write_retained_file",
+                                   side_effect=mutate_selection_after_write):
+                with self.assertRaisesRegex(
+                        origin.OriginError,
+                        "retained output differs from its verified identity"):
+                    self.run_source_verification(data)
+            self.assertFalse(output.exists())
+            self.assertEqual(data["stdout"], "")
 
     def test_rejects_incomplete_optional_local_pair_before_provider_access(self) -> None:
         for origin_path, bundle_path in ((None, "bundle"), ("origin", None)):
@@ -619,11 +883,192 @@ class CrossRunVerifySourceTests(unittest.TestCase):
 
     def test_rejects_source_attempt_equal_to_caller_attempt(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
-            data = fixture(Path(temporary))
-            data["selection"]["context"]["run_id"] = CALLER["run_id"]
-            data["selection"]["context"]["run_attempt"] = CALLER["run_attempt"]
+            data = fixture(Path(temporary), same_attempt=True)
+            self.run_rejected(data)
+            self.assertEqual(data["oidc_calls"], [])
+            self.assertEqual(data["download_calls"], [])
+
+    def test_explicit_same_attempt_accepts_exact_context_and_distinct_completed_job(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            data = fixture(Path(temporary), same_attempt=True)
+            pages = self.prepare_same_attempt(data)
+            gh_calls, downloads = self.run_source_verification(data)
+
+            self.assertEqual(data["oidc_calls"], [CALLER])
+            self.assertEqual(data["oidc_env"], [environment_for(CALLER)])
+            endpoints = [call[0][3] for call in gh_calls
+                         if call[0][:3] == ["api", "--paginate", "--slurp"]]
+            expected = (f"repos/{REPOSITORY}/actions/runs/{CALLER['run_id']}"
+                        f"/attempts/{CALLER['run_attempt']}/jobs?per_page=100")
+            self.assertEqual(endpoints, [expected, expected, expected])
+            self.assertEqual(pages[0]["total_count"], 2)
+            self.assertNotEqual(data["selection"]["job"]["id"], CALLER_JOB_ID)
+            self.assertEqual(downloads, [
+                ["gh", "api", f"repos/{REPOSITORY}/actions/artifacts/{PROOF_ID}/zip"],
+                ["gh", "api", f"repos/{REPOSITORY}/actions/artifacts/{PAYLOAD_ID}/zip"],
+            ])
+
+    def test_same_attempt_requires_owner_job_id_distinct_from_authenticated_reader(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            data = fixture(Path(temporary), same_attempt=True)
+            self.prepare_same_attempt(data)
+            data["selection"]["job"]["id"] = CALLER_JOB_ID
             data["args"].source_selection.write_bytes(origin.canonical(data["selection"]))
             self.run_rejected(data)
+
+            self.assertEqual(data["oidc_calls"], [CALLER])
+            self.assertEqual(data["download_calls"], [])
+            self.assertFalse(any(call[0][:1] == ["api"] and "/actions/artifacts/" in call[0][1]
+                                 for call in data["gh_calls"]))
+
+    def test_compatibility_none_same_attempt_retains_only_a_distinct_completed_owner(self) -> None:
+        for use_reader_as_owner in (False, True):
+            with self.subTest(reader_as_owner=use_reader_as_owner), \
+                    tempfile.TemporaryDirectory() as temporary:
+                data = fixture(Path(temporary), same_attempt=True, lane=COMPATIBILITY_LANE)
+                self.prepare_same_attempt(data)
+                output = data["root"] / "same-attempt-compatibility-transport"
+                data["args"].verified_output_dir = output
+                if use_reader_as_owner:
+                    data["selection"]["job"]["id"] = CALLER_JOB_ID
+                    data["selection"]["job"]["name"] = CALLER_JOB_NAME
+                    data["origin_record"]["job"] = {
+                        "id": CALLER_JOB_ID, "check_run_id": CALLER_CHECK_ID,
+                        "name": CALLER_JOB_NAME,
+                    }
+                    data["origin_bytes"] = origin.canonical(data["origin_record"])
+                    data["origin_path"].write_bytes(data["origin_bytes"])
+                    rebound = proof_zip_bytes([
+                        ("origin.json", data["origin_bytes"], None),
+                        ("origin.sigstore.json", data["bundle_bytes"], None),
+                    ])
+                    self.rebind_proof(data, rebound)
+                    failure = self.run_rejected(data)
+                    self.assertIn("same-attempt source owner must be a different job", str(failure))
+                    self.assertEqual(data["oidc_calls"], [CALLER])
+                    self.assertEqual(data["download_calls"], [])
+                    self.assertFalse(output.exists())
+                else:
+                    gh_calls, _ = self.run_source_verification(data)
+                    self.assertEqual(data["oidc_calls"], [CALLER])
+                    self.assertEqual(data["selection"]["context"], CALLER)
+                    self.assertNotEqual(data["selection"]["job"]["id"], CALLER_JOB_ID)
+                    expected_owner = source_job(data["source"])
+                    self.assertEqual(data["selection"]["job"], {
+                        "id": expected_owner["id"], "name": expected_owner["name"],
+                    })
+                    self.assertEqual(expected_owner["status"], "completed")
+                    self.assertEqual(expected_owner["conclusion"], "success")
+                    endpoint = (f"repos/{REPOSITORY}/actions/runs/{CALLER['run_id']}"
+                                f"/attempts/{CALLER['run_attempt']}/jobs?per_page=100")
+                    queries = [call[0][3] for call in gh_calls
+                               if call[0][:3] == ["api", "--paginate", "--slurp"]]
+                    self.assertEqual(queries, [endpoint, endpoint, endpoint])
+                    expected = {
+                        "payload.zip": data["payload_zip_bytes"],
+                        "origin.json": data["origin_bytes"],
+                        "origin.sigstore.json": data["bundle_bytes"],
+                        "selection.json": data["selection_path"].read_bytes(),
+                    }
+                    self.assertEqual({path.name for path in output.iterdir()}, set(expected))
+                    for name, raw in expected.items():
+                        self.assertEqual((output / name).read_bytes(), raw)
+
+    def test_same_attempt_rejects_every_changed_source_context_field_before_oidc(self) -> None:
+        mutations = {
+            "repository": lambda ctx: ctx.__setitem__("repository", "other/project"),
+            "repository_id": lambda ctx: ctx.__setitem__("repository_id", REPOSITORY_ID + 1),
+            "workflow": lambda ctx: ctx.__setitem__("workflow", ".github/workflows/other.yml"),
+            "commit": lambda ctx: ctx.__setitem__("producer_commit", "d" * 40),
+            "ref": lambda ctx: ctx.__setitem__("source_ref", "refs/heads/other"),
+            "run": lambda ctx: ctx.__setitem__("run_id", CALLER["run_id"] + 1),
+            "attempt": lambda ctx: ctx.__setitem__("run_attempt", CALLER["run_attempt"] + 1),
+        }
+        for field, mutate in mutations.items():
+            with self.subTest(field=field), tempfile.TemporaryDirectory() as temporary:
+                data = fixture(Path(temporary), same_attempt=True)
+                data["args"].same_attempt = True
+                mutate(data["selection"]["context"])
+                data["args"].source_selection.write_bytes(origin.canonical(data["selection"]))
+                self.run_rejected(data)
+                self.assertEqual(data["oidc_calls"], [])
+                self.assertEqual(data["download_calls"], [])
+
+    def test_same_attempt_rejects_incomplete_or_unsuccessful_source_job(self) -> None:
+        cases = (("in progress", "in_progress", None),
+                 ("queued", "queued", None),
+                 ("failed", "completed", "failure"))
+        for label, status, conclusion in cases:
+            with self.subTest(source_state=label), tempfile.TemporaryDirectory() as temporary:
+                data = fixture(Path(temporary), same_attempt=True)
+                pages = self.prepare_same_attempt(data)
+                pages[0]["jobs"][1]["status"] = status
+                pages[0]["jobs"][1]["conclusion"] = conclusion
+                self.run_rejected(data)
+                self.assertEqual(data["oidc_calls"], [CALLER])
+                self.assertEqual(data["download_calls"], [])
+
+        with tempfile.TemporaryDirectory() as temporary:
+            data = fixture(Path(temporary), same_attempt=True)
+            pages = self.prepare_same_attempt(data)
+            pages[0]["total_count"] = 3
+            self.run_rejected(data)
+            self.assertEqual(data["download_calls"], [])
+
+    def test_same_attempt_keeps_proof_payload_provider_and_signature_checks(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            data = fixture(Path(temporary), same_attempt=True)
+            self.prepare_same_attempt(data)
+            data["proof_provider"]["digest"] = "sha256:" + "f" * 64
+            self.run_rejected(data)
+            self.assertEqual(data["download_calls"], [])
+
+        with tempfile.TemporaryDirectory() as temporary:
+            data = fixture(Path(temporary), same_attempt=True)
+            self.prepare_same_attempt(data)
+            data["payload_provider"]["digest"] = "sha256:" + "f" * 64
+            self.run_rejected(data)
+            self.assertEqual(data["download_calls"], [
+                ["gh", "api", f"repos/{REPOSITORY}/actions/artifacts/{PROOF_ID}/zip"]
+            ])
+
+        with tempfile.TemporaryDirectory() as temporary:
+            data = fixture(Path(temporary), same_attempt=True)
+            self.prepare_same_attempt(data)
+            data["verified"][0]["verificationResult"]["statement"]["subject"][0]["digest"]["sha256"] = "f" * 64
+            self.run_rejected(data)
+            self.assertEqual(data["download_calls"], [
+                ["gh", "api", f"repos/{REPOSITORY}/actions/artifacts/{PROOF_ID}/zip"]
+            ])
+            self.assertFalse(any(command[-1].endswith(f"/{PAYLOAD_ID}/zip")
+                                 for command in data["download_calls"]))
+
+    def test_source_selection_requires_exact_boolean_same_attempt_option(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            data = fixture(Path(temporary), same_attempt=True)
+            for invalid in (None, 0, 1, "true"):
+                with self.subTest(value=invalid), self.assertRaises(origin.OriginError):
+                    origin.source_selection(data["selection"], CALLER, same_attempt=invalid)
+
+    def test_cli_optional_flags_parse_and_same_attempt_defaults_off(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            selection_path = Path(temporary) / "selection.json"
+            selection_path.write_bytes(b"{}")
+            output_path = Path(temporary) / "retained-output"
+            base = ["artifact-origin.py", "verify-source", "--workflow", CALLER["workflow"],
+                    "--job-name", CALLER_JOB_NAME, "--source-selection", str(selection_path),
+                    "--verified-output-dir", str(output_path)]
+            for flag, expected in (([], False), (["--same-attempt"], True)):
+                with self.subTest(same_attempt=expected):
+                    captured = []
+                    with mock.patch.dict(os.environ, environment_for(CALLER), clear=False), \
+                            mock.patch.object(sys, "argv", base + flag), \
+                            mock.patch.object(origin, "verify_source",
+                                              side_effect=lambda args, context: captured.append(args)):
+                        self.assertEqual(origin.main(), 0)
+                    self.assertEqual(len(captured), 1)
+                    self.assertIs(captured[0].same_attempt, expected)
+                    self.assertEqual(captured[0].verified_output_dir, output_path)
 
     def test_selects_source_job_by_id_and_rejects_a_signed_owner_with_another_id(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

@@ -42,10 +42,24 @@ jobs:
           repository: ${{ env.AROS_SOURCE_REPOSITORY }}
           ref: ${{ env.AROS_SOURCE_COMMIT }}
           path: aros-source
+      - name: Select exact V2 source contract
+        id: v2-source
+        working-directory: producer
+        run: |
+          set -euo pipefail
+          commit=$(jq -er '.source_commit | select(type == "string" and test("^[0-9a-f]{40}$"))' toolchains/compiler-sdk-ci-selection-v2.json)
+          printf 'commit=%s\n' "$commit" >> "$GITHUB_OUTPUT"
+      - name: Checkout exact compiler and SDK source contract
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: ${{ env.AROS_SOURCE_REPOSITORY }}
+          ref: ${{ steps.v2-source.outputs.commit }}
+          path: aros-v2-source
       - name: Run complete offline producer contract suite
         working-directory: producer
         env:
           AROS_TEST_SOURCE_ROOT: ${{ github.workspace }}/aros-source
+          AROS_TEST_V2_SOURCE_ROOT: ${{ github.workspace }}/aros-v2-source
         run: scripts/toolchain/tests/test-producer.sh
 
   artifact-origin-probe:
@@ -178,6 +192,101 @@ jobs:
           grep -Fx \
             'artifact origin verification failed: origin signature authentication failed; no retry or credential fallback' \
             "$RUNNER_TEMP/artifact-origin-counterprobe/rejection.log"
+
+  artifact-origin-same-attempt-verification:
+    name: Verify same-attempt artifact retention
+    needs: artifact-origin-probe
+    if: github.event_name == 'workflow_dispatch' && inputs.artifact_origin_probe
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+      attestations: read
+      id-token: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      PAYLOAD_ID: ${{ needs.artifact-origin-probe.outputs.payload-id }}
+      PROOF_ID: ${{ needs.artifact-origin-probe.outputs.proof-id }}
+    steps:
+      - name: Checkout exact non-publishing transport reader
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Select the completed owner and original uploads independently
+        run: |
+          set -euo pipefail
+          python3 -B - <<'PY'
+          import importlib.util
+          import os
+          from pathlib import Path
+          spec = importlib.util.spec_from_file_location('origin', 'scripts/toolchain/artifact-origin.py')
+          origin = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(origin)
+          context = origin.context_from_environment('.github/workflows/ci.yml')
+          root = Path(os.environ['RUNNER_TEMP']).resolve() / 'same-attempt-origin'
+          root.mkdir(mode=0o700)
+          with (root / 'source-context.json').open('xb') as handle:
+              handle.write(origin.canonical(context))
+          PY
+          root="$RUNNER_TEMP/same-attempt-origin"
+          context_sha=$(shasum -a 256 "$root/source-context.json" | awk '{print $1}')
+          python3 -B scripts/toolchain/select-owner-artifacts-v2.py \
+            --source-context "$root/source-context.json" --source-context-sha256 "$context_sha" \
+            --job-name 'Artifact origin probe' \
+            --payload-name "artifact-origin-payload-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" \
+            --proof-name "artifact-origin-proof-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" \
+            --role diagnostic --group probe --host linux-x86_64 --profile fixture --copy none \
+            > "$root/selection.tmp.json"
+          jq -e --argjson payload_id "$PAYLOAD_ID" --argjson proof_id "$PROOF_ID" \
+            '.artifact.id == $payload_id and .proof.id == $proof_id' \
+            "$root/selection.tmp.json" >/dev/null
+          test ! -e "$root/selection.json" && test ! -L "$root/selection.json"
+          mv "$root/selection.tmp.json" "$root/selection.json"
+      - name: Authenticate and retain raw transport without extraction
+        run: |
+          set -euo pipefail
+          python3 -B scripts/toolchain/artifact-origin.py verify-source \
+            --workflow .github/workflows/ci.yml --job-name 'Verify same-attempt artifact retention' \
+            --same-attempt --source-selection "$RUNNER_TEMP/same-attempt-origin/selection.json" \
+            --verified-output-dir "$RUNNER_TEMP/same-attempt-origin/verified"
+      - name: Check retained diagnostic bytes and reject changed ZIP bytes
+        run: |
+          set -euo pipefail
+          python3 -B - <<'PY'
+          import importlib.util
+          import os
+          from pathlib import Path
+          spec = importlib.util.spec_from_file_location('origin', 'scripts/toolchain/artifact-origin.py')
+          origin = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(origin)
+          root = Path(os.environ['RUNNER_TEMP']).resolve() / 'same-attempt-origin'
+          retained = root / 'verified'
+          origin.require({path.name for path in retained.iterdir()} ==
+              {'payload.zip', 'origin.json', 'origin.sigstore.json', 'selection.json'},
+              'retained transport inventory differs')
+          origin.require((root / 'selection.json').read_bytes() ==
+              (retained / 'selection.json').read_bytes(), 'retained selection differs')
+          selected = origin.parse_json((retained / 'selection.json').read_bytes())
+          record = origin.parse_json((retained / 'origin.json').read_bytes())
+          payload = selected['artifact']
+          origin.verify_zip(retained / 'payload.zip', record['files'],
+                            payload['sha256'], payload['size_in_bytes'])
+          # Alter only a new isolated diagnostic copy. Never touch the retained ZIP.
+          changed = bytearray((retained / 'payload.zip').read_bytes())
+          changed[0] ^= 1
+          corrupted = root / 'corrupted.zip'
+          with corrupted.open('xb') as handle:
+              handle.write(changed)
+          try:
+              origin.verify_zip(corrupted, record['files'], payload['sha256'], payload['size_in_bytes'])
+          except origin.OriginError as error:
+              origin.require(str(error) == 'downloaded artifact ZIP digest or size differs',
+                             'changed ZIP failed at the wrong boundary')
+              print('Changed retained ZIP copy rejected; transport only, not native admission.')
+          else:
+              raise SystemExit('changed retained ZIP unexpectedly passed')
+          PY
 
   artifact-origin-source-verification:
     name: Verify prior-run artifact origin

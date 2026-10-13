@@ -1,0 +1,156 @@
+name: Retain the original SDK owning-job payload
+description: Stage every explicitly selected SDK closure in one owner job and retain its separately signed original transport observation; no release admission.
+
+inputs:
+  operation-root:
+    description: Canonical completed lane root containing sdk-PRODUCT operation roots.
+    required: true
+  sdk-ids:
+    description: Sorted unique JSON array of all products bound to this compiler lane by the native release plan.
+    required: true
+  group:
+    description: Compiler group selected by the native release plan.
+    required: true
+  preset:
+    description: Compiler profile selected by the native release plan.
+    required: true
+  host:
+    description: Native host selected by the native release plan.
+    required: true
+  root:
+    description: Absent canonical transport root outside the SDK operation.
+    required: true
+  workflow:
+    description: Independently selected executing workflow path.
+    required: true
+  job-name:
+    description: Exact executing provider job name selected by the caller.
+    required: true
+  owner-role:
+    description: Independently selected transport role (diagnostic or sdk); neither grants release authority.
+    required: false
+    default: diagnostic
+
+outputs:
+  payload-id:
+    description: Original SDK payload numeric artifact ID.
+    value: ${{ steps.payload.outputs.artifact-id }}
+  payload-sha256:
+    description: Original SDK upload ZIP digest.
+    value: ${{ steps.payload.outputs.artifact-digest }}
+  proof-id:
+    description: Separately uploaded original origin record and signature.
+    value: ${{ steps.proof.outputs.artifact-id }}
+  proof-sha256:
+    description: Separate proof ZIP digest.
+    value: ${{ steps.proof.outputs.artifact-digest }}
+
+runs:
+  using: composite
+  steps:
+    - id: stage
+      name: Stage the closed SDK bytes without reopening original build roots
+      shell: bash
+      env:
+        SDK_OPERATION_ROOT: ${{ inputs.operation-root }}
+        SDK_IDS: ${{ inputs.sdk-ids }}
+        SDK_GROUP: ${{ inputs.group }}
+        SDK_PRESET: ${{ inputs.preset }}
+        SDK_HOST: ${{ inputs.host }}
+        SDK_ROOT: ${{ inputs.root }}
+        SDK_WORKFLOW: ${{ inputs.workflow }}
+        SDK_JOB_NAME: ${{ inputs.job-name }}
+        SDK_OWNER_ROLE: ${{ inputs.owner-role }}
+      run: |
+        set -euo pipefail
+        test -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}"
+        test -n "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}"
+        [[ "$SDK_GROUP" =~ ^[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?$ ]]
+        [[ "$SDK_PRESET" =~ ^[A-Za-z0-9._-]{1,128}$ && "$SDK_PRESET" != . && "$SDK_PRESET" != .. ]]
+        case "$SDK_HOST" in linux-x86_64|linux-aarch64|macos-aarch64) ;; *) exit 1;; esac
+        case "$SDK_OWNER_ROLE" in diagnostic|sdk) ;; *) exit 1;; esac
+        [[ "$SDK_WORKFLOW" =~ ^\.github/workflows/[A-Za-z0-9_-]+\.yml$ ]]
+        [[ -n "$SDK_JOB_NAME" && "$SDK_JOB_NAME" != *$'\n'* && "$SDK_JOB_NAME" != *$'\r'* ]]
+        [[ "$GITHUB_RUN_ID" =~ ^[1-9][0-9]{0,19}$ && "$GITHUB_RUN_ATTEMPT" =~ ^[1-9][0-9]{0,19}$ ]]
+        # upload-artifact interprets path inputs as globs. A canonical literal
+        # filesystem path alone would not constrain that upload expansion.
+        [[ "$SDK_ROOT" =~ ^/[A-Za-z0-9._/+\-]+$ && ! -e "$SDK_ROOT" && ! -L "$SDK_ROOT" ]]
+        [[ "$SDK_ROOT" == "$(cd "$(dirname "$SDK_ROOT")" && pwd -P)/${SDK_ROOT##*/}" ]]
+        SDK_IDS=$(jq -ce 'if type == "array" and length >= 1 and length <= 32 and
+          all(.[]; type == "string" and test("^[-._+a-z0-9]{1,96}$") and . != "." and . != "..") and
+          . == (sort | unique) then . else error("SDK product selection must be sorted, unique and bounded") end' <<< "$SDK_IDS")
+        mkdir -m 700 "$SDK_ROOT"
+        mkdir -m 700 "$SDK_ROOT/payload"
+        while IFS= read -r sdk_id; do
+          python3 -B "$GITHUB_ACTION_PATH/../../../scripts/toolchain/stage-sdk-owner-payload-v2.py" \
+            --operation-dir "$SDK_OPERATION_ROOT/sdk-$sdk_id" --sdk-id "$sdk_id" --group "$SDK_GROUP" \
+            --profile="$SDK_PRESET" --host "$SDK_HOST" --output-dir "$SDK_ROOT/payload/sdk-$sdk_id"
+        done <<< "$(jq -r '.[]' <<< "$SDK_IDS")"
+        lane_sha=$(printf '%s\0' "$SDK_IDS" "$SDK_GROUP" "$SDK_HOST" "$SDK_PRESET" | shasum -a 256 | awk '{print $1}')
+        if [[ "$SDK_OWNER_ROLE" == sdk ]]; then
+          lane_sha=$(printf '%s\0' "$SDK_OWNER_ROLE" "$SDK_IDS" "$SDK_GROUP" "$SDK_HOST" "$SDK_PRESET" | shasum -a 256 | awk '{print $1}')
+        fi
+        printf 'payload-name=sdk-v2-%s-%s-%s\n' "$lane_sha" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
+        printf 'proof-name=sdk-v2-proof-%s-%s-%s\n' "$lane_sha" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
+
+    - id: payload
+      name: Upload only the original closed SDK payload
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: ${{ steps.stage.outputs.payload-name }}
+        path: ${{ inputs.root }}/payload/
+        if-no-files-found: error
+        include-hidden-files: true
+        retention-days: 14
+
+    - name: Bind the upload to this still-running original SDK owning job
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        PAYLOAD_ID: ${{ steps.payload.outputs.artifact-id }}
+        PAYLOAD_SHA256: ${{ steps.payload.outputs.artifact-digest }}
+        PAYLOAD_NAME: ${{ steps.stage.outputs.payload-name }}
+        SDK_ROOT: ${{ inputs.root }}
+        SDK_WORKFLOW: ${{ inputs.workflow }}
+        SDK_JOB_NAME: ${{ inputs.job-name }}
+        SDK_GROUP: ${{ inputs.group }}
+        SDK_HOST: ${{ inputs.host }}
+        SDK_PRESET: ${{ inputs.preset }}
+        SDK_OWNER_ROLE: ${{ inputs.owner-role }}
+      run: |
+        set -euo pipefail
+        mkdir -m 700 "$SDK_ROOT/proof"
+        python3 -B "$GITHUB_ACTION_PATH/../../../scripts/toolchain/artifact-origin.py" record \
+          --workflow "$SDK_WORKFLOW" --job-name "$SDK_JOB_NAME" \
+          --artifact-id "$PAYLOAD_ID" --artifact-name "$PAYLOAD_NAME" \
+          --artifact-sha256 "$PAYLOAD_SHA256" --payload-dir "$SDK_ROOT/payload" \
+          --role "$SDK_OWNER_ROLE" --group "$SDK_GROUP" --host "$SDK_HOST" \
+          --profile="$SDK_PRESET" --copy none --output "$SDK_ROOT/proof/origin.json"
+
+    - id: signature
+      name: Sign only this original SDK transport observation
+      uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+      with:
+        subject-path: ${{ inputs.root }}/proof/origin.json
+
+    - name: Retain the unchanged signature outside the SDK payload
+      shell: bash
+      env:
+        SDK_ROOT: ${{ inputs.root }}
+        SDK_BUNDLE: ${{ steps.signature.outputs.bundle-path }}
+      run: |
+        set -euo pipefail
+        test -f "$SDK_BUNDLE" && test ! -L "$SDK_BUNDLE"
+        test ! -e "$SDK_ROOT/proof/origin.sigstore.json"
+        test ! -L "$SDK_ROOT/proof/origin.sigstore.json"
+        command cp "$SDK_BUNDLE" "$SDK_ROOT/proof/origin.sigstore.json"
+
+    - id: proof
+      name: Upload the separate original SDK origin and signature
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: ${{ steps.stage.outputs.proof-name }}
+        path: ${{ inputs.root }}/proof/
+        if-no-files-found: error
+        include-hidden-files: true
+        retention-days: 14

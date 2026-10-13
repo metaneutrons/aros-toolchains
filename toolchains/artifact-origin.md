@@ -36,6 +36,9 @@ commit, source ref, run, attempt, job name, artifact ID/name and lane. It:
 4. Checks the numeric artifact's provider repository/run/source identity and
    signed ZIP digest/size, downloads by numeric ID, and verifies every regular
    ZIP member against the signed closed file inventory without extraction.
+   The download child has a kernel file-size limit of the selected ZIP size
+   plus one byte before the GET; oversized responses cannot consume unbounded
+   local disk. Exact size and digest checks still follow the download.
 
 Linked metadata, linked payload files, duplicate or case-aliased paths,
 unexpected ZIP members, incomplete provider pages, changed bytes and unknown
@@ -64,9 +67,72 @@ The `record` and `verify` commands consume the executing workflow's
 independently supplied `GITHUB_*` context. `verify-source` keeps that current
 caller context separate from an explicitly selected original run and attempt.
 Complete compiler-family production workflow integration remains separate work;
-the existing release workflow does not yet invoke this helper.
+the retained legacy production graph does not invoke this helper.
 
-## Explicit prior-run verification
+The non-publishing `qualify-v2` SDK owner now uses the helper after successful
+native generation. `retain-sdk-owner-payload-v2` stages each explicitly selected
+product under a separate SDK-ID directory, uploads that one exact tree, records
+its origin in the same running job and uploads the signed proof separately.
+The existing diagnostic workflow keeps the v1 origin lane role `diagnostic`.
+The action also accepts an independently selected `owner-role: sdk` for SDK
+owners; this label grants no execution, qualification or publication authority.
+The closed signed per-product
+`aros-sdk-owner-payload-v2` selectors bind SDK IDs in addition to group, profile
+and host. Independent admission must compare those tuples to release inputs,
+not infer product membership from the signed record. Generic origin signature
+verification still grants neither SDK execution nor release authority.
+
+After `verify-source` succeeds, `sdk-owner-transport-v2.py` materializes the
+retained SDK-owner ZIP into a fresh private directory. Supply the SDK IDs,
+group, profile, host and compiler family independently from the reviewed plan.
+The reader joins every product marker and metadata measurement to the exact
+outer inventory and emits the native CLI's `sdk_generations` selection rows.
+Its `--verify-output-dir` mode only reads back an existing output. Both modes
+report `transport-byte-readback-only`: neither authenticates signatures nor
+admits a release. Run the native SDK matrix verifier separately after transport
+authentication; production qualification and recovery admission remain required.
+
+`read-sdk-owner-v2.sh` requires a fresh operation root and performs that origin
+verification itself before invoking the SDK reader. It never adopts an existing
+transport directory. Supply the original source workflow/ref/producer commit,
+numeric provider selection and its raw SHA-256 independently, together with the
+SDK IDs, compiler family and native lane from the reviewed plan. The current
+reader workflow/job is selected separately. The optional `--same-attempt` still
+requires a distinct completed original job.
+
+Both readers accept `--owner-role diagnostic|sdk`, defaulting to `diagnostic`.
+Select the expected role independently from the reviewed workflow; readers
+never infer it from a signed record or fall back to another role. A mismatch
+fails before extraction (and before authentication or operation-root creation
+in the shell adapter). Default diagnostic result fields remain unchanged;
+SDK-role results explicitly record `owner_role`. The native compiler reader
+continues to require `build` with copy `a` or `b` and its closed compiler inventory.
+
+After extraction, the adapter repeats read-only transport verification and
+remeasures the selected input before writing `readback.json`. Its assurance is
+`authenticated-transport-and-sdk-payload-readback-only`, not native SDK package
+validation, compiler execution or release qualification. Pass its SDK selection
+rows to the complete native matrix verifier; never substitute this wrapper for
+the original provider proof or the complete release evidence.
+
+## Explicit source-owner verification
+
+`select-owner-artifacts-v2.py` constructs the source selection from current
+provider metadata, before any origin record or payload is read. Independently
+select the canonical source context and its raw SHA-256, exact successful job
+name, lane and exact payload/proof artifact names. The selector requires
+complete attempt-specific job pages and complete run artifact pages; duplicate
+matches, failed jobs, expired artifacts and mismatched provider identities fail
+closed. It emits the numeric IDs, digests and sizes for the existing selection
+schema, and rechecks the source context before emitting any result.
+
+This is metadata selection only. GitHub artifact metadata does not expose an
+owning-job identity or attempt, and this helper does not invent one. The signed
+origin and its original job/check join must still be authenticated by
+`artifact-origin.py verify-source` in the actual reader invocation. Do not use
+the selection alone to admit a compiler, SDK or release. Payload/proof names
+come from the independently reviewed workflow contract, not a signed record,
+listing order or creation timestamp.
 
 `verify-source --workflow CALLER_WORKFLOW --job-name CALLER_JOB` requires
 an absolute `--source-selection` file path. It never
@@ -91,7 +157,19 @@ Obtain those selectors from the reviewed source plan and provider observations,
 not the origin record or its signature predicate. A selector file is not an
 authorization credential: production callers must admit only a reviewed source
 workflow/commit and enforce protected recovery and fresh release policy.
-Cross-repository sources and the current caller attempt are rejected.
+Cross-repository sources are always rejected; the current caller attempt is
+rejected by default.
+
+The default keeps that cross-attempt rule. An explicitly selected
+`--same-attempt` read is allowed only when the source's entire context equals
+the current caller context (repository and numeric repository ID, workflow,
+commit, ref, run and attempt). The reader still authenticates its own OIDC
+check and in-progress job, then requires the selected source owner to be a
+different numeric job ID selected from complete attempt-specific Jobs pages;
+that owner must be completed successfully and must still match the signed
+record. The flag does not impersonate the owner or weaken provider, proof,
+signature, digest or payload verification. It grants no extraction,
+publication or release authority.
 
 The reader first selects the source job independently by its provider ID/name
 from complete attempt-specific pages, then compares its check ID and full job
@@ -109,14 +187,31 @@ and any supplied local proof files are remeasured before success. The private
 download/materialization directory is removed on success or failure. No proof is re-signed,
 no original artifact is replaced, and no compiler execution is inferred.
 
+Optionally pass `--verified-output-dir ABSOLUTE_PATH` to retain the verified
+transport. Before OIDC or provider access, the reader rejects a relative,
+linked, existing, noncanonical-parent or input-overlapping destination. After
+signature, provider, payload ZIP/member, selection, proof and caller-context
+checks pass, it creates a fresh owner-only directory containing exactly
+`payload.zip`, `origin.json`, `origin.sigstore.json` and `selection.json`.
+Those are the raw payload ZIP, raw proof members and original selection bytes;
+the payload archive is never extracted. Each file is created exclusively and
+remeasured against its independently verified digest and size. A later failure
+removes only files created by this invocation and its own empty root. If safe
+cleanup cannot complete, the command fails and reports that an incomplete
+owned directory may need cleanup. This retains transport bytes only; it does
+not admit a native package, qualify a release or grant publication authority.
+Without the option, no transport files are retained.
+
 ## Non-publishing provider probe
 
 The `Producer contracts` workflow has a manual boolean input,
 `artifact_origin_probe`, disabled by default. When explicitly enabled, one
 Ubuntu job uploads the two committed smoke fixtures, records and signs their
-origin, and a second read-only job verifies the completed owner and downloads
-the original ZIP. An isolated one-byte-changed record must fail specifically
-at signature authentication. Neither job has a release environment, tag or
+origin. One reader verifies the completed owner and downloads the original
+ZIP; its isolated one-byte-changed record must fail at signature authentication.
+A separate OIDC-authenticated reader exercises explicit same-attempt selection
+and retains the four verified transport files. Its isolated changed ZIP must
+fail at the digest/size boundary. Readers have no release environment, tag or
 release write permission, compiler build, or package publication step.
 
 ```console
@@ -139,6 +234,37 @@ and modified isolated local proof bytes to fail at their respective identity
 and ZIP-byte boundaries. Both modes are disabled by default and cannot be enabled together.
 The source artifacts must remain available and unexpired. This is a transport
 probe, not production release qualification.
+
+## Release subject manifests
+
+The V2 index command writes its pre-attestation subject manifest outside the
+release directory. Pass those exact bytes directly to the pinned attestor's
+`subject-checksums` input; do not relocate payloads, prefix subject names, or
+copy a second checksum inventory into the release. The attestor reads the
+manifest's basename/digest entries, not payload paths relative to the manifest.
+
+`verify-provenance-attestation.sh` supports two exclusive input modes:
+
+- Existing V1 callers use `--checksums PATH`, with subjects beside that file.
+- V2 callers use `--subject-manifest PATH --subject-manifest-sha256 SHA256
+  --subject-dir DIR`. Select the manifest's raw SHA-256 independently from the
+  native index result and select the owned release root explicitly.
+
+The V2 mode snapshots a regular manifest of at most 1 MiB, requires canonical
+LF-terminated basename/digest entries, verifies every selected regular subject
+under the explicit root, and rejects exclusions, duplicate names, symlinks,
+self-reference and the provenance bundle as its own subject. It requires the
+verified attestation's complete subject set to match, not just the one file
+passed to `gh attestation verify`. Supply `--run-id` and `--run-attempt` to bind
+the verified certificate invocation to the selected provider attempt.
+
+Keep the manifest and release root quiescent during verification. The verifier
+remeasures them before writing success, but is not a concurrent-writer security
+boundary. Native index/readback gates separately enforce the complete release
+inventory, canonical subject manifest and payload/receipt joins. Release
+provenance does not replace owning-job transport authentication or publication
+authorization. The local manifest tests use fake `gh` responses and establish
+policy rejection only; actual cryptographic verification remains a release gate.
 
 ## Provider contracts
 

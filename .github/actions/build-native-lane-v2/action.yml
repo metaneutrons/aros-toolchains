@@ -1,0 +1,193 @@
+name: Build and retain one native V2 lane
+description: Cold native compiler build, guarded package readback and a separately signed owning-job transport proof.
+
+inputs:
+  aros:
+    description: Absolute independently selected native CLI; development runtimes are nonpublishing only.
+    required: true
+  aros-sha256:
+    description: CLI SHA-256 selected from the verified runtime inventory, not a build result.
+    required: true
+  recipe:
+    description: Absolute native recipe selected by the validated input collection.
+    required: true
+  source-lock:
+    description: Absolute group source lock selected by the input collection.
+    required: true
+  profiles:
+    description: Absolute group profiles selected by the input collection.
+    required: true
+  source-dir:
+    description: Clean initialized group source checkout.
+    required: true
+  producer-dir:
+    description: Clean exact producer checkout.
+    required: true
+  tools-dir:
+    description: Clean tools source matching the independently selected runtime commit.
+    required: true
+  cache-dir:
+    description: Prepared and independently verified source/Cargo cache.
+    required: true
+  group:
+    description: Group ID from the validated native plan.
+    required: true
+  preset:
+    description: Target profile from the validated native plan.
+    required: true
+  host:
+    description: Host from the validated native plan.
+    required: true
+  copy:
+    description: Independent compiler copy a or b.
+    required: true
+  release-id:
+    description: Candidate identity selected by the caller; no publication is performed.
+    required: true
+  jobs:
+    description: Positive compiler parallelism.
+    required: true
+  timeout-seconds:
+    description: Positive native build deadline.
+    required: true
+  root:
+    description: Absent canonical operation root, distinct for every group/host/profile/copy.
+    required: true
+  workflow:
+    description: Independently selected executing workflow path.
+    required: true
+  job-name:
+    description: Exact provider job name selected by the caller, not a check-run ID.
+    required: true
+
+outputs:
+  payload-id:
+    description: Original owning-job payload numeric artifact ID.
+    value: ${{ steps.payload.outputs.artifact-id }}
+  payload-sha256:
+    description: Original upload ZIP digest; subsequent provider admission remains required.
+    value: ${{ steps.payload.outputs.artifact-digest }}
+  proof-id:
+    description: Separate origin-record/signature numeric artifact ID.
+    value: ${{ steps.proof.outputs.artifact-id }}
+  proof-sha256:
+    description: Separate proof ZIP digest.
+    value: ${{ steps.proof.outputs.artifact-digest }}
+  handoff:
+    description: Caller-owned local selectors outside the uploaded payload.
+    value: ${{ steps.build.outputs.handoff }}
+
+runs:
+  using: composite
+  steps:
+    - id: build
+      name: Execute the native build and exact guarded package handoff
+      shell: bash
+      env:
+        ARGS_AROS: ${{ inputs.aros }}
+        ARGS_AROS_SHA256: ${{ inputs.aros-sha256 }}
+        ARGS_RECIPE: ${{ inputs.recipe }}
+        ARGS_SOURCE_LOCK: ${{ inputs.source-lock }}
+        ARGS_PROFILES: ${{ inputs.profiles }}
+        ARGS_SOURCE_DIR: ${{ inputs.source-dir }}
+        ARGS_PRODUCER_DIR: ${{ inputs.producer-dir }}
+        ARGS_TOOLS_DIR: ${{ inputs.tools-dir }}
+        ARGS_CACHE_DIR: ${{ inputs.cache-dir }}
+        ARGS_PRESET: ${{ inputs.preset }}
+        ARGS_HOST: ${{ inputs.host }}
+        ARGS_GROUP: ${{ inputs.group }}
+        ARGS_COPY: ${{ inputs.copy }}
+        ARGS_RELEASE_ID: ${{ inputs.release-id }}
+        ARGS_JOBS: ${{ inputs.jobs }}
+        ARGS_TIMEOUT: ${{ inputs.timeout-seconds }}
+        ARGS_ROOT: ${{ inputs.root }}
+        ARGS_WORKFLOW: ${{ inputs.workflow }}
+        ARGS_JOB_NAME: ${{ inputs.job-name }}
+      run: |
+        set -euo pipefail
+        [[ "$ARGS_GROUP" =~ ^[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?$ ]]
+        [[ "$ARGS_PRESET" =~ ^[A-Za-z0-9._-]{1,128}$ && "$ARGS_PRESET" != . && "$ARGS_PRESET" != .. ]]
+        [[ "$ARGS_WORKFLOW" =~ ^\.github/workflows/[a-zA-Z0-9_-]+\.yml$ ]]
+        [[ -n "$ARGS_JOB_NAME" && "$ARGS_JOB_NAME" != *$'\n'* && "$ARGS_JOB_NAME" != *$'\r'* ]]
+        case "$ARGS_COPY" in a|b) ;; *) echo 'invalid compiler copy' >&2; exit 1;; esac
+        test -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}"
+        test -n "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}"
+        [[ "$GITHUB_RUN_ID" =~ ^[1-9][0-9]{0,19}$ && "$GITHUB_RUN_ATTEMPT" =~ ^[1-9][0-9]{0,19}$ ]]
+        # NUL-delimited identities are unambiguous even when group/profile
+        # identifiers contain hyphens, or a profile contains a host substring.
+        lane_sha=$(printf '%s\0' "$ARGS_GROUP" "$ARGS_HOST" "$ARGS_PRESET" "$ARGS_COPY" | shasum -a 256 | awk '{print $1}')
+        payload_name="native-v2-$lane_sha-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+        proof_name="native-v2-proof-$lane_sha-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+        bash "$GITHUB_ACTION_PATH/../../../scripts/toolchain/build-lane-v2.sh" \
+          --aros "$ARGS_AROS" --aros-sha256 "$ARGS_AROS_SHA256" \
+          --recipe "$ARGS_RECIPE" --source-lock "$ARGS_SOURCE_LOCK" --profiles "$ARGS_PROFILES" \
+          --source-dir "$ARGS_SOURCE_DIR" --producer-dir "$ARGS_PRODUCER_DIR" \
+          --tools-dir "$ARGS_TOOLS_DIR" --cache-dir "$ARGS_CACHE_DIR" \
+          --preset "$ARGS_PRESET" --host "$ARGS_HOST" --release-id "$ARGS_RELEASE_ID" \
+          --jobs "$ARGS_JOBS" --timeout-seconds "$ARGS_TIMEOUT" --root "$ARGS_ROOT" \
+          --forbidden-prefix "$GITHUB_WORKSPACE" --forbidden-prefix "$RUNNER_TEMP"
+        printf 'handoff=%s/handoff.json\n' "$ARGS_ROOT" >> "$GITHUB_OUTPUT"
+        printf 'payload-name=%s\nproof-name=%s\n' "$payload_name" "$proof_name" >> "$GITHUB_OUTPUT"
+
+    - id: payload
+      name: Upload original package bytes and exact portable build evidence
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: ${{ steps.build.outputs.payload-name }}
+        path: ${{ inputs.root }}/payload/
+        if-no-files-found: error
+        include-hidden-files: true
+        retention-days: 14
+
+    - name: Record the original upload in this still-running owning job
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        PAYLOAD_ID: ${{ steps.payload.outputs.artifact-id }}
+        PAYLOAD_SHA256: ${{ steps.payload.outputs.artifact-digest }}
+        PAYLOAD_NAME: ${{ steps.build.outputs.payload-name }}
+        ORIGIN_ROOT: ${{ inputs.root }}
+        ORIGIN_WORKFLOW: ${{ inputs.workflow }}
+        ORIGIN_JOB_NAME: ${{ inputs.job-name }}
+        ORIGIN_GROUP: ${{ inputs.group }}
+        ORIGIN_HOST: ${{ inputs.host }}
+        ORIGIN_PRESET: ${{ inputs.preset }}
+        ORIGIN_COPY: ${{ inputs.copy }}
+      run: |
+        set -euo pipefail
+        mkdir "$ORIGIN_ROOT/proof"
+        python3 -B "$GITHUB_ACTION_PATH/../../../scripts/toolchain/artifact-origin.py" record \
+          --workflow "$ORIGIN_WORKFLOW" --job-name "$ORIGIN_JOB_NAME" \
+          --artifact-id "$PAYLOAD_ID" --artifact-name "$PAYLOAD_NAME" \
+          --artifact-sha256 "$PAYLOAD_SHA256" --payload-dir "$ORIGIN_ROOT/payload" \
+          --role build --group "$ORIGIN_GROUP" --host "$ORIGIN_HOST" \
+          --profile="$ORIGIN_PRESET" --copy "$ORIGIN_COPY" \
+          --output "$ORIGIN_ROOT/proof/origin.json"
+
+    - id: signature
+      name: Sign this owning job's original transport observation
+      uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+      with:
+        subject-path: ${{ inputs.root }}/proof/origin.json
+
+    - name: Retain the unchanged signature outside the payload
+      shell: bash
+      env:
+        ORIGIN_ROOT: ${{ inputs.root }}
+        ORIGIN_BUNDLE: ${{ steps.signature.outputs.bundle-path }}
+      run: |
+        set -euo pipefail
+        test -f "$ORIGIN_BUNDLE" && test ! -L "$ORIGIN_BUNDLE"
+        test ! -e "$ORIGIN_ROOT/proof/origin.sigstore.json"
+        test ! -L "$ORIGIN_ROOT/proof/origin.sigstore.json"
+        cp "$ORIGIN_BUNDLE" "$ORIGIN_ROOT/proof/origin.sigstore.json"
+
+    - id: proof
+      name: Upload only the separate origin record and signature
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: ${{ steps.build.outputs.proof-name }}
+        path: ${{ inputs.root }}/proof/
+        if-no-files-found: error
+        include-hidden-files: true
+        retention-days: 14

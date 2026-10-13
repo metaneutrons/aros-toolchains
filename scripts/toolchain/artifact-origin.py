@@ -34,6 +34,10 @@ MAX_METADATA = 16 * 1024 * 1024
 MAX_PAYLOAD = 32 * 1024 * 1024 * 1024
 MAX_FILES = 8192
 SEGMENT = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
+# Payload basenames include SDK IDs and independent SemVer strings. Provider
+# artifact names and origin selectors keep the narrower SEGMENT grammar.
+PAYLOAD_SEGMENT = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+-]{0,254}\Z")
+PROFILE = re.compile(r"[A-Za-z0-9._-]{1,128}\Z")
 
 
 class OriginError(Exception):
@@ -309,7 +313,7 @@ def normalized_file(path: Path, limit: int) -> tuple[dict, bytes | None]:
 
 def portable_path(name: str) -> bool:
     return isinstance(name, str) and 0 < len(name) <= 1024 and len(name.split("/")) <= 16 \
-        and all(SEGMENT.fullmatch(part) and part not in (".", "..") for part in name.split("/"))
+        and all(PAYLOAD_SEGMENT.fullmatch(part) and part not in (".", "..") for part in name.split("/"))
 
 
 def require_portable_inventory(files: dict) -> None:
@@ -395,9 +399,12 @@ def verify_zip(path: Path, files: dict, digest: str, size: int | None = None) ->
 
 def selection(args: argparse.Namespace) -> dict:
     result = {key: getattr(args, key) for key in ("role", "group", "host", "profile", "copy")}
-    require(all(isinstance(value, str) and SEGMENT.fullmatch(value) for value in result.values()),
+    require(all(isinstance(value, str) and SEGMENT.fullmatch(value)
+                for key, value in result.items() if key != "profile")
+            and isinstance(result["profile"], str) and PROFILE.fullmatch(result["profile"])
+            and result["profile"] not in (".", ".."),
             "artifact lane selection is invalid")
-    require(result["role"] in ("build", "comparison", "compatibility", "diagnostic")
+    require(result["role"] in ("build", "comparison", "compatibility", "diagnostic", "sdk")
             and result["copy"] in ("a", "b", "none"), "artifact role/copy is invalid")
     require((result["role"] == "build") == (result["copy"] in ("a", "b")), "artifact copy does not match its role")
     return result
@@ -424,7 +431,8 @@ def record(args: argparse.Namespace, context: dict) -> None:
 
 
 def verify(args: argparse.Namespace, context: dict, *, expected_job: dict | None = None,
-           expected_artifact: dict | None = None) -> None:
+           expected_artifact: dict | None = None,
+           payload_archive: Path | None = None, report: bool = True) -> None:
     measured, raw = normalized_file(args.origin, MAX_METADATA)
     bundle_measurement, _ = normalized_file(args.bundle, MAX_METADATA)
     require(args.origin != args.bundle, "origin and signature bundle must be separate files")
@@ -461,29 +469,42 @@ def verify(args: argparse.Namespace, context: dict, *, expected_job: dict | None
     require(select_artifact(observed, context, args.artifact_id, args.artifact_name, artifact["sha256"]) == artifact,
             "provider artifact differs from signed origin")
     # Fetch by numeric identity, not a glob/name or an untrusted download URL.
-    with tempfile.TemporaryDirectory(prefix="aros-artifact-origin-") as temporary:
-        archive = Path(temporary).resolve() / "payload.zip"
-        with archive.open("xb") as handle:
-            command = subprocess.run(["gh", "api", f'repos/{context["repository"]}/actions/artifacts/{args.artifact_id}/zip'],
-                                     stdout=handle, stderr=subprocess.DEVNULL, timeout=180, check=False)
-        require(command.returncode == 0, "numeric artifact download failed")
-        verify_zip(archive, origin["files"], artifact["sha256"], artifact["size_in_bytes"])
+    # A source reader may supply its private temporary archive so that the
+    # exact verified transport remains available until its final context
+    # readbacks complete. Ordinary verify callers keep the original cleanup.
+    if payload_archive is None:
+        with tempfile.TemporaryDirectory(prefix="aros-artifact-origin-") as temporary:
+            archive = Path(temporary).resolve() / "payload.zip"
+            download_payload(context, artifact, archive)
+            verify_zip(archive, origin["files"], artifact["sha256"], artifact["size_in_bytes"])
+    else:
+        require(payload_archive.is_absolute() and payload_archive.parent == payload_archive.parent.resolve()
+                and payload_archive.parent.is_dir() and not payload_archive.parent.is_symlink()
+                and not payload_archive.exists() and not payload_archive.is_symlink(),
+                "verified payload temporary path is not fresh and canonical")
+        download_payload(context, artifact, payload_archive)
+        verify_zip(payload_archive, origin["files"], artifact["sha256"], artifact["size_in_bytes"])
     require(normalized_file(args.origin, MAX_METADATA)[0] == measured, "origin changed during verification")
     require(normalized_file(args.bundle, MAX_METADATA)[0] == bundle_measurement,
             "signature bundle changed during verification")
-    print("Verified owning workflow/run-attempt/job and exact artifact ZIP/file bytes; not release qualification.")
+    if report:
+        print("Verified owning workflow/run-attempt/job and exact artifact ZIP/file bytes; not release qualification.")
 
 
-def source_selection(value: object, caller: dict) -> dict:
+def source_selection(value: object, caller: dict, *, same_attempt: bool = False) -> dict:
     """Validate a caller-owned plan, never a selection inferred from origin.json."""
+    require(type(same_attempt) is bool, "same-attempt selector must be boolean")
     selected = exact_keys(value, {"schema", "context", "selection", "job", "artifact", "proof"})
     require(selected["schema"] == SELECTION_SCHEMA, "source selection schema differs")
     source = validate_context(selected["context"])
     require(source["repository"] == caller["repository"]
             and source["repository_id"] == caller["repository_id"],
             "cross-repository artifact recovery is not admitted")
-    require((source["run_id"], source["run_attempt"]) != (caller["run_id"], caller["run_attempt"]),
-            "source attempt must differ from the current caller attempt")
+    if same_attempt:
+        require(source == caller, "same-attempt source context must exactly match current caller")
+    else:
+        require((source["run_id"], source["run_attempt"]) != (caller["run_id"], caller["run_attempt"]),
+                "source attempt must differ from the current caller attempt")
     lane = exact_keys(selected["selection"], {"role", "group", "host", "profile", "copy"})
     require(selection(argparse.Namespace(**lane)) == lane, "source lane differs")
     job = exact_keys(selected["job"], {"id", "name"})
@@ -502,6 +523,19 @@ def source_selection(value: object, caller: dict) -> dict:
             and selected["artifact"]["name"] != selected["proof"]["name"],
             "payload and proof must have separate artifact identities")
     return selected
+
+
+def download_payload(context: dict, artifact: dict, archive: Path) -> None:
+    """Bound payload writes before the GET, not only during ZIP verification."""
+    require(type(artifact["size_in_bytes"]) is int
+            and 0 < artifact["size_in_bytes"] <= MAX_PAYLOAD,
+            "payload download size is invalid")
+    limit = artifact["size_in_bytes"] + 1
+    with archive.open("xb") as handle:
+        command = subprocess.run(["gh", "api", f'repos/{context["repository"]}/actions/artifacts/{artifact["id"]}/zip'],
+                                 stdout=handle, stderr=subprocess.DEVNULL, timeout=180, check=False,
+                                 preexec_fn=lambda: resource.setrlimit(resource.RLIMIT_FSIZE, (limit, limit)))
+    require(command.returncode == 0, "numeric artifact download failed")
 
 
 def download_proof(context: dict, proof: dict, archive: Path) -> None:
@@ -546,9 +580,279 @@ def proof_members(archive: Path, proof: dict) -> dict[str, bytes]:
     return contents
 
 
+def verified_output_preflight(output: object, inputs: list[Path | None]) -> Path:
+    """Reject unsafe retention targets before the reader performs provider I/O."""
+    require(isinstance(output, Path) and output.is_absolute() and ".." not in output.parts
+            and output.name not in ("", ".", ".."),
+            "verified output directory must be an absolute normalized path")
+    for path in inputs:
+        if path is None:
+            continue
+        require(isinstance(path, Path) and path.is_absolute() and ".." not in path.parts,
+                "verified output inputs must be absolute normalized paths")
+        require(output != path and output not in path.parents and path not in output.parents,
+                "verified output directory overlaps a selected input")
+    parent = output.parent
+    require(parent == parent.resolve() and parent.is_dir() and not parent.is_symlink(),
+            "verified output parent must be an existing canonical directory")
+    try:
+        output.lstat()
+    except FileNotFoundError:
+        pass
+    else:
+        raise OriginError("verified output directory must be fresh")
+    return output
+
+
+def _inode_identity(entry: os.stat_result) -> tuple[int, int]:
+    return entry.st_dev, entry.st_ino
+
+
+def _private_owned(entry: os.stat_result) -> bool:
+    return entry.st_uid == os.geteuid() and not (stat.S_IMODE(entry.st_mode) & 0o077)
+
+
+def _write_retained_file(root_fd: int, name: str, source: bytes | Path,
+                         expected: dict, limit: int, created: dict[str, tuple[int, int]]) -> None:
+    """Create an exclusive owner-only file and bind the copied bytes to a prior measurement."""
+    require(set(expected) == {"sha256", "size"} and type(expected["size"]) is int
+            and 0 <= expected["size"] <= limit
+            and isinstance(expected["sha256"], str)
+            and bool(re.fullmatch(r"[0-9a-f]{64}", expected["sha256"])),
+            "verified output measurement is invalid")
+    output_flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+    output_fd = os.open(name, output_flags, 0o600, dir_fd=root_fd)
+    source_fd = None
+    try:
+        output_before = os.fstat(output_fd)
+        created[name] = _inode_identity(output_before)
+        os.fchmod(output_fd, 0o600)
+        output_before = os.fstat(output_fd)
+        require(stat.S_ISREG(output_before.st_mode) and output_before.st_nlink == 1
+                and _private_owned(output_before), "verified output file is not private and ordinary")
+        if isinstance(source, Path):
+            source_fd = os.open(source, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+            source_before = os.fstat(source_fd)
+            named_before = source.lstat()
+            require(stat.S_ISREG(source_before.st_mode) and source_before.st_nlink == 1
+                    and _inode_identity(source_before) == _inode_identity(named_before)
+                    and 0 <= source_before.st_size <= limit
+                    and source_before.st_size == expected["size"],
+                    "verified temporary payload is not an exact ordinary file")
+            source_handle = os.fdopen(source_fd, "rb")
+            source_fd = None
+        else:
+            require(isinstance(source, bytes) and len(source) <= limit,
+                    "verified metadata bytes exceed their limit")
+            source_before = None
+            named_before = None
+            source_handle = None
+
+        digest = hashlib.sha256()
+        size = 0
+        with os.fdopen(output_fd, "wb") as target:
+            output_fd = -1
+            def write_block(block: bytes) -> None:
+                nonlocal size
+                size += len(block)
+                require(size <= limit and size <= expected["size"],
+                        "verified output exceeded its selected byte size")
+                digest.update(block)
+                view = memoryview(block)
+                while view:
+                    written = target.write(view)
+                    require(written is not None and written > 0,
+                            "verified output write was incomplete")
+                    view = view[written:]
+
+            if source_handle is None:
+                assert isinstance(source, bytes)
+                for offset in range(0, len(source), 1024 * 1024):
+                    write_block(source[offset:offset + 1024 * 1024])
+            else:
+                with source_handle:
+                    for block in iter(lambda: source_handle.read(1024 * 1024), b""):
+                        write_block(block)
+                    source_after = os.fstat(source_handle.fileno())
+                named_after = source.lstat()
+                source_identity = lambda entry: (entry.st_dev, entry.st_ino, entry.st_size,
+                                                 entry.st_mtime_ns, entry.st_ctime_ns)
+                require(source_identity(source_before) == source_identity(source_after)
+                        == source_identity(named_before) == source_identity(named_after),
+                        "verified temporary payload changed while retaining it")
+            target.flush()
+            os.fsync(target.fileno())
+            output_after = os.fstat(target.fileno())
+            named_output = os.stat(name, dir_fd=root_fd, follow_symlinks=False)
+            require(stat.S_ISREG(output_after.st_mode) and output_after.st_nlink == 1
+                    and _private_owned(output_after)
+                    and _inode_identity(output_before) == _inode_identity(output_after)
+                    == _inode_identity(named_output) and output_after.st_size == size,
+                    "verified output file changed while writing")
+        require({"sha256": digest.hexdigest(), "size": size} == expected,
+                "retained bytes differ from their independently verified identity")
+    finally:
+        if output_fd >= 0:
+            os.close(output_fd)
+        if source_fd is not None:
+            os.close(source_fd)
+
+
+def _measure_retained_file(root_fd: int, name: str, limit: int) -> dict:
+    descriptor = os.open(name, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0), dir_fd=root_fd)
+    with os.fdopen(descriptor, "rb") as handle:
+        before = os.fstat(handle.fileno())
+        require(stat.S_ISREG(before.st_mode) and before.st_nlink == 1 and _private_owned(before)
+                and 0 <= before.st_size <= limit,
+                "retained output is not a bounded private ordinary file")
+        digest = hashlib.sha256()
+        size = 0
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            size += len(block)
+            require(size <= limit, "retained output exceeded its byte limit")
+            digest.update(block)
+        after = os.fstat(handle.fileno())
+    named = os.stat(name, dir_fd=root_fd, follow_symlinks=False)
+    identity = lambda entry: (entry.st_dev, entry.st_ino, entry.st_size,
+                              entry.st_mtime_ns, entry.st_ctime_ns)
+    require(identity(before) == identity(after) == identity(named) and size == before.st_size,
+            "retained output changed while remeasured")
+    return {"sha256": digest.hexdigest(), "size": size}
+
+
+def _cleanup_retained_output(parent_fd: int, name: str, root_fd: int | None,
+                             root_identity: tuple[int, int] | None,
+                             created: dict[str, tuple[int, int]]) -> bool:
+    """Remove only files whose inodes this call created, and only its own empty root."""
+    if root_fd is not None:
+        for filename, identity in created.items():
+            try:
+                current = os.stat(filename, dir_fd=root_fd, follow_symlinks=False)
+            except FileNotFoundError:
+                continue
+            except OSError:
+                return False
+            if not (stat.S_ISREG(current.st_mode) and current.st_nlink == 1
+                    and _inode_identity(current) == identity):
+                return False
+            try:
+                os.unlink(filename, dir_fd=root_fd)
+            except OSError:
+                return False
+        try:
+            if os.listdir(root_fd):
+                return False
+        except OSError:
+            return False
+    try:
+        current_root = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        return True
+    except OSError:
+        return False
+    if not stat.S_ISDIR(current_root.st_mode) or root_identity is None \
+            or _inode_identity(current_root) != root_identity:
+        return False
+    if root_fd is None:
+        try:
+            probe_fd = os.open(name, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+                               | getattr(os, "O_NOFOLLOW", 0), dir_fd=parent_fd)
+            try:
+                if os.listdir(probe_fd):
+                    return False
+            finally:
+                os.close(probe_fd)
+        except OSError:
+            return False
+    try:
+        os.rmdir(name, dir_fd=parent_fd)
+        return True
+    except OSError:
+        return False
+
+
+def retain_verified_output(output: Path, sources: dict[str, bytes | Path],
+                           expected: dict[str, dict], limits: dict[str, int],
+                           final_check) -> None:
+    """Retain four exact files in a new private directory, or report failure."""
+    names = {"payload.zip", "origin.json", "origin.sigstore.json", "selection.json"}
+    require(set(sources) == names and set(expected) == names and set(limits) == names,
+            "verified output inventory is not closed")
+    # Recheck immediately before creation. mkdirat is exclusive, so a path
+    # created after preflight can never be overwritten.
+    output = verified_output_preflight(output, [])
+    parent_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        parent_fd = os.open(output.parent, parent_flags)
+    except OSError:
+        raise OriginError("verified output parent is unavailable") from None
+    root_fd = None
+    root_identity = None
+    created: dict[str, tuple[int, int]] = {}
+    made_root = False
+    try:
+        parent_before = os.fstat(parent_fd)
+        parent_named = output.parent.lstat()
+        require(stat.S_ISDIR(parent_before.st_mode) and not output.parent.is_symlink()
+                and output.parent == output.parent.resolve()
+                and _inode_identity(parent_before) == _inode_identity(parent_named),
+                "verified output parent changed after preflight")
+        try:
+            os.mkdir(output.name, mode=0o700, dir_fd=parent_fd)
+        except FileExistsError:
+            raise OriginError("verified output directory must remain fresh") from None
+        made_root = True
+        root_named = os.stat(output.name, dir_fd=parent_fd, follow_symlinks=False)
+        root_identity = _inode_identity(root_named)
+        require(stat.S_ISDIR(root_named.st_mode) and _private_owned(root_named),
+                "verified output root is not an owner-only directory")
+        os.chmod(output.name, 0o700, dir_fd=parent_fd, follow_symlinks=False)
+        root_named = os.stat(output.name, dir_fd=parent_fd, follow_symlinks=False)
+        require(_inode_identity(root_named) == root_identity and stat.S_ISDIR(root_named.st_mode)
+                and _private_owned(root_named), "verified output root changed while securing permissions")
+        root_fd = os.open(output.name, parent_flags, dir_fd=parent_fd)
+        root_open = os.fstat(root_fd)
+        require(_inode_identity(root_open) == root_identity and stat.S_ISDIR(root_open.st_mode)
+                and _private_owned(root_open), "verified output root changed during creation")
+        for name in ("payload.zip", "origin.json", "origin.sigstore.json", "selection.json"):
+            _write_retained_file(root_fd, name, sources[name], expected[name], limits[name], created)
+        require(set(os.listdir(root_fd)) == names,
+                "verified output contains an unexpected directory entry")
+        for name in names:
+            require(_measure_retained_file(root_fd, name, limits[name]) == expected[name],
+                    "retained output differs from its verified identity")
+        final_check()
+        root_final = os.stat(output.name, dir_fd=parent_fd, follow_symlinks=False)
+        require(_inode_identity(root_final) == root_identity and stat.S_ISDIR(root_final.st_mode)
+                and _private_owned(root_final), "verified output root changed before completion")
+        parent_final = os.stat(output.parent, follow_symlinks=False)
+        require(_inode_identity(parent_final) == _inode_identity(parent_before)
+                and output.parent == output.parent.resolve(),
+                "verified output parent changed before completion")
+    except Exception as error:
+        cleaned = (_cleanup_retained_output(parent_fd, output.name, root_fd,
+                                            root_identity, created) if made_root else True)
+        if not cleaned:
+            raise OriginError("verified output failed; an incomplete owned directory may need cleanup") from None
+        if isinstance(error, OriginError):
+            raise
+        raise OriginError("verified output retention failed") from None
+    finally:
+        if root_fd is not None:
+            os.close(root_fd)
+        os.close(parent_fd)
+
+
 def verify_source(args: argparse.Namespace, caller: dict) -> None:
-    plan_measurement, raw = normalized_file(args.source_selection, MAX_METADATA)
-    selected = source_selection(parse_json(raw), caller)
+    verified_output = getattr(args, "verified_output_dir", None)
+    if verified_output is not None:
+        verified_output = verified_output_preflight(
+            verified_output, [args.source_selection, args.origin, args.bundle])
+    plan_measurement, selection_raw = normalized_file(args.source_selection, MAX_METADATA)
+    # Preserve diagnostic/internal Namespace callers created before this
+    # optional mode existed.
+    same_attempt = getattr(args, "same_attempt", False)
+    selected = source_selection(parse_json(selection_raw), caller, same_attempt=same_attempt)
     local = args.origin is not None or args.bundle is not None
     require(not local or (args.origin is not None and args.bundle is not None),
             "local origin and bundle must be supplied together")
@@ -566,17 +870,22 @@ def verify_source(args: argparse.Namespace, caller: dict) -> None:
             and os.environ.get("GITHUB_WORKFLOW_SHA") == caller["producer_commit"],
             "current caller workflow identity differs")
     caller_check = owning_check_id(caller)
-    select_job(jobs_for(caller), caller, caller_check, args.job_name, "in_progress")
+    caller_job = select_job(jobs_for(caller), caller, caller_check, args.job_name, "in_progress")
     source = selected["context"]
+    if same_attempt:
+        require(selected["job"]["id"] != caller_job["id"],
+                "same-attempt source owner must be a different job")
     owner = select_source_job(jobs_for(source), source, selected["job"])
     proof = selected["proof"]
     observed = gh_json(["api", f'repos/{source["repository"]}/actions/artifacts/{proof["id"]}'])
     require(select_artifact(observed, source, proof["id"], proof["name"], proof["sha256"]) == proof,
             "provider proof differs from independently selected source artifact")
-    # Verify the raw proof ZIP BEFORE materializing anything from it. Workflow
-    # callers need no earlier archive extraction to obtain these two files.
+    # Keep both raw transport archives under one private temporary root. The
+    # optional retained payload remains there until final input/context checks
+    # pass; nothing is extracted from the payload ZIP.
     with tempfile.TemporaryDirectory(prefix="aros-artifact-proof-") as temporary:
-        archive = Path(temporary).resolve() / "proof.zip"
+        temporary_root = Path(temporary).resolve()
+        archive = temporary_root / "proof.zip"
         download_proof(source, proof, archive)
         contents = proof_members(archive, proof)
         if local:
@@ -585,23 +894,59 @@ def verify_source(args: argparse.Namespace, caller: dict) -> None:
                        proof["sha256"], proof["size_in_bytes"])
             origin_path, bundle_path = args.origin, args.bundle
         else:
-            for name, raw in contents.items():
+            for name, member_bytes in contents.items():
                 with (archive.parent / name).open("xb") as handle:
-                    handle.write(raw)
+                    handle.write(member_bytes)
             origin_path, bundle_path = archive.parent / "origin.json", archive.parent / "origin.sigstore.json"
         payload = selected["artifact"]
         source_args = argparse.Namespace(**selected["selection"],
                                          job_name=selected["job"]["name"],
                                          artifact_id=payload["id"], artifact_name=payload["name"],
                                          origin=origin_path, bundle=bundle_path)
-        verify(source_args, source, expected_job=owner, expected_artifact=payload)
-    require(normalized_file(args.source_selection, MAX_METADATA)[0] == plan_measurement,
-            "source selection changed during verification")
-    require(not local or (normalized_file(args.origin, MAX_METADATA)[0] == origin_measurement
-            and normalized_file(args.bundle, MAX_METADATA)[0] == bundle_measurement),
-            "source proof changed during verification")
-    require(context_from_environment(args.workflow) == caller, "current caller context changed")
-    print("Verified independently selected prior-run source; current caller remains separate; no publication authority.")
+        payload_archive = temporary_root / "payload.zip" if verified_output is not None else None
+        verify(source_args, source, expected_job=owner, expected_artifact=payload,
+               payload_archive=payload_archive, report=False)
+
+        def final_check() -> None:
+            require(normalized_file(args.source_selection, MAX_METADATA)[0] == plan_measurement,
+                    "source selection changed during verification")
+            require(normalized_file(archive, 2 * MAX_METADATA)[0] == {
+                "sha256": proof["sha256"], "size": proof["size_in_bytes"]},
+                "source proof archive changed during verification")
+            require(not local or (normalized_file(args.origin, MAX_METADATA)[0] == origin_measurement
+                    and normalized_file(args.bundle, MAX_METADATA)[0] == bundle_measurement),
+                    "source proof changed during verification")
+            require(context_from_environment(args.workflow) == caller,
+                    "current caller context changed")
+
+        final_check()
+        if verified_output is not None:
+            assert payload_archive is not None
+            identities = {
+                "payload.zip": {"sha256": payload["sha256"], "size": payload["size_in_bytes"]},
+                "origin.json": {"sha256": hashlib.sha256(contents["origin.json"]).hexdigest(),
+                                "size": len(contents["origin.json"])},
+                "origin.sigstore.json": {
+                    "sha256": hashlib.sha256(contents["origin.sigstore.json"]).hexdigest(),
+                    "size": len(contents["origin.sigstore.json"])},
+                "selection.json": plan_measurement,
+            }
+            limits = {"payload.zip": MAX_PAYLOAD,
+                      "origin.json": MAX_METADATA,
+                      "origin.sigstore.json": MAX_METADATA,
+                      "selection.json": MAX_METADATA}
+            retain_verified_output(
+                verified_output,
+                {"payload.zip": payload_archive,
+                 "origin.json": contents["origin.json"],
+                 "origin.sigstore.json": contents["origin.sigstore.json"],
+                 "selection.json": selection_raw},
+                identities, limits, final_check,
+            )
+    if verified_output is None:
+        print("Verified independently selected source owner; current caller remains separate; no publication authority.")
+    else:
+        print("Verified source owner and retained exact raw transport bytes; no publication authority.")
 
 
 def main() -> int:
@@ -626,9 +971,13 @@ def main() -> int:
     for key in ("workflow", "job-name"):
         command.add_argument(f"--{key}", required=True)
     command.add_argument("--source-selection", type=Path, required=True)
+    command.add_argument("--verified-output-dir", type=Path,
+                         help="Optional fresh owner-only directory for the exact verified transport bytes")
     for key in ("origin", "bundle"):
         command.add_argument(f"--{key}", type=Path,
                              help="Optional local proof; supply both files or verify directly from the selected raw ZIP")
+    command.add_argument("--same-attempt", action="store_true",
+                         help="Allow a source in this exact run attempt only when its owner is a different completed job")
     try:
         flags = [arg.split("=", 1)[0] for arg in sys.argv[1:] if arg.startswith("--")]
         require(len(flags) == len(set(flags)), "duplicate argument selector")
