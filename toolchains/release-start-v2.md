@@ -127,6 +127,14 @@ behavior or production qualification:
 
 ### Remaining integration proof
 
+`scripts/toolchain/prepare-release-draft-config-v2.py` derives an inactive draft
+configuration from the committed `release-please-config.json`. It preserves the
+reviewed version strategy and sole root package, changes only the three draft
+settings above, and rejects conflicting package overrides or occupied output
+paths. This offline adapter is not admission or release authority. No workflow
+invokes it for publication; the action's two explicit switches and all protected
+start gates still require integration and qualification.
+
 The tagged native route must accept this exact fresh private draft instead of
 its current visible-release-absence contract. It must also accept the actual
 tag-ref manual event without weakening the branch diagnostic boundary. Original
