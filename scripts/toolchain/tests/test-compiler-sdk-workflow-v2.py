@@ -904,7 +904,11 @@ def validate_v2_policy(documents: Documents) -> dict[str, int]:
     )
     require(
         'compiler_family=$(jq -er \'.family\' "$lock")' in qualify_script
-        and 'if [[ "$compiler_family" == gnu ]]; then' in qualify_script
+        and re.search(
+            r'if \[\[ "\$compiler_family" == gnu \]\]; then\s+'
+            r'observe_gcc_inputs "\$root/compiler-\$copy"\s+fi',
+            qualify_script,
+        ) is not None
         and 'observe_gcc_inputs "$root/compiler-$copy"' in qualify_script
         and 'observe-gcc-checksum-inputs.py' in qualify_script
         and '--output "${compiler_root%/*}/gcc-checksum-inputs-${compiler_root##*/}.json"' in qualify_script
@@ -952,6 +956,7 @@ def validate_v2_policy(documents: Documents) -> dict[str, int]:
         and "compiler-*/work/native-lifecycle/receipts/" in qualify
         and "compiler-*/work/native-lifecycle/verified-source-usage.log" in qualify
         and "sdk-*/cmake/**/*.log" in qualify
+        and "sdk-*/gnu-role-fixture.log" in qualify
         and "sdk-*/cmake/**/CMakeConfigureLog.yaml" in qualify,
         "V2 diagnostic native compiler and SDK configuration failure logs must be retained",
     )
@@ -1223,6 +1228,7 @@ class CompilerSdkWorkflowV2Tests(unittest.TestCase):
             "compiler-*/work/native-lifecycle/receipts/",
             "compiler-*/work/native-lifecycle/verified-source-usage.log",
             "sdk-*/cmake/**/*.log",
+            "sdk-*/gnu-role-fixture.log",
             "sdk-*/cmake/**/CMakeConfigureLog.yaml",
         ):
             with self.subTest(entry=entry):
@@ -1236,7 +1242,8 @@ class CompilerSdkWorkflowV2Tests(unittest.TestCase):
     def test_rejects_missing_or_unbound_gnu_checksum_observation(self) -> None:
         for original, replacement in (
             ('observe_gcc_inputs "$root/compiler-$copy"', ':'),
-            ('if [[ "$compiler_family" == gnu ]]; then', 'if false; then'),
+            ('if [[ "$compiler_family" == gnu ]]; then\n            observe_gcc_inputs',
+             'if false; then\n            observe_gcc_inputs'),
             ('--output "${compiler_root%/*}/gcc-checksum-inputs-${compiler_root##*/}.json"',
              '--output "$compiler_root/payload/evidence/gcc-checksum-inputs.json"'),
             ('exactly one generated GCC Makefile', 'take first generated GCC Makefile'),

@@ -27,6 +27,8 @@ WORKFLOW = ".github/workflows/qualify.yml"
 SOURCE_WORKFLOW = ".github/workflows/native-owner.yml"
 SOURCE_REF = "refs/heads/main"
 JOB_NAME = "Qualify compiler and SDK"
+SDK_ID = "rv32-sdk-fixture"
+SDK_SOURCE_PRESET = "source-release-fixture"
 
 
 def sha256(raw: bytes) -> str:
@@ -61,6 +63,20 @@ elif args[:3] == ["toolchain", "producer", "compare"]:
     record("compare", args)
     sys.stdout.write('{"fixture":"comparison reached"}\n')
     raise SystemExit(int(os.environ.get("FAKE_COMPARE_EXIT", "77")))
+elif args[:3] == ["toolchain", "producer", "materialize-engine-free-source"]:
+    record("materialize-source", args)
+    sys.stdout.write('{"fixture":"source projection reached"}\n')
+elif args[:3] == ["toolchain", "producer", "compatibility-host-tools"]:
+    record("host-tools", args)
+    sys.stdout.write("make\n")
+elif args[:2] == ["sdk", "build"]:
+    record("sdk-build", args)
+    first_root = Path(option("--first-root"))
+    first_root.mkdir(parents=True, exist_ok=True)
+    (first_root / ".fixture-extracted-family-v2-package").write_text(
+        "retained first-root fixture\n", encoding="utf-8")
+    sys.stdout.write('{"fixture":"SDK build reached"}\n')
+    raise SystemExit(int(os.environ.get("FAKE_SDK_BUILD_EXIT", "0")))
 else:
     record("unexpected-aros", args)
     raise SystemExit("fixture CLI received an unexpected invocation")
@@ -139,6 +155,44 @@ output.write_text('{"fixture":"GNU inputs observed"}\n', encoding="utf-8")
 '''
 
 
+FAKE_GNU_PACKAGE_TEST = r'''#!/usr/bin/env python3
+import json
+import os
+from pathlib import Path
+import sys
+
+root = Path(os.environ["AROS_TEST_GNU_TOOLCHAIN_ROOT"])
+entry = {
+    "stage": "gnu-package-test",
+    "env": {
+        name: os.environ.get(name)
+        for name in (
+            "AROS_TEST_SOURCE_ROOT",
+            "AROS_TEST_GNU_SOURCE_PRESET",
+            "AROS_TEST_GNU_TOOLCHAIN_ROOT",
+            "AROS_TEST_AROS",
+        )
+    },
+    "first_root_fixture_present": (root / ".fixture-extracted-family-v2-package").is_file(),
+}
+with open(os.environ["FAKE_CALL_LOG"], "a", encoding="utf-8") as stream:
+    stream.write(json.dumps(entry, separators=(",", ":")) + "\n")
+print("fixture stdout")
+print("fixture stderr", file=sys.stderr)
+raise SystemExit(int(os.environ.get("FAKE_GNU_FIXTURE_EXIT", "0")))
+'''
+
+
+FAKE_RETAIN_SDK_LOGS = r'''import json
+import os
+import sys
+
+entry = {"stage": "retain-sdk-config-logs", "args": sys.argv[1:]}
+with open(os.environ["FAKE_CALL_LOG"], "a", encoding="utf-8") as stream:
+    stream.write(json.dumps(entry, separators=(",", ":")) + "\n")
+'''
+
+
 FAKE_GIT = "#!/bin/sh\nprintf '0123456789ab\\n'\n"
 
 
@@ -210,12 +264,42 @@ class QualifyOwnedCompilerLaneTests(unittest.TestCase):
         self.reader = self._write_executable(toolchain_dir / "read-native-owner-v2.sh", FAKE_NATIVE_READER)
         self.builder = self._write_executable(toolchain_dir / "build-lane-v2.sh", FAKE_NATIVE_BUILDER)
         self.observer = self._file(toolchain_dir / "observe-gcc-checksum-inputs.py", FAKE_GCC_OBSERVER.encode())
+        self._file(toolchain_dir / "retain-sdk-config-logs.py", FAKE_RETAIN_SDK_LOGS.encode())
+        workspace_tools = self.tools / "scripts"
+        workspace_tools.mkdir()
+        self.workspace_check = self._write_executable(
+            workspace_tools / "check-workspace.sh", FAKE_GNU_PACKAGE_TEST
+        )
+        self.fixture_checker = self._file(
+            workspace_tools / "check-gnu-package-fixture.py", b"# inert fixture marker\n"
+        )
+        fixture_cmake = self.tools / "crates/aros-cmake-engine/engine/tests/package-qualified"
+        fixture_cmake.mkdir(parents=True)
+        self.fixture_cmake = self._file(
+            fixture_cmake / "LiteralGnuCompilerRoleTest.cmake", b"# inert fixture marker\n"
+        )
+        self.fixture_capture = self._file(
+            fixture_cmake / "BoundedProcessOutput.cmake", b"# inert fixture marker\n"
+        )
+
+        identity = self._file(self.inputs / "sdk-identity.json", b'{"fixture":"identity"}\n')
+        plan["sdks"] = [
+            {
+                "id": SDK_ID,
+                "identity": {"file": identity.name, "sha256": sha256(identity.read_bytes())},
+                "source_preset": SDK_SOURCE_PRESET,
+                "compiler_profiles": [{"group_id": GROUP, "profile": PRESET}],
+            }
+        ]
+        self.plan_file.write_text(json.dumps(plan, separators=(",", ":")) + "\n", encoding="utf-8")
 
         self.env = os.environ.copy()
         self.env["PATH"] = str(self.fake_bin) + os.pathsep + self.env.get("PATH", "")
         self.env["FAKE_CALL_LOG"] = str(self.call_log)
         self.env["FAKE_PLAN_FILE"] = str(self.plan_file)
         self.env["FAKE_COMPARE_EXIT"] = "77"
+        self.env["FAKE_GNU_FIXTURE_EXIT"] = "0"
+        self.env["FAKE_SDK_BUILD_EXIT"] = "0"
 
     def tearDown(self) -> None:
         self.temporary.cleanup()
@@ -263,9 +347,18 @@ class QualifyOwnedCompilerLaneTests(unittest.TestCase):
             "--job-name", JOB_NAME,
         ]
 
-    def _run(self, extra: list[str], *, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
+    def _run(
+        self,
+        extra: list[str],
+        *,
+        env: dict[str, str] | None = None,
+        root: Path | None = None,
+    ) -> subprocess.CompletedProcess[str]:
+        base_args = self._base_args()
+        if root is not None:
+            base_args[base_args.index("--root") + 1] = str(root)
         return subprocess.run(
-            ["/bin/bash", str(self.script), *self._base_args(), *extra],
+            ["/bin/bash", str(self.script), *base_args, *extra],
             capture_output=True,
             text=True,
             check=False,
@@ -390,6 +483,96 @@ class QualifyOwnedCompilerLaneTests(unittest.TestCase):
         self.assertEqual(stages, ["release-plan", "build", "observe-gcc", "build", "observe-gcc", "compare"])
         self.assertNotIn("read-a", stages)
         self.assertNotIn("read-b", stages)
+
+    def _run_through_sdk(
+        self, *, family: str = "gnu", fixture_exit: int = 0, sdk_exit: int = 0
+    ) -> subprocess.CompletedProcess[str]:
+        self.lock.write_text(json.dumps({"family": family}) + "\n", encoding="utf-8")
+        env = self.env.copy()
+        env["FAKE_COMPARE_EXIT"] = "0"
+        env["FAKE_GNU_FIXTURE_EXIT"] = str(fixture_exit)
+        env["FAKE_SDK_BUILD_EXIT"] = str(sdk_exit)
+        return self._run(self._owner_args(), env=env)
+
+    def test_gnu_package_fixture_runs_after_sdk_build_with_bound_inputs(self) -> None:
+        result = self._run_through_sdk()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        events = self._events()
+        stages = [event["stage"] for event in events]
+        self.assertEqual(
+            stages,
+            ["release-plan", "read-a", "read-b", "compare", "materialize-source",
+             "host-tools", "sdk-build", "gnu-package-test"],
+        )
+        sdk_build = next(event for event in events if event["stage"] == "sdk-build")
+        expected_first_root = str(self.root / f"sdk-{SDK_ID}" / "first")
+        self.assertEqual(sdk_build["args"][sdk_build["args"].index("--first-root") + 1], expected_first_root)
+        fixture = events[-1]
+        self.assertEqual(fixture["stage"], "gnu-package-test")
+        self.assertEqual(
+            fixture["env"],
+            {
+                "AROS_TEST_SOURCE_ROOT": str(self.source),
+                "AROS_TEST_GNU_SOURCE_PRESET": SDK_SOURCE_PRESET,
+                "AROS_TEST_GNU_TOOLCHAIN_ROOT": expected_first_root,
+                "AROS_TEST_AROS": str(self.runtime),
+            },
+        )
+        self.assertTrue(fixture["first_root_fixture_present"])
+        self.assertEqual(
+            self.workspace_check,
+            self.tools / "scripts/check-workspace.sh",
+        )
+        fixture_log = self.root / f"sdk-{SDK_ID}" / "gnu-role-fixture.log"
+        self.assertIn("fixture stdout", fixture_log.read_text(encoding="utf-8"))
+        self.assertIn("fixture stderr", fixture_log.read_text(encoding="utf-8"))
+
+    def test_gnu_package_fixture_failure_fails_qualification_and_is_retained(self) -> None:
+        result = self._run_through_sdk(fixture_exit=43)
+        self.assertEqual(result.returncode, 43, result.stderr)
+        stages = [event["stage"] for event in self._events()]
+        self.assertEqual(stages[-2:], ["sdk-build", "gnu-package-test"])
+        self.assertNotIn("Compiler A/B and SDK local generation completed", result.stdout)
+        fixture_log = self.root / f"sdk-{SDK_ID}" / "gnu-role-fixture.log"
+        self.assertIn("fixture stdout", fixture_log.read_text(encoding="utf-8"))
+        self.assertIn("fixture stderr", fixture_log.read_text(encoding="utf-8"))
+
+    def test_missing_gnu_fixture_source_fails_before_compiler_or_sdk_dispatch(self) -> None:
+        forbidden_stages = {
+            "build", "read-a", "read-b", "compare", "materialize-source", "host-tools",
+            "sdk-build", "gnu-package-test",
+        }
+        for marker_index, marker in enumerate((self.fixture_checker, self.fixture_cmake, self.fixture_capture)):
+            with self.subTest(marker=marker.relative_to(self.tools)):
+                marker.unlink()
+                for owner_mode in (False, True):
+                    self.call_log.unlink(missing_ok=True)
+                    current_root = self.operations / f"preflight-{marker_index}-{int(owner_mode)}"
+                    extra = self._owner_args() if owner_mode else []
+                    result = self._run(extra, root=current_root)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn("selected tools source lacks regular GNU package fixture inputs", result.stderr)
+                    stages = [event["stage"] for event in self._events()]
+                    self.assertEqual(stages, ["release-plan"])
+                    self.assertFalse(forbidden_stages.intersection(stages))
+                marker.write_text("# inert fixture marker\n", encoding="utf-8")
+
+    def test_sdk_build_failure_preserves_exit_and_skips_gnu_package_fixture(self) -> None:
+        result = self._run_through_sdk(sdk_exit=47)
+        self.assertEqual(result.returncode, 47, result.stderr)
+        self.assertNotIn("Compiler A/B and SDK local generation completed", result.stdout)
+        stages = [event["stage"] for event in self._events()]
+        self.assertEqual(stages[-2:], ["sdk-build", "retain-sdk-config-logs"])
+        self.assertNotIn("gnu-package-test", stages)
+
+    def test_llvm_sdk_does_not_dispatch_gnu_package_fixture(self) -> None:
+        self.fixture_checker.unlink()
+        self.fixture_cmake.unlink()
+        result = self._run_through_sdk(family="llvm")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        stages = [event["stage"] for event in self._events()]
+        self.assertEqual(stages[-1], "sdk-build")
+        self.assertNotIn("gnu-package-test", stages)
 
 
 if __name__ == "__main__":

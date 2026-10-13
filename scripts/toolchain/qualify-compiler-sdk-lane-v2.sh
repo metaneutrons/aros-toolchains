@@ -128,6 +128,15 @@ jq -e --arg group "$group" --arg preset "$preset" --arg host "$host" 'any(.lanes
 recipe="$inputs/$(jq -r '.recipe.file' <<< "$selected_group")"
 lock="$inputs/$(jq -r '.source_lock.file' <<< "$selected_group")"
 compiler_family=$(jq -er '.family' "$lock")
+if [[ "$compiler_family" == gnu ]]; then
+    gnu_fixture_checker="$tools/scripts/check-gnu-package-fixture.py"
+    gnu_fixture_cmake="$tools/crates/aros-cmake-engine/engine/tests/package-qualified/LiteralGnuCompilerRoleTest.cmake"
+    gnu_fixture_capture="$tools/crates/aros-cmake-engine/engine/tests/package-qualified/BoundedProcessOutput.cmake"
+    [[ -f "$gnu_fixture_checker" && ! -L "$gnu_fixture_checker" &&
+       -f "$gnu_fixture_cmake" && ! -L "$gnu_fixture_cmake" &&
+       -f "$gnu_fixture_capture" && ! -L "$gnu_fixture_capture" ]] || \
+        fail 'selected tools source lacks regular GNU package fixture inputs'
+fi
 profiles="$inputs/$(jq -r '.profiles.file' <<< "$selected_group")"
 ports_relative=$(jq -er --arg group "$group" '.groups | map(select(.id == $group)) | if length == 1 then .[0].ports_lock else error("ambiguous ports selection") end' "$selection")
 [[ "$ports_relative" =~ ^toolchains/[a-z0-9._-]+\.json$ ]] || fail 'unsafe ports selection'
@@ -219,6 +228,14 @@ while IFS= read -r sdk; do
     operation="$root/sdk-$id"
     mkdir "$operation" "$operation/engine-work"
     build_sdk_with_diagnostics
+    if [[ "$compiler_family" == gnu ]]; then
+        AROS_TEST_SOURCE_ROOT="$source" \
+            AROS_TEST_GNU_SOURCE_PRESET="$source_preset" \
+            AROS_TEST_GNU_TOOLCHAIN_ROOT="$operation/first" \
+            AROS_TEST_AROS="$aros" \
+            "$tools/scripts/check-workspace.sh" gnu-package-test \
+            > "$operation/gnu-role-fixture.log" 2>&1
+    fi
 done < "$root/sdk-selections.jsonl"
 [[ "$(digest "$aros")" == "$runtime_sha" ]] || fail 'runtime changed during qualification'
 printf 'Compiler A/B and SDK local generation completed. No release admission or publication.\n'

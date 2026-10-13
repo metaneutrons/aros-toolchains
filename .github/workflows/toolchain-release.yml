@@ -635,6 +635,7 @@ jobs:
             ${{ runner.temp }}/owned-sdk-lane/compiler-*/origin-verification.log
             ${{ runner.temp }}/owned-sdk-lane/sdk-*/result.json
             ${{ runner.temp }}/owned-sdk-lane/sdk-*/generation.json
+            ${{ runner.temp }}/owned-sdk-lane/sdk-*/gnu-role-fixture.log
             ${{ runner.temp }}/owned-sdk-lane/sdk-*/reports/
             ${{ runner.temp }}/owned-sdk-lane/sdk-*/cmake/**/*.log
             ${{ runner.temp }}/owned-sdk-lane/sdk-*/cmake/**/CMakeConfigureLog.yaml
@@ -1274,6 +1275,7 @@ jobs:
             ${{ runner.temp }}/diagnostic-lane/sdk-*/local-evidence/
             ${{ runner.temp }}/diagnostic-lane/sdk-*/result.json
             ${{ runner.temp }}/diagnostic-lane/sdk-*/generation.json
+            ${{ runner.temp }}/diagnostic-lane/sdk-*/gnu-role-fixture.log
             ${{ runner.temp }}/diagnostic-lane/sdk-*/cmake/**/*.log
             ${{ runner.temp }}/diagnostic-lane/sdk-*/cmake/**/CMakeConfigureLog.yaml
           include-hidden-files: true
