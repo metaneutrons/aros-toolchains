@@ -78,6 +78,11 @@ sealed contract, ABI and explicitly selected reproducibility epoch.
 
 ## Safety and remaining release work
 
+The inactive [protected V2 release-start design](release-start-v2.md) separates
+Release Please version/draft ownership, one annotated-tag creation, successful
+signed start observation and actual tag-ref dispatch. It records unresolved
+integration checks; it does not activate a workflow or qualify a release.
+
 `release-admission-v2.py` is an inactive, read-only metadata adapter for the
 future automatic Release Please route. It binds a unique App-authored version
 merge to protected main, its complete successful Producer contracts attempt,
