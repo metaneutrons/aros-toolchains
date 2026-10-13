@@ -56,6 +56,7 @@ RELEASE_ID = "r2026-10"
 WORKFLOW = ".github/workflows/compiler-candidate-assembly.yml"
 SOURCE_WORKFLOW = ".github/workflows/native-compiler.yml"
 SOURCE_REF = "refs/heads/main"
+TAG_REF = "refs/tags/v2.4.0"
 JOB_NAME = "Compiler candidate assembly"
 TREE_SHA = "e" * 64
 CONTRACT_SHA = "f" * 64
@@ -191,7 +192,7 @@ raise SystemExit("unexpected native producer command: " + " ".join(args[:3]))
 
 
 class Fixture:
-    def __init__(self, base: Path) -> None:
+    def __init__(self, base: Path, *, source_ref: str = SOURCE_REF) -> None:
         self.base = base.resolve()
         self.inputs = self.base / "inputs"
         self.inputs.mkdir(mode=0o700)
@@ -201,7 +202,7 @@ class Fixture:
         os.chmod(self.owner_root / "owners", 0o700)
         self.context = {
             "repository": "example/project", "repository_id": 7890,
-            "producer_commit": PRODUCER, "source_ref": SOURCE_REF,
+            "producer_commit": PRODUCER, "source_ref": source_ref,
             "workflow": SOURCE_WORKFLOW, "run_id": 321456, "run_attempt": 2,
         }
         self.context_raw = origin.canonical(self.context)
@@ -432,7 +433,7 @@ class Fixture:
                 "release_admission": False, "publication": False,
             },
             "current_workflow": WORKFLOW, "current_job_name": JOB_NAME,
-            "source_workflow": SOURCE_WORKFLOW, "source_ref": SOURCE_REF,
+            "source_workflow": SOURCE_WORKFLOW, "source_ref": self.context["source_ref"],
             "group": GROUP, "host": lane["host"], "target_profile": lane_value,
             "copy": copy_id, "release_id": RELEASE_ID, "reader_runtime_sha256": self.aros_sha,
             "recipe_file_sha256": self.group["recipe"]["sha256"],
@@ -477,7 +478,7 @@ class Fixture:
             "runtime_sha256": self.aros_sha, "plan_sha256": self.plan_sha,
             "inputs_sha256": self.inputs_sha, "source_context_sha256": self.context_sha,
             "source_producer_commit": PRODUCER, "source_workflow": SOURCE_WORKFLOW,
-            "source_ref": SOURCE_REF, "producer_commit": PRODUCER, "tools_commit": TOOLS,
+            "source_ref": self.context["source_ref"], "producer_commit": PRODUCER, "tools_commit": TOOLS,
             "workflow": WORKFLOW, "job_name": JOB_NAME, "release_id": RELEASE_ID,
             "owner_count": len(self.rows), "expected_compiler_lanes": expected_lanes,
             "compiler_builds": self.rows,
@@ -553,6 +554,14 @@ class CompilerCandidateAssemblyTests(unittest.TestCase):
         if release_absent:
             self.assertFalse((root / "release").exists())
 
+    def test_branch_and_tag_refs_select_only_existing_full_projection_modes(self) -> None:
+        self.assertEqual(assembler._projection_route("refs/heads/main"),
+                         ("workflow_dispatch", True))
+        self.assertEqual(assembler._projection_route("refs/tags/v2.4.0"),
+                         ("push", False))
+        with self.assertRaises(assembler.AssemblyError):
+            assembler._projection_route("refs/pull/17/merge")
+
     def test_full_generic_three_host_matrix_reverifies_compares_and_stages_only_a(self) -> None:
         root = self.base / "operation"
         result = self.fixture.run(root)
@@ -614,6 +623,37 @@ class CompilerCandidateAssemblyTests(unittest.TestCase):
                             "--executor-binary-sha256" in call and
                             "--package-measurement-sha256" in call
                             for call in verify_calls))
+
+    def test_tag_bound_complete_matrix_assembles_with_original_owner_context(self) -> None:
+        tag_fixture_base = self.base / "tag-fixture"
+        tag_fixture_base.mkdir()
+        fixture = Fixture(tag_fixture_base, source_ref=TAG_REF)
+        root = self.base / "tag-operation"
+        result = fixture.run(root)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stderr, "")
+        summary = json.loads(result.stdout)
+        self.assertEqual(summary["schema"], "aros-toolchain-compiler-candidate-assembly-v2")
+        self.assertEqual(summary["scope"], {
+            "compiler_only": True, "sdk_included": False,
+            "admission": False, "publication": False,
+        })
+        self.assertEqual(fixture.context["source_ref"], TAG_REF)
+        self.assertEqual(fixture.fragment["source_ref"], TAG_REF)
+        self.assertEqual(len(summary["staged_inventory"]), 4 * len(HOSTS) * len(PROFILES))
+        evidence = json.loads(Path(
+            summary["artifacts"]["compiler_evidence_fragment"]["path"]
+        ).read_bytes())
+        self.assertFalse(evidence["complete"])
+        self.assertFalse(evidence["admission"])
+        self.assertFalse(evidence["publication"])
+        self.assertFalse(summary["scope"]["admission"])
+        self.assertFalse(summary["scope"]["publication"])
+        for row in fixture.rows:
+            observation = json.loads(Path(row["observation"]["path"]).read_bytes())
+            self.assertEqual(observation["source_ref"], TAG_REF)
+            self.assertFalse(observation["scope"]["release_admission"])
+            self.assertFalse(observation["scope"]["publication"])
 
     def test_existing_output_root_is_not_overwritten(self) -> None:
         root = self.base / "occupied"

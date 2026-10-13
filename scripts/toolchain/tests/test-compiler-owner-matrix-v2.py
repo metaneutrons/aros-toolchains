@@ -21,6 +21,7 @@ PRODUCER_COMMIT = "a" * 40
 TOOLS_COMMIT = "b" * 40
 INPUTS_SHA256 = "d" * 64
 SOURCE_REF = "refs/heads/main"
+TAG_REF = "refs/tags/v2.4.0"
 SOURCE_WORKFLOW = ".github/workflows/toolchain-release.yml"
 
 
@@ -42,6 +43,16 @@ def _load_release_fixture():
 
 
 release_fixture = _load_release_fixture()
+
+
+def _load_owner_selector():
+    spec = importlib.util.spec_from_file_location("compiler_owner_matrix_v2_test_module", SCRIPT)
+    if spec is None or spec.loader is None:
+        raise RuntimeError("compiler owner selector is unavailable")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
 
 
 class CompilerOwnerMatrixV2Tests(unittest.TestCase):
@@ -79,6 +90,13 @@ class CompilerOwnerMatrixV2Tests(unittest.TestCase):
     def tearDown(self) -> None:
         self.temporary.cleanup()
 
+    def set_source_ref(self, source_ref: str) -> None:
+        self.context["source_ref"] = source_ref
+        self.context_raw = json.dumps(
+            self.context, sort_keys=True, separators=(",", ":"), ensure_ascii=True
+        ).encode("utf-8") + b"\n"
+        self.context_path.write_bytes(self.context_raw)
+
     def write_plan(self, plan: dict | None = None) -> bytes:
         raw = _compact(plan if plan is not None else self.plan)
         self.plan_path.write_bytes(raw)
@@ -99,7 +117,7 @@ class CompilerOwnerMatrixV2Tests(unittest.TestCase):
             "--source-context", str(self.context_path),
             "--source-context-sha256", _sha(self.context_raw),
             "--source-workflow", SOURCE_WORKFLOW,
-            "--source-ref", SOURCE_REF,
+            "--source-ref", self.context["source_ref"],
         ]
 
     def run_cli(self, raw: bytes | None = None, *, timeout: float = 10,
@@ -191,6 +209,44 @@ class CompilerOwnerMatrixV2Tests(unittest.TestCase):
         expected_canonical = json.dumps(wrapper, sort_keys=True, separators=(",", ":"),
                                         ensure_ascii=True) + "\n"
         self.assertEqual(result.stdout, expected_canonical)
+
+    def test_branch_and_tag_contexts_select_the_existing_complete_projection_routes(self) -> None:
+        module = _load_owner_selector()
+        original_project = module.release_matrix.project
+        for source_ref, expected_event, expected_full_qualification in (
+            (SOURCE_REF, "workflow_dispatch", True),
+            (TAG_REF, "push", False),
+        ):
+            with self.subTest(source_ref=source_ref):
+                self.set_source_ref(source_ref)
+                raw = self.write_plan()
+                selected_route = {}
+
+                def capture_project(**kwargs):
+                    selected_route.update({
+                        "event": kwargs["event"], "scope": kwargs["scope"],
+                        "full_qualification": kwargs["full_qualification"],
+                    })
+                    return original_project(**kwargs)
+
+                module.release_matrix.project = capture_project
+                try:
+                    command = self.arguments(raw)
+                    result = module.select(module._parser().parse_args(command[3:]))
+                finally:
+                    module.release_matrix.project = original_project
+                self.assertEqual(len(result["owners"]), 24)
+                self.assertEqual(selected_route, {
+                    "event": expected_event, "scope": "full",
+                    "full_qualification": expected_full_qualification,
+                })
+
+    def test_unrecognized_source_ref_is_rejected_without_stdout(self) -> None:
+        self.set_source_ref("refs/pull/17/merge")
+        self.assert_rejected(self.run_cli())
+        module = _load_owner_selector()
+        with self.assertRaises(module.artifact_origin.OriginError):
+            module._projection_route("refs/pull/17/merge")
 
     def test_duplicate_plan_json_field_is_rejected_without_stdout(self) -> None:
         raw = self.write_plan()
