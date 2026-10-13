@@ -238,7 +238,7 @@ def _bounded_subprocess(
 
 def api(path: str, *, allow_404: bool = False, governance: bool = False) -> Any:
     allowed_prefixes = (f"repos/{REPOSITORY}/", f"repos/{RUNTIME_REPOSITORY}/")
-    if not path.startswith(allowed_prefixes) or ".." in path.split("/"):
+    if (path != f"repos/{REPOSITORY}" and not path.startswith(allowed_prefixes)) or ".." in path.split("/"):
         fail("GitHub metadata endpoint is outside the fixed repository")
     if governance and re.fullmatch(
         r"repos/metaneutrons/aros-toolchains/rulesets(?:\?includes_parents=true&targets=tag&per_page=100&page=[1-9][0-9]*|/[1-9][0-9]*)",
@@ -475,6 +475,17 @@ def require_main(head: str) -> bool:
     if not isinstance(commit, dict) or not isinstance(commit.get("sha"), str) or OID.fullmatch(commit["sha"]) is None:
         fail("provider main commit metadata is malformed")
     return commit["sha"] == head
+
+
+def require_active_repository() -> None:
+    repository = _required_object(api(f"repos/{REPOSITORY}"), "repository metadata")
+    if type(repository.get("full_name")) is not str or repository["full_name"] != REPOSITORY:
+        fail("provider repository identity differs from the fixed repository")
+    for field in ("archived", "disabled"):
+        if type(repository.get(field)) is not bool or repository[field] is not False:
+            fail(f"provider repository {field} flag is not explicitly false")
+    if type(repository.get("default_branch")) is not str or repository["default_branch"] != "main":
+        fail("provider repository default branch is not main")
 
 
 def _require_runtime(lock: dict[str, Any]) -> None:
@@ -783,8 +794,10 @@ def admission(*, governance_receipt: dict[str, Any] | None = None) -> dict[str, 
     if runs is None:
         return None
     tag = f"v{version}"
+    require_active_repository()
     if not _no_candidate_tag_or_release(tag):
         return None
+    require_active_repository()
     # The initial main snapshot may have changed during the finite API survey.
     # The future privileged start must still recheck this metadata receipt.
     if not require_main(head):
