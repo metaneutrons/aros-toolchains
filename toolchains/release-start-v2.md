@@ -148,6 +148,7 @@ test tag. No product repository, App, secret or published release was changed.
 | Existing private draft | Caller admission failed; the Release Please step was skipped. No second draft or tag mutation. |
 | Historical merged PR marked pending | The PR-only preparation phase aborted with the library's outstanding-untagged-PR diagnostic; it created no next PR. |
 | Two merged pending PRs, including an otherwise valid fresh candidate | Caller admission failed before Release Please. No fresh draft was created; both annotated tags and the earlier private draft remained unchanged. |
+| Archive the private fixture | Draft listing became empty and its numeric GET returned 404. Briefly unarchiving returned the same unchanged draft ID; the repository was then archived again. |
 
 This proves the tested provider behavior and fixture guards, not production
 START acceptance. The fixture used GitHub Actions' bot rather than the
@@ -157,6 +158,8 @@ The test labels were restored and the private fixture repository archived
 without publishing, deleting or retargeting either test version. Production
 admission and dispatch still require independent qualification. Do not copy the older
 lightweight-tag conversion sequence or retarget a tag to accommodate the library.
+An archived repository's draft 404 is not evidence of absence: require an active
+repository before using privileged absence checks.
 
 The released V2 runtime, source qualification and complete compiler/SDK matrix
 remain prerequisites. This design neither changes source pins nor waives
