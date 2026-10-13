@@ -141,6 +141,24 @@ def provider_artifact(ctx: dict, identity: dict) -> dict:
     }
 
 
+def provider_run(ctx: dict, *, event: str = "push") -> dict:
+    suffix = ctx["source_ref"].split("/", 2)[2]
+    return {
+        "id": ctx["run_id"],
+        "run_attempt": ctx["run_attempt"],
+        "head_sha": ctx["producer_commit"],
+        "head_branch": suffix,
+        "path": f'{ctx["workflow"]}@{ctx["source_ref"]}',
+        "head_repository": {
+            "id": ctx["repository_id"],
+            "full_name": ctx["repository"],
+        },
+        "event": event,
+        "status": "in_progress",
+        "conclusion": None,
+    }
+
+
 def fixture(root: Path, *, same_attempt: bool = False, lane: dict | None = None) -> dict:
     root = root.resolve()
     source_context = copy.deepcopy(CALLER if same_attempt else SOURCE)
@@ -268,7 +286,9 @@ class CrossRunVerifySourceTests(unittest.TestCase):
                                 caller_pages: list | None = None,
                                 oidc_check_id: int = CALLER_CHECK_ID,
                                 download_overrides: dict[str, bytes] | None = None,
-                                mutate_selection_after_verify: bool = False) -> tuple[list, list]:
+                                mutate_selection_after_verify: bool = False,
+                                run_event_sequences: dict[tuple[int, int], list[dict]] | None = None
+                                ) -> tuple[list, list]:
         gh_calls: list[tuple[list[str], str]] = []
         download_calls: list[list[str]] = []
         downloads = {"proof": data["proof_zip_bytes"],
@@ -277,6 +297,8 @@ class CrossRunVerifySourceTests(unittest.TestCase):
         provider_index = 0
         selected_source_pages = data["source_pages"] if source_pages is None else source_pages
         selected_caller_pages = data["caller_pages"] if caller_pages is None else caller_pages
+        selected_event_sequences = run_event_sequences or {}
+        event_call_counts: dict[tuple[int, int], int] = {}
 
         def mocked_gh_json(arguments, purpose="GitHub observation"):
             nonlocal provider_index
@@ -297,6 +319,17 @@ class CrossRunVerifySourceTests(unittest.TestCase):
                 if selected != data["source"] or observed != expected_signature_binding:
                     raise origin.OriginError("mock signature verifier rejected source binding")
                 return data["verified"]
+            if len(command) == 2 and command[0] == "api" and "/actions/runs/" in command[1]:
+                event_context = next(
+                    ctx for ctx in (CALLER, data["selection"]["context"])
+                    if command[1] == (f"repos/{ctx['repository']}/actions/runs/{ctx['run_id']}"
+                                      f"/attempts/{ctx['run_attempt']}")
+                )
+                key = (event_context["run_id"], event_context["run_attempt"])
+                responses = selected_event_sequences.get(key, [provider_run(event_context)])
+                call_index = event_call_counts.get(key, 0)
+                event_call_counts[key] = call_index + 1
+                return responses[min(call_index, len(responses) - 1)]
             if command[:3] == ["api", "--paginate", "--slurp"]:
                 endpoint = command[3]
                 caller_endpoint = (
@@ -347,14 +380,16 @@ class CrossRunVerifySourceTests(unittest.TestCase):
             return SimpleNamespace(returncode=0)
 
         oidc_calls: list[dict] = []
+        oidc_expected_events: list[str] = []
         oidc_env: list[dict[str, str | None]] = []
         verified_args: list[argparse.Namespace] = []
         materialized_dirs: list[tuple[Path, tuple[str, ...]]] = []
         materialized_bytes: list[tuple[bytes, bytes]] = []
         captured_stdout = io.StringIO()
 
-        def mocked_oidc(ctx: dict) -> int:
+        def mocked_oidc(ctx: dict, *, expected_event: str) -> int:
             oidc_calls.append(copy.deepcopy(ctx))
+            oidc_expected_events.append(expected_event)
             oidc_env.append({key: os.environ.get(key) for key in (
                 "GITHUB_REPOSITORY", "GITHUB_REPOSITORY_ID", "GITHUB_SHA", "GITHUB_REF",
                 "GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT", "GITHUB_WORKFLOW_REF",
@@ -389,6 +424,8 @@ class CrossRunVerifySourceTests(unittest.TestCase):
             data["gh_calls"] = gh_calls
             data["download_calls"] = download_calls
             data["oidc_calls"] = oidc_calls
+            data["oidc_expected_events"] = oidc_expected_events
+            data["run_event_calls"] = event_call_counts
             data["oidc_env"] = oidc_env
             data["verified_args"] = verified_args
             data["materialized_dirs"] = materialized_dirs
@@ -413,7 +450,12 @@ class CrossRunVerifySourceTests(unittest.TestCase):
             self.assertEqual(data["args"].source_selection.read_bytes(),
                              origin.canonical(data["selection"]))
             self.assertEqual(data["oidc_calls"], [CALLER])
+            self.assertEqual(data["oidc_expected_events"], ["push"])
             self.assertEqual(data["oidc_env"], [environment_for(CALLER)])
+            self.assertEqual(data["run_event_calls"], {
+                (CALLER["run_id"], CALLER["run_attempt"]): 1,
+                (SOURCE["run_id"], SOURCE["run_attempt"]): 3,
+            })
 
             job_endpoints = [call[0][3] for call in gh_calls
                              if call[0][:3] == ["api", "--paginate", "--slurp"]]
@@ -456,6 +498,7 @@ class CrossRunVerifySourceTests(unittest.TestCase):
             self.assertEqual(data["selection"]["selection"], COMPATIBILITY_LANE)
             self.assertEqual(data["origin_record"]["selection"], COMPATIBILITY_LANE)
             self.assertEqual(data["oidc_calls"], [CALLER])
+            self.assertEqual(data["oidc_expected_events"], ["push"])
             verified_lane = {key: getattr(data["verified_args"][0], key)
                              for key in ("role", "group", "host", "profile", "copy")}
             self.assertEqual(verified_lane, COMPATIBILITY_LANE)
@@ -564,6 +607,46 @@ class CrossRunVerifySourceTests(unittest.TestCase):
             self.assertFalse((output / "bin").exists())
             with zipfile.ZipFile(output / "payload.zip") as archive:
                 self.assertEqual(archive.namelist(), ["bin/tool"])
+
+    def test_source_run_event_must_be_supported_before_owner_transport(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            data = fixture(Path(temporary))
+            data["args"].verified_output_dir = data["root"] / "unsupported-event-output"
+            source_key = (SOURCE["run_id"], SOURCE["run_attempt"])
+            self.run_rejected(data, run_event_sequences={
+                source_key: [provider_run(SOURCE, event="pull_request")],
+            })
+
+            self.assertEqual(data["run_event_calls"][source_key], 1)
+            self.assertFalse(any(call[0][:1] == ["api"] and "/actions/artifacts/" in call[0][1]
+                                 for call in data["gh_calls"]))
+            self.assertEqual(data["download_calls"], [])
+            self.assertFalse(data["args"].verified_output_dir.exists())
+
+    def test_source_event_and_identity_are_rechecked_before_retained_output_commits(self) -> None:
+        cases = ("event", "identity")
+        for changed_field in cases:
+            with self.subTest(field=changed_field), tempfile.TemporaryDirectory() as temporary:
+                data = fixture(Path(temporary))
+                output = data["root"] / f"changed-source-{changed_field}-output"
+                data["args"].verified_output_dir = output
+                source_key = (SOURCE["run_id"], SOURCE["run_attempt"])
+                stable = provider_run(SOURCE)
+                changed = copy.deepcopy(stable)
+                if changed_field == "event":
+                    changed["event"] = "workflow_dispatch"
+                else:
+                    changed["id"] += 1
+                self.run_rejected(data, run_event_sequences={
+                    source_key: [stable, copy.deepcopy(stable), copy.deepcopy(stable), changed],
+                })
+
+                self.assertEqual(data["run_event_calls"][source_key], 4)
+                self.assertFalse(output.exists())
+                self.assertEqual(data["download_calls"], [
+                    ["gh", "api", f"repos/{REPOSITORY}/actions/artifacts/{PROOF_ID}/zip"],
+                    ["gh", "api", f"repos/{REPOSITORY}/actions/artifacts/{PAYLOAD_ID}/zip"],
+                ])
 
     def test_nonlocal_verified_output_keeps_selection_when_proof_member_is_larger(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

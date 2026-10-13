@@ -38,6 +38,7 @@ SEGMENT = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
 # artifact names and origin selectors keep the narrower SEGMENT grammar.
 PAYLOAD_SEGMENT = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+-]{0,254}\Z")
 PROFILE = re.compile(r"[A-Za-z0-9._-]{1,128}\Z")
+SUPPORTED_EVENTS = frozenset({"push", "workflow_dispatch", "workflow_run"})
 
 
 class OriginError(Exception):
@@ -113,10 +114,13 @@ def context_from_environment(workflow: str) -> dict:
     })
 
 
-def require_oidc_claims(claims: dict, context: dict, now: int) -> int:
+def require_oidc_claims(claims: dict, context: dict, now: int, *, expected_event: str) -> int:
     require(isinstance(claims, dict), "OIDC claims are not an object")
     require(claims.get("iss") == "https://token.actions.githubusercontent.com"
             and claims.get("aud") == AUDIENCE, "OIDC issuer or audience differs")
+    require(type(expected_event) is str and expected_event in SUPPORTED_EVENTS
+            and claims.get("event_name") == expected_event,
+            "OIDC event differs from the observed provider event")
     for key in ("repository", "sha", "ref", "workflow_ref", "workflow_sha", "runner_environment"):
         expected = {
             "repository": context["repository"], "sha": context["producer_commit"],
@@ -164,7 +168,7 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         raise OriginError("OIDC endpoint redirect is not permitted")
 
 
-def owning_check_id(context: dict) -> int:
+def owning_check_id(context: dict, *, expected_event: str) -> int:
     """Read claims from the authenticated TLS issuer response, not a caller file.
 
     This is not a standalone JWT signature verifier. Trust depends on the
@@ -195,7 +199,8 @@ def owning_check_id(context: dict) -> int:
         def decode(part: str) -> object:
             return parse_json(base64.urlsafe_b64decode(part + "=" * (-len(part) % 4)))
         require(decode(parts[0]).get("alg") == "RS256", "OIDC response algorithm differs")
-        return require_oidc_claims(decode(parts[1]), context, int(time.time()))
+        return require_oidc_claims(decode(parts[1]), context, int(time.time()),
+                                   expected_event=expected_event)
     except OriginError:
         raise
     except Exception:
@@ -211,6 +216,41 @@ def gh_json(arguments: list[str], purpose: str = "GitHub observation") -> object
         raise OriginError("GitHub observation is unavailable") from None
     require(result.returncode == 0, f"{purpose} failed; no retry or credential fallback")
     return parse_json(result.stdout)
+
+
+def observe_run_event(context: dict) -> str:
+    """Bind context to the exact Actions run attempt and return its actual event."""
+    selected = validate_context(context)
+    run = gh_json(["api", f'repos/{selected["repository"]}/actions/runs/{selected["run_id"]}'
+                   f'/attempts/{selected["run_attempt"]}'])
+    require(isinstance(run, dict), "provider run attempt is not an object")
+    require(type(run.get("id")) is int and run["id"] == selected["run_id"]
+            and type(run.get("run_attempt")) is int
+            and run["run_attempt"] == selected["run_attempt"],
+            "provider run attempt identity differs")
+    require(run.get("head_sha") == selected["producer_commit"],
+            "provider run commit differs")
+    prefix, separator, branch = selected["source_ref"].partition("/")
+    require(prefix == "refs" and separator == "/", "provider source ref is invalid")
+    kind, separator, suffix = branch.partition("/")
+    require(separator == "/" and kind in ("heads", "tags"), "provider source ref is invalid")
+    require(type(run.get("head_branch")) is str and run["head_branch"] == suffix,
+            "provider run branch/tag differs")
+    require(type(run.get("path")) is str
+            and run["path"] in (selected["workflow"],
+                                f'{selected["workflow"]}@{selected["source_ref"]}'),
+            "provider run workflow path differs")
+    head_repository = run.get("head_repository")
+    require(isinstance(head_repository, dict)
+            and type(head_repository.get("id")) is int
+            and head_repository["id"] == selected["repository_id"]
+            and type(head_repository.get("full_name")) is str
+            and head_repository["full_name"] == selected["repository"],
+            "provider run repository differs")
+    event = run.get("event")
+    require(type(event) is str and event in SUPPORTED_EVENTS,
+            "provider run event is unsupported")
+    return event
 
 
 def jobs_for(context: dict) -> list:
@@ -417,7 +457,8 @@ def record(args: argparse.Namespace, context: dict) -> None:
     require(not output.is_relative_to(args.payload_dir), "origin must stay outside the payload")
     selected = selection(args)
     files = measure_files(args.payload_dir)
-    check_id = owning_check_id(context)
+    event = observe_run_event(context)
+    check_id = owning_check_id(context, expected_event=event)
     job = select_job(jobs_for(context), context, check_id, args.job_name, "in_progress")
     artifact = gh_json(["api", f'repos/{context["repository"]}/actions/artifacts/{args.artifact_id}'])
     metadata = select_artifact(artifact, context, args.artifact_id, args.artifact_name, args.artifact_sha256)
@@ -432,10 +473,14 @@ def record(args: argparse.Namespace, context: dict) -> None:
 
 def verify(args: argparse.Namespace, context: dict, *, expected_job: dict | None = None,
            expected_artifact: dict | None = None,
-           payload_archive: Path | None = None, report: bool = True) -> None:
+           payload_archive: Path | None = None, report: bool = True,
+           expected_event: str | None = None) -> None:
     measured, raw = normalized_file(args.origin, MAX_METADATA)
     bundle_measurement, _ = normalized_file(args.bundle, MAX_METADATA)
     require(args.origin != args.bundle, "origin and signature bundle must be separate files")
+    event = observe_run_event(context)
+    require(expected_event is None or event == expected_event,
+            "provider run event changed during source verification")
     origin = exact_keys(parse_json(raw), {"schema", "context", "selection", "job", "artifact", "files"})
     require(origin["schema"] == SCHEMA and canonical(origin["context"]) == canonical(context)
             and origin["selection"] == selection(args), "signed origin differs from independent selection")
@@ -869,9 +914,11 @@ def verify_source(args: argparse.Namespace, caller: dict) -> None:
             f'{caller["repository"]}/{caller["workflow"]}@{caller["source_ref"]}'
             and os.environ.get("GITHUB_WORKFLOW_SHA") == caller["producer_commit"],
             "current caller workflow identity differs")
-    caller_check = owning_check_id(caller)
+    caller_event = observe_run_event(caller)
+    caller_check = owning_check_id(caller, expected_event=caller_event)
     caller_job = select_job(jobs_for(caller), caller, caller_check, args.job_name, "in_progress")
     source = selected["context"]
+    source_event = observe_run_event(source)
     if same_attempt:
         require(selected["job"]["id"] != caller_job["id"],
                 "same-attempt source owner must be a different job")
@@ -905,7 +952,7 @@ def verify_source(args: argparse.Namespace, caller: dict) -> None:
                                          origin=origin_path, bundle=bundle_path)
         payload_archive = temporary_root / "payload.zip" if verified_output is not None else None
         verify(source_args, source, expected_job=owner, expected_artifact=payload,
-               payload_archive=payload_archive, report=False)
+               payload_archive=payload_archive, report=False, expected_event=source_event)
 
         def final_check() -> None:
             require(normalized_file(args.source_selection, MAX_METADATA)[0] == plan_measurement,
@@ -916,6 +963,8 @@ def verify_source(args: argparse.Namespace, caller: dict) -> None:
             require(not local or (normalized_file(args.origin, MAX_METADATA)[0] == origin_measurement
                     and normalized_file(args.bundle, MAX_METADATA)[0] == bundle_measurement),
                     "source proof changed during verification")
+            require(observe_run_event(source) == source_event,
+                    "source provider run identity/event changed during verification")
             require(context_from_environment(args.workflow) == caller,
                     "current caller context changed")
 
