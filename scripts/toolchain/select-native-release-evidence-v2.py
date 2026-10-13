@@ -45,6 +45,8 @@ _SDK = _load_helper("native_release_evidence_sdk_selector",
 _MATRIX = _SDK._MATRIX
 _STAGE = _SDK._STAGE
 _ORIGIN = _STAGE._ORIGIN
+_COMPILER_MATRIX = _load_helper("native_release_evidence_compiler_matrix",
+                                HERE / "compiler-owner-matrix-v2.py")
 
 
 class SelectionError(ValueError):
@@ -158,7 +160,8 @@ def _measure_reference(value: object, label: str, limit: int,
 
 def _check_bound_inputs(args: argparse.Namespace,
                         selected: dict[Path, tuple[int, dict, tuple[int, ...], bytes | None]],
-                        snapshots: dict[Path, tuple[tuple[int, ...], dict[str, str]]]
+                        snapshots: dict[Path, tuple[tuple[int, ...], dict[str, str]]],
+                        source_context: dict, event: str,
                         ) -> tuple[dict, bytes, dict, dict[str, str]]:
     plan_path = _canonical(args.plan, "native release plan", directory=False)
     inputs_dir = _canonical(args.inputs_dir, "release-input directory", directory=True)
@@ -176,10 +179,18 @@ def _check_bound_inputs(args: argparse.Namespace,
     _MATRIX._validate_plan(plan, expected_inputs_sha256=inputs_sha,
                            expected_producer_commit=producer,
                            expected_tools_commit=tools)
+    try:
+        projected_event, full_qualification = _COMPILER_MATRIX._projection_route(
+            source_context["source_ref"], event
+        )
+    except _COMPILER_MATRIX.artifact_origin.OriginError as error:
+        raise SelectionError(str(error)) from error
+    _require(projected_event == event,
+             "observed provider event does not select the requested release route")
     projection = _MATRIX.project(
         raw=plan_raw, plan=plan, plan_sha256=plan_sha, inputs_sha256=inputs_sha,
-        producer_commit=producer, tools_commit=tools, event="workflow_dispatch",
-        scope="full", full_qualification=True,
+        producer_commit=producer, tools_commit=tools, event=projected_event,
+        scope="full", full_qualification=full_qualification,
     )
     _require(projection["complete_selection"] is True,
              "native release plan is not a complete full-qualification plan")
@@ -638,7 +649,9 @@ def _hold_sdk_generation_documents(rows: list[dict], selected: dict,
 
 def _select_sdk(args: argparse.Namespace, plan: dict, bindings: dict,
                 selected: dict[Path, tuple[int, dict, tuple[int, ...], bytes | None]],
-                snapshots: dict[Path, tuple[tuple[int, ...], dict[str, str]]]
+                snapshots: dict[Path, tuple[tuple[int, ...], dict[str, str]]],
+                source_context: dict,
+                source_context_sha256: str,
                 ) -> tuple[dict, dict]:
     fragment = _canonical(args.sdk_fragment, "SDK selection fragment", directory=False)
     owner_root = _canonical(args.sdk_owner_root, "SDK owner root", directory=True)
@@ -675,7 +688,11 @@ def _select_sdk(args: argparse.Namespace, plan: dict, bindings: dict,
     for field in ("aros_sha256", "source_context_sha256"):
         _digest(raw_fragment[field], f"SDK fragment {field}")
     _require(raw_fragment["aros_sha256"] == bindings["aros_sha256"]
-             and raw_fragment["source_context_sha256"] == bindings["source_context_sha256"],
+             and raw_fragment["source_context_sha256"] == bindings["source_context_sha256"]
+             and raw_fragment["source_context_sha256"] == source_context_sha256
+             and raw_fragment["source_producer_commit"] == source_context["producer_commit"]
+             and raw_fragment["source_workflow"] == source_context["workflow"]
+             and raw_fragment["source_ref"] == source_context["source_ref"],
              "compiler and SDK evidence do not share one source context and runtime")
     _require(isinstance(raw_fragment["source_workflow"], str)
              and _SDK.SOURCE_WORKFLOW.fullmatch(raw_fragment["source_workflow"]) is not None
@@ -707,7 +724,23 @@ def _select_sdk(args: argparse.Namespace, plan: dict, bindings: dict,
 def select(args: argparse.Namespace) -> dict:
     selected: dict[Path, tuple[int, dict, tuple[int, ...], bytes | None]] = {}
     snapshots: dict[Path, tuple[tuple[int, ...], dict[str, str]]] = {}
-    plan, _plan_raw, _projection, families = _check_bound_inputs(args, selected, snapshots)
+    source_context_sha256 = _digest(args.source_context_sha256,
+                                    "selected source-context digest")
+    source_context_path = _canonical(args.source_context, "source context", directory=False)
+    source_context, source_context_raw, source_context_measurement = _read_json(
+        source_context_path, MAX_METADATA, "source context", selected
+    )
+    _require(source_context_measurement["sha256"] == source_context_sha256,
+             "source context bytes differ from the selected digest")
+    source_context = _ORIGIN.validate_context(source_context)
+    _require(source_context_raw == _ORIGIN.canonical(source_context),
+             "source context is not canonical JSON")
+    _require(source_context["producer_commit"] == args.producer_commit,
+             "source context producer commit differs from the selected producer")
+    source_event = _ORIGIN.observe_run_event(source_context)
+    plan, _plan_raw, _projection, families = _check_bound_inputs(
+        args, selected, snapshots, source_context, source_event
+    )
 
     compiler_evidence_path = _canonical(args.compiler_evidence,
                                          "compiler evidence fragment", directory=False)
@@ -742,7 +775,12 @@ def select(args: argparse.Namespace) -> dict:
         inputs_sha=args.inputs_sha256, producer=args.producer_commit,
         tools=args.tools_commit, selected=selected, snapshots=snapshots,
     )
-    sdk_before, sdk_fragment = _select_sdk(args, plan, bindings, selected, snapshots)
+    _require(bindings["source_context_sha256"] == source_context_sha256,
+             "compiler evidence source-context digest differs from the selected context")
+    sdk_before, sdk_fragment = _select_sdk(
+        args, plan, bindings, selected, snapshots,
+        source_context, source_context_sha256,
+    )
     _require(sdk_before["schema"] == "aros-sdk-package-inputs-v2"
              and sdk_before["plan_sha256"] == args.plan_sha256
              and sdk_before["inputs_sha256"] == args.inputs_sha256
@@ -812,6 +850,19 @@ def select(args: argparse.Namespace) -> dict:
                  and _STAGE.directory_entries(path, f"selected directory {path.name}")
                  == expected[1],
                  f"selected directory changed before output: {path.name}")
+    final_context, final_context_raw, final_context_measurement = _read_json(
+        source_context_path, MAX_METADATA, "source context", selected
+    )
+    _require(final_context_measurement == source_context_measurement
+             and final_context_raw == source_context_raw
+             and final_context == source_context,
+             "source context changed before the final evidence barrier")
+    try:
+        final_event = _ORIGIN.observe_run_event(source_context)
+    except _ORIGIN.OriginError as error:
+        raise SelectionError(str(error)) from error
+    _require(final_event == source_event,
+             "source run event changed during native release evidence selection")
     return output
 
 
@@ -823,6 +874,8 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--inputs-sha256", required=True)
     parser.add_argument("--producer-commit", required=True)
     parser.add_argument("--tools-commit", required=True)
+    parser.add_argument("--source-context", required=True, type=Path)
+    parser.add_argument("--source-context-sha256", required=True)
     parser.add_argument("--compiler-lanes", required=True, type=Path)
     parser.add_argument("--compiler-lanes-sha256", required=True)
     parser.add_argument("--compiler-evidence", required=True, type=Path)
@@ -850,6 +903,7 @@ def main(argv: list[str] | None = None) -> int:
                                      ensure_ascii=True, allow_nan=False) + "\n")
         return 0
     except (_STAGE.StageError, _MATRIX.PlanError, _SDK.SelectionError, SelectionError,
+            _ORIGIN.OriginError,
             OSError, UnicodeError, RecursionError, ValueError) as error:
         print(f"native release evidence selection failed: {error}", file=sys.stderr)
         return 2

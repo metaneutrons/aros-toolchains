@@ -165,6 +165,8 @@ if args[:3] == ["toolchain", "producer", "index"]:
     }
     if mode == "index-boolean-count":
         result["lane_count"] = True
+    if mode == "late-source-context-mutation":
+        mutate_selected_path("FAKE_LATE_SOURCE_CONTEXT")
     sys.stdout.buffer.write(canonical(result))
     raise SystemExit(0)
 
@@ -173,7 +175,7 @@ if args[:3] == ["toolchain", "producer", "index"]:
 
 
 class CombinedFixture:
-    def __init__(self, base: Path) -> None:
+    def __init__(self, base: Path, *, source_ref: str = compiler_tests.SOURCE_REF) -> None:
         self.base = base.resolve()
         self.base.mkdir(parents=True, exist_ok=True)
         self.fake_source = _combined_fake_aros()
@@ -210,7 +212,9 @@ class CombinedFixture:
                                 make_plan_and_inputs),
               mock.patch.object(compiler_tests.Fixture, "_make_native_executable", make_native)):
             (self.base / "owners").mkdir(mode=0o700)
-            self.compiler_fixture = compiler_tests.Fixture(self.base / "owners")
+            self.compiler_fixture = compiler_tests.Fixture(
+                self.base / "owners", source_ref=source_ref
+            )
         assert self.compiler_fixture is not None
         self._make_sdk_fixture()
         self._join_input_collection()
@@ -306,6 +310,9 @@ class CombinedFixture:
         sdk_fixture.fragment["plan_sha256"] = compiler_fixture.plan_sha
         sdk_fixture.fragment["inputs_sha256"] = compiler_fixture.inputs_sha
         sdk_fixture.fragment["source_context_sha256"] = compiler_fixture.context_sha
+        sdk_fixture.fragment["source_producer_commit"] = compiler_fixture.context["producer_commit"]
+        sdk_fixture.fragment["source_workflow"] = compiler_fixture.context["workflow"]
+        sdk_fixture.fragment["source_ref"] = compiler_fixture.context["source_ref"]
         sdk_fixture.fragment["aros_sha256"] = compiler_fixture.aros_sha
         sdk_fixture.write_fragment()
 
@@ -329,6 +336,8 @@ class CombinedFixture:
             "--plan", str(compiler_fixture.plan_path), "--plan-sha256", compiler_fixture.plan_sha,
             "--inputs-dir", str(compiler_fixture.inputs), "--inputs-sha256", compiler_fixture.inputs_sha,
             "--producer-commit", PRODUCER, "--tools-commit", TOOLS,
+            "--source-context", str(compiler_fixture.context_path),
+            "--source-context-sha256", compiler_fixture.context_sha,
             "--compiler-fragment", str(compiler_fixture.fragment_path),
             "--compiler-fragment-sha256", digest(compiler_fixture.fragment_path.read_bytes()),
             "--compiler-owner-root", str(compiler_fixture.owner_root),
@@ -346,22 +355,34 @@ class CombinedFixture:
             "--root", str(root),
         ]
 
-    def run(self, root: Path, *, mode: str = "", extra: list[str] | None = None
+    def run(self, root: Path, *, mode: str = "", extra: list[str] | None = None,
+            provider_responses: list[dict] | None = None,
+            replace: dict[str, str] | None = None,
+            environment: dict[str, str] | None = None,
             ) -> subprocess.CompletedProcess[str]:
         env = dict(os.environ)
+        env.update(compiler_tests.provider_environment(
+            self.compiler_fixture.base, self.compiler_fixture.context,
+            responses=provider_responses,
+        ))
         env.update({
             "PYTHONDONTWRITEBYTECODE": "1",
             "FAKE_AROS_LOG": str(self.compiler_fixture.log),
             "FAKE_MODE": mode,
             "FAKE_OPERATION_ROOT": str(root),
             "FAKE_AROS_RUNTIME": str(self.compiler_fixture.aros),
+            "FAKE_LATE_SOURCE_CONTEXT": str(self.compiler_fixture.context_path),
         })
+        env.update(environment or {})
         first_row = self.compiler_fixture.rows[0]
         observation = Path(first_row["observation"]["path"])
         env["FAKE_LATE_TRANSPORT"] = str(observation.parent / "transport" / "payload.zip")
         env["FAKE_LATE_COMPILER_OUTPUT"] = str(root / "compiler-stage" / "compiler-index-lanes.json")
         env["FAKE_LATE_SDK_OUTPUT"] = str(root / "sdk-stage" / "native" / "verify-sdk-a.json")
-        return subprocess.run([*self.command(root), *(extra or [])], capture_output=True,
+        arguments = self.command(root)
+        for option, value in (replace or {}).items():
+            arguments[arguments.index(option) + 1] = value
+        return subprocess.run([*arguments, *(extra or [])], capture_output=True,
                               text=True, env=env, check=False, timeout=240)
 
 
@@ -430,6 +451,76 @@ class ReleaseCandidateAssemblyTests(unittest.TestCase):
         self.assertIn("--stage", index_calls[0])
         self.assertEqual(index_calls[0][index_calls[0].index("--stage") + 1], "pre-attestation")
         self.assertEqual(index_calls[0][index_calls[0].index("--format") + 1], "json")
+
+    def test_tag_push_and_manual_tag_dispatch_use_the_exact_provider_event(self) -> None:
+        fixture = CombinedFixture(self.base / "tag-events", source_ref=compiler_tests.TAG_REF)
+        for index, event in enumerate(("push", "workflow_dispatch")):
+            with self.subTest(event=event):
+                context = fixture.compiler_fixture.context
+                responses = [compiler_tests.provider_run(context, event)] * 2
+                result = fixture.run(
+                    self.base / f"tag-event-{index}", provider_responses=responses
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(len(result.stdout.splitlines()), 1)
+                summary = json.loads(result.stdout)
+                self.assertEqual(
+                    summary["schema"], "aros-toolchain-release-candidate-assembly-v2"
+                )
+
+    def test_changed_provider_event_fails_at_the_final_output_barrier(self) -> None:
+        fixture = CombinedFixture(
+            self.base / "fixture-provider-drift", source_ref=compiler_tests.TAG_REF
+        )
+        context = fixture.compiler_fixture.context
+        result = fixture.run(
+            self.base / "changed-provider-event",
+            provider_responses=[
+                compiler_tests.provider_run(context, "workflow_dispatch"),
+                compiler_tests.provider_run(context, "workflow_dispatch"),
+                compiler_tests.provider_run(context, "workflow_dispatch"),
+                compiler_tests.provider_run(context, "push"),
+            ],
+        )
+        self.assert_failed(result)
+        self.assertIn("source run event changed during combined assembly", result.stderr)
+        self.assertEqual(
+            fixture.compiler_fixture.log.parent.joinpath("fake-gh-events").read_text().splitlines(),
+            ["workflow_dispatch", "workflow_dispatch", "workflow_dispatch", "push"],
+        )
+        self.assertTrue((self.base / "changed-provider-event").is_dir())
+
+    def test_provider_failure_and_identity_mismatch_fail_before_root_creation(self) -> None:
+        root = self.base / "provider-failure"
+        failed = self.fixture.run(root, environment={"FAKE_GH_FAIL": "1"})
+        self.assert_failed(failed)
+        self.assertFalse(root.exists())
+
+        context = self.fixture.compiler_fixture.context
+        wrong_identity = compiler_tests.provider_run(context)
+        wrong_identity["id"] += 1
+        mismatch_root = self.base / "provider-identity-mismatch"
+        mismatch = self.fixture.run(
+            mismatch_root, provider_responses=[wrong_identity]
+        )
+        self.assert_failed(mismatch)
+        self.assertFalse(mismatch_root.exists())
+
+    def test_source_context_digest_and_late_mutation_fail_without_json(self) -> None:
+        wrong_digest_root = self.base / "source-context-digest-mismatch"
+        wrong_digest = self.fixture.run(
+            wrong_digest_root, replace={"--source-context-sha256": "0" * 64}
+        )
+        self.assert_failed(wrong_digest)
+        self.assertFalse(wrong_digest_root.exists())
+
+        fixture = CombinedFixture(self.base / "fixture-source-context-mutation")
+        mutation_root = self.base / "source-context-mutation"
+        changed = fixture.run(mutation_root, mode="late-source-context-mutation")
+        self.assert_failed(changed)
+        self.assertIn("source-context.json", changed.stderr)
+        self.assertTrue(mutation_root.is_dir())
+        self.assertTrue((mutation_root / "compiler-stage").is_dir())
 
     def test_preserves_existing_root_rejects_duplicate_scalars_and_binds_support(self) -> None:
         existing = self.base / "existing"

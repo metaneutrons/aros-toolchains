@@ -326,6 +326,8 @@ def _compiler_args(args: argparse.Namespace, root: Path) -> argparse.Namespace:
         plan=args.plan, plan_sha256=args.plan_sha256,
         inputs_dir=args.inputs_dir, inputs_sha256=args.inputs_sha256,
         producer_commit=args.producer_commit, tools_commit=args.tools_commit,
+        source_context=args.source_context,
+        source_context_sha256=args.source_context_sha256,
         fragment=args.compiler_fragment,
         fragment_sha256=args.compiler_fragment_sha256,
         owner_root=args.compiler_owner_root,
@@ -779,6 +781,12 @@ def _assemble(args: argparse.Namespace) -> dict:
         after = _STAGE.directory_fingerprint(directory, "final combined output directory")
         _require(before == after == fingerprint and actual == expected_entries[directory],
                  "final combined output inventory or layout changed before return")
+    try:
+        final_source_event = _ORIGIN.observe_run_event(compiler_data["source_context"])
+    except _ORIGIN.OriginError as error:
+        raise AssemblyError(str(error)) from error
+    _require(final_source_event == compiler_data["source_event"],
+             "source run event changed during combined assembly")
     return {
         "schema": "aros-toolchain-release-candidate-assembly-v2",
         "operation": "shared-native-pre-index-inventory",
@@ -842,6 +850,8 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--inputs-sha256", required=True)
     parser.add_argument("--producer-commit", required=True)
     parser.add_argument("--tools-commit", required=True)
+    parser.add_argument("--source-context", type=Path, required=True)
+    parser.add_argument("--source-context-sha256", required=True)
     parser.add_argument("--compiler-fragment", type=Path, required=True)
     parser.add_argument("--compiler-fragment-sha256", required=True)
     parser.add_argument("--compiler-owner-root", type=Path, required=True)

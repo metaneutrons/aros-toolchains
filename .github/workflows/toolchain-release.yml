@@ -779,6 +779,7 @@ jobs:
             --plan "$plan" --plan-sha256 "$plan_sha" \
             --inputs-dir "$RUNNER_TEMP/diagnostic-inputs" --inputs-sha256 "$inputs_sha" \
             --producer-commit "$GITHUB_SHA" --tools-commit "$EXPECTED_TOOLS" \
+            --source-context "$context" --source-context-sha256 "$context_sha" \
             --compiler-fragment "$compiler_fragment" --compiler-fragment-sha256 "$compiler_fragment_sha" \
             --compiler-owner-root "$RUNNER_TEMP/complete-compiler-readback" \
             --sdk-fragment "$fragment" --sdk-fragment-sha256 "$fragment_sha" \
@@ -802,6 +803,7 @@ jobs:
             --plan "$plan" --plan-sha256 "$plan_sha" \
             --inputs-dir "$RUNNER_TEMP/diagnostic-inputs" --inputs-sha256 "$inputs_sha" \
             --producer-commit "$GITHUB_SHA" --tools-commit "$EXPECTED_TOOLS" \
+            --source-context "$context" --source-context-sha256 "$context_sha" \
             --compiler-lanes "$compiler_lanes" --compiler-lanes-sha256 "$compiler_lanes_sha" \
             --compiler-evidence "$compiler_evidence" --compiler-evidence-sha256 "$compiler_evidence_sha" \
             --sdk-fragment "$fragment" --sdk-fragment-sha256 "$fragment_sha" \
