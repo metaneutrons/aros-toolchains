@@ -164,6 +164,19 @@ inventory. Selection metadata uploaded as diagnostics contains job-local paths;
 it is not a portable publisher input. Final native acquisition must run in this
 same readback job or independently reacquire the original owners.
 
+`select-sdk-package-inputs-v2.py` projects the complete retained SDK matrix
+into the native index's four host-independent package expectations. It binds
+the native plan, release-input collection and collector fragment to explicit
+digests, joins package bytes to each owner marker, and requires every selected
+host copy to agree before choosing an explicit representative location.
+The collector fragment retains exact `owner_transports` result digests. The
+projection must rejoin each payload to that original transport before and after
+selection; changing all host copies and their local lane markers cannot create
+new authenticated package expectations.
+This is package-byte selection only. Run it after authenticated collection in
+the same invocation; its output cannot replace original-owner authentication,
+native SDK package verification or complete generation/compatibility readback.
+
 This full scheduling coverage is not release admission: the runtime is still a
 development build, and original-owner verification, complete native matrix
 readback, combined inventory, signatures and isolated release gates remain

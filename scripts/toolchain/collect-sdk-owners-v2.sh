@@ -387,7 +387,9 @@ jq -s -e --slurpfile matrix "$root/matrix.json" \
     --arg aros_sha "$aros_sha" --arg plan_sha "$plan_sha" --arg inputs_sha "$inputs_sha" \
     --arg context_sha "$source_context_sha" --arg producer "$producer_commit" \
     --arg tools "$tools_commit" --arg source_producer "$context_producer" \
-    --arg source_workflow "$source_workflow" --arg source_ref "$source_ref" '
+    --arg source_workflow "$source_workflow" --arg source_ref "$source_ref" \
+    --arg root "$root" \
+    --argjson transport_sha "$(printf '%s\n' "${transport_shas[@]}" | jq -Rsc 'split("\n")[:-1]')" '
     ($matrix[0].owners | length) as $owner_count |
     ([.[] | .sdk_owner_transport.sdk_generations[]] |
       sort_by(.sdk_id,.group_id,.target_profile,.host)) as $rows |
@@ -404,6 +406,10 @@ jq -s -e --slurpfile matrix "$root/matrix.json" \
      source_workflow:$source_workflow,source_ref:$source_ref,
      producer_commit:$producer,tools_commit:$tools,
      owner_count:($matrix[0].owners | length),sdk_generation_count:($actual | length),
+     owner_transports:(reduce range(0; $owner_count) as $i ({};
+       .[$matrix[0].owners[$i].owner_id] = {
+         path:($root + "/owners/" + $matrix[0].owners[$i].owner_id + "/readback/transport-result.json"),
+         sha256:$transport_sha[$i]})),
      sdk_generations:$rows,release_admission:false,publication:false}
     else error("owner readbacks do not rejoin the complete expected SDK tuple list") end
     ' "${readbacks[@]}" > "$scratch/selection-fragment.tmp.json" || {
@@ -415,16 +421,23 @@ jq -s -e --slurpfile matrix "$root/matrix.json" \
 fragment_size=$(wc -c < "$scratch/selection-fragment.tmp.json" | tr -d '[:space:]')
 [[ "$fragment_size" =~ ^[0-9]{1,8}$ ]] || fail 'temporary selection fragment size is invalid'
 if (( 10#$fragment_size > 16777216 )); then fail 'temporary selection fragment exceeds its metadata bound'; fi
-jq -e '
+jq -e --arg root "$root" '
     .sdk_generation_count as $count |
+    .owner_count as $owner_count |
     type == "object" and
-    (keys == ["aros_sha256","assurance","inputs_sha256","owner_count","plan_sha256",
+    (keys == ["aros_sha256","assurance","inputs_sha256","owner_count","owner_transports","plan_sha256",
               "producer_commit","publication","release_admission","schema","sdk_generation_count",
               "sdk_generations","source_context_sha256","source_producer_commit","source_ref",
               "source_workflow","tools_commit"]) and
     .schema == "aros-sdk-generation-selection-fragment-v2" and
     .assurance == "authenticated-owner-transport-selection-only" and
     .release_admission == false and .publication == false and
+    (.owner_transports | type == "object" and length == $owner_count and
+      all(to_entries[];
+        (.key | test("^[0-9a-f]{64}$")) and
+        (.value | type == "object" and keys == ["path","sha256"]) and
+        .value.path == ($root + "/owners/" + .key + "/readback/transport-result.json") and
+        (.value.sha256 | type == "string" and test("^[0-9a-f]{64}$")))) and
     (.sdk_generations | type == "array" and length == $count and
      all(.[];
        (keys == ["compatibility","group_id","host","package_dir","record","sdk_id","target_profile"]) and

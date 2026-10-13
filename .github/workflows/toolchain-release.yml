@@ -658,6 +658,23 @@ jobs:
             --source-workflow .github/workflows/toolchain-release.yml --source-ref "$GITHUB_REF" \
             --workflow .github/workflows/toolchain-release.yml --job-name "$CURRENT_JOB" --same-attempt \
             --root "$RUNNER_TEMP/complete-sdk-readback"
+          plan="$RUNNER_TEMP/sdk-index-native-plan.json"
+          package_inputs="$RUNNER_TEMP/sdk-package-inputs.json"
+          test ! -e "$plan" && test ! -L "$plan"
+          test ! -e "$package_inputs" && test ! -L "$package_inputs"
+          set -C
+          "$runtime/bin/aros" toolchain producer release-plan \
+            --directory "$RUNNER_TEMP/diagnostic-inputs" --inputs-sha256 "$inputs_sha" \
+            --format json > "$plan"
+          plan_sha=$(shasum -a 256 "$plan" | awk '{print $1}')
+          fragment="$RUNNER_TEMP/complete-sdk-readback/selection-fragment.json"
+          fragment_sha=$(shasum -a 256 "$fragment" | awk '{print $1}')
+          python3 -B scripts/toolchain/select-sdk-package-inputs-v2.py \
+            --plan "$plan" --plan-sha256 "$plan_sha" \
+            --inputs-dir "$RUNNER_TEMP/diagnostic-inputs" --inputs-sha256 "$inputs_sha" \
+            --producer-commit "$GITHUB_SHA" --tools-commit "$EXPECTED_TOOLS" \
+            --fragment "$fragment" --fragment-sha256 "$fragment_sha" \
+            --owner-root "$RUNNER_TEMP/complete-sdk-readback" > "$package_inputs"
       - name: Retain diagnostic selection metadata only
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -665,6 +682,8 @@ jobs:
           name: diagnostic-v2-sdk-owner-selection
           path: |
             ${{ runner.temp }}/sdk-owner-context/
+            ${{ runner.temp }}/sdk-index-native-plan.json
+            ${{ runner.temp }}/sdk-package-inputs.json
             ${{ runner.temp }}/complete-compiler-readback/matrix.json
             ${{ runner.temp }}/complete-compiler-readback/selection-fragment.json
             ${{ runner.temp }}/complete-compiler-readback/owners/*/selection.json

@@ -354,13 +354,20 @@ class CollectSdkOwnersProcessTests(unittest.TestCase):
         self.assertEqual({item["host"] for item in fragment["sdk_generations"]}, set(HOSTS))
         self.assertEqual({item["sdk_id"] for item in fragment["sdk_generations"]}, set(SDK_IDS))
         expected_rows = []
+        expected_transports = {}
         for owner in self.matrix()["owners"]:
             path = self.root / "owners" / owner["owner_id"] / "readback" / "readback.json"
             readback = json.loads(path.read_text(encoding="utf-8"))
             expected_rows.extend(readback["sdk_owner_transport"]["sdk_generations"])
+            transport_path = path.parent / "transport-result.json"
+            expected_transports[owner["owner_id"]] = {
+                "path": str(transport_path),
+                "sha256": hashlib.sha256(transport_path.read_bytes()).hexdigest(),
+            }
         expected_rows.sort(key=lambda item: (item["sdk_id"], item["group_id"],
                                              item["target_profile"], item["host"]))
         self.assertEqual(fragment["sdk_generations"], expected_rows)
+        self.assertEqual(fragment["owner_transports"], expected_transports)
         self.assertTrue(all(set(row) == {
             "sdk_id", "group_id", "target_profile", "host", "package_dir", "record", "compatibility"
         } for row in fragment["sdk_generations"]))

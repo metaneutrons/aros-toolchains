@@ -513,6 +513,28 @@ def validate_v2_policy(documents: Documents) -> dict[str, int]:
         and "sdk build" not in readback,
         "complete SDK owner readback must wait for every native owner and cannot rebuild or publish",
     )
+    sdk_selector = "python3 -B scripts/toolchain/select-sdk-package-inputs-v2.py"
+    require(sdk_selector in readback, "SDK package projection must use the reviewed selector")
+    selector_command = readback.split(sdk_selector, 1)[1].split("- name:", 1)[0]
+    require(
+        readback.index("collect-sdk-owners-v2.sh") < readback.index("toolchain producer release-plan")
+        < readback.index(sdk_selector)
+        and 'package_inputs="$RUNNER_TEMP/sdk-package-inputs.json"' in readback
+        and 'plan="$RUNNER_TEMP/sdk-index-native-plan.json"' in readback
+        and 'fragment_sha=$(shasum -a 256 "$fragment"' in readback
+        and 'plan_sha=$(shasum -a 256 "$plan"' in readback
+        and 'test ! -e "$package_inputs" && test ! -L "$package_inputs"' in readback
+        and "set -C" in readback
+        and all(argument in selector_command for argument in (
+            '--plan "$plan" --plan-sha256 "$plan_sha"',
+            '--inputs-dir "$RUNNER_TEMP/diagnostic-inputs" --inputs-sha256 "$inputs_sha"',
+            '--producer-commit "$GITHUB_SHA" --tools-commit "$EXPECTED_TOOLS"',
+            '--fragment "$fragment" --fragment-sha256 "$fragment_sha"',
+            '--owner-root "$RUNNER_TEMP/complete-sdk-readback" > "$package_inputs"',
+        )),
+        "SDK package projection must follow authentication with exact independent bindings",
+    )
+    documents.read("scripts/toolchain/select-sdk-package-inputs-v2.py")
     require(
         "host_matrix: ${{ steps.matrix.outputs.host_matrix }}" in prepare
         and "matrix: ${{ fromJSON(needs.v2-prepare.outputs.host_matrix) }}" in runtimes
@@ -890,6 +912,21 @@ class CompilerSdkWorkflowV2Tests(unittest.TestCase):
                 documents = self.new_documents()
                 documents.set_text(WORKFLOW, mutate_job(documents.text(WORKFLOW), "v2-readback", before, after))
                 with self.assertRaisesRegex(PolicyViolation, "wait for every native owner"):
+                    validate_v2_policy(documents)
+
+    def test_rejects_disconnected_sdk_package_projection(self) -> None:
+        for before, after in (
+            ("python3 -B scripts/toolchain/select-sdk-package-inputs-v2.py", "python3 -B unreviewed.py"),
+            ('--plan "$plan" --plan-sha256 "$plan_sha"', '--plan "$plan"'),
+            ('--fragment "$fragment" --fragment-sha256 "$fragment_sha"', '--fragment "$fragment"'),
+            ('--owner-root "$RUNNER_TEMP/complete-sdk-readback"', '--owner-root "$RUNNER_TEMP/other-owner"'),
+            ('package_inputs="$RUNNER_TEMP/sdk-package-inputs.json"',
+             'package_inputs="$RUNNER_TEMP/diagnostic-inputs/sdk-package-inputs.json"'),
+        ):
+            with self.subTest(before=before):
+                documents = self.new_documents()
+                documents.set_text(WORKFLOW, mutate_job(documents.text(WORKFLOW), "v2-readback", before, after))
+                with self.assertRaisesRegex(PolicyViolation, "SDK package projection"):
                     validate_v2_policy(documents)
 
     def test_rejects_sdk_collector_attestation_write_permission(self) -> None:
