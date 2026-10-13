@@ -310,6 +310,17 @@ The CLI transport's numeric download was observed read-only against a public
 checksum asset with HTTP 200 and exact byte count; this does not qualify a
 real upload, job-token custody, private claim race or native dispatch.
 
+`scripts/toolchain/compiler-sdk-dispatcher-auth-v2.py` is an inactive read-only
+identity component for the future caller. It obtains the current check ID from
+authenticated runner OIDC, selects its exact executing provider job, and binds
+the actual bounded completion event to the independently selected original
+start context. Current/source attempts and owning job are reobserved; changed
+event bytes fail closed. All run/job reads use the fixed GitHub.com transport
+and finite attempt-specific pagination. Its output explicitly qualifies only
+dispatcher identity and the causal edge, not signed-start/runtime authenticity,
+claim consumption, native dispatch or product qualification. No workflow calls
+it, and its fixtures do not establish a genuine provider/OIDC observation.
+
 The released V2 runtime, source qualification and complete compiler/SDK matrix
 remain prerequisites. This design neither changes source pins nor waives
 missing source authorization. It creates no environments, grants, tags,
