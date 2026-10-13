@@ -91,6 +91,42 @@ start/dispatch observation with authentic provider/signature evidence.
 
 ## Integration dependencies and unresolved checks
 
+### Pinned library observations
+
+The current action pin is `45996ed1f6d02564a971a2fa1b5860e934307cf7`.
+Its [dependency lock](https://github.com/googleapis/release-please-action/blob/45996ed1f6d02564a971a2fa1b5860e934307cf7/package-lock.json)
+selects Release Please 17.6.0; the matching upstream source commit is
+`712fcf01effd08d7b0e7b1fd3861f2cb388bc8d1`.
+Read-only inspection establishes the following code paths, not live GitHub
+behavior or production qualification:
+
+- The action's [manifest loader](https://github.com/googleapis/release-please-action/blob/45996ed1f6d02564a971a2fa1b5860e934307cf7/src/index.ts)
+  does not override the manifest configuration's `skip-github-release` value
+  from the action-level switch. The strategy's
+  [release builder](https://github.com/googleapis/release-please/blob/712fcf01effd08d7b0e7b1fd3861f2cb388bc8d1/src/strategies/base.ts)
+  returns no candidate when that configuration disables release creation.
+  The future protected draft configuration must explicitly select
+  `skip-github-release: false`, `draft: true` and
+  `force-tag-creation: false`. If using the action, its inputs must also set
+  `skip-github-release: false` and `skip-github-pull-request: true`: otherwise
+  it can skip release creation or run the PR-creation phase afterward. The
+  current preparation workflow remains PR-only through its action-level switch.
+- The library's [release API adapter](https://github.com/googleapis/release-please/blob/712fcf01effd08d7b0e7b1fd3861f2cb388bc8d1/src/github-api.ts)
+  calls Git ref creation only when `forceTag` is enabled. That branch suppresses
+  every HTTP 422 from ref creation, not just an independently verified
+  existing-tag result. Do not use that suppression as identity evidence.
+  With `forceTag: false`, this adapter sends only the release-creation request;
+  the controller must independently re-read the annotated tag afterward.
+- The manifest's [release orchestration](https://github.com/googleapis/release-please/blob/712fcf01effd08d7b0e7b1fd3861f2cb388bc8d1/src/manifest.ts)
+  groups candidates from pending merged PRs and changes their release labels
+  after creation. Admission of one exact PR must therefore be enforced before
+  invocation; an action output checked only afterward cannot prevent creation
+  of additional candidates. Draft creation and label changes are not proof of
+  compiler/SDK qualification. Qualify the exact-candidate invocation before
+  activation, including multiple pending and historical terminal PRs.
+
+### Remaining integration proof
+
 The tagged native route must accept this exact fresh private draft instead of
 its current visible-release-absence contract. It must also accept the actual
 tag-ref manual event without weakening the branch diagnostic boundary. Original
