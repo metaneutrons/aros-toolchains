@@ -142,19 +142,21 @@ jobs:
       - id: runtime
         name: Bind the verified runtime root without fallback
         run: printf 'root=%s/diagnostic-runtime\n' "$RUNNER_TEMP" >> "$GITHUB_OUTPUT"
-      - name: Check portable readback interface before full qualification
-        if: steps.selection.outputs.full_matrix == 'true'
-        env:
-          READBACK_AROS: ${{ steps.runtime.outputs.root }}/bin/aros
-        run: |
-          set -euo pipefail
-          readback_help=$("$READBACK_AROS" toolchain producer verify-package --help)
-          for option in package-measurement package-measurement-sha256 executor-contract-sha256 executor-binary-sha256; do
-            if ! grep -Eq "^[[:space:]]*--$option([[:space:]]|$)" <<< "$readback_help"; then
-              echo "Selected tools lack the portable readback option --$option; full qualification cannot start." >&2
-              exit 1
-            fi
-          done
+      - name: Check the exact V2 interface before recipe preparation
+        uses: ./.github/actions/check-v2-runtime-interface
+        with:
+          runtime-kind: ${{ steps.selection.outputs.runtime_kind }}
+          root: ${{ steps.runtime.outputs.root }}
+          tools-source: ${{ github.workspace }}/dependencies/aros-tools
+          tools-commit: ${{ steps.selection.outputs.tools_commit }}
+          output: ${{ runner.temp }}/diagnostic-runtime-interface.json
+      - name: Retain preparation interface-only evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: diagnostic-v2-runtime-interface-prepare
+          path: ${{ runner.temp }}/diagnostic-runtime-interface.json
+          if-no-files-found: error
+          retention-days: 7
       - id: matrix
         name: Bind native recipes, source SDK identities and compiler/SDK selections
         env:
@@ -344,6 +346,21 @@ jobs:
       - id: runtime
         name: Bind the verified runtime root without fallback
         run: printf 'root=%s/diagnostic-runtime\n' "$RUNNER_TEMP" >> "$GITHUB_OUTPUT"
+      - name: Check every selected host V2 interface before compiler fan-out
+        uses: ./.github/actions/check-v2-runtime-interface
+        with:
+          runtime-kind: ${{ needs.v2-prepare.outputs.runtime_kind }}
+          root: ${{ steps.runtime.outputs.root }}
+          tools-source: ${{ github.workspace }}/dependencies/aros-tools
+          tools-commit: ${{ needs.v2-prepare.outputs.tools_commit }}
+          output: ${{ runner.temp }}/diagnostic-native-runtime-interface-${{ matrix.host }}.json
+      - name: Retain selected host interface-only evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: diagnostic-v2-runtime-interface-${{ matrix.host }}
+          path: ${{ runner.temp }}/diagnostic-native-runtime-interface-${{ matrix.host }}.json
+          if-no-files-found: error
+          retention-days: 7
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: diagnostic-v2-native-runtime-${{ matrix.host }}

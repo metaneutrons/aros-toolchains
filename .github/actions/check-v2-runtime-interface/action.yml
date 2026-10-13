@@ -1,0 +1,70 @@
+name: Check the selected V2 runtime interface
+description: Check bounded CLI interfaces after runtime authentication, without claiming native behavior or release authority.
+inputs:
+  runtime-kind:
+    description: Exact development or released route already authenticated by its caller.
+    required: true
+  root:
+    description: Already verified runtime directory.
+    required: true
+  tools-source:
+    description: Clean checkout of the selected tools commit.
+    required: true
+  tools-commit:
+    description: Independently selected exact tools commit.
+    required: true
+  output:
+    description: Absent absolute interface-only receipt outside the runtime root.
+    required: true
+  lock:
+    description: Repository-relative immutable released-runtime lock.
+    default: toolchains/aros-tools-runtime-v1.json
+    required: false
+runs:
+  using: composite
+  steps:
+    - name: Check every critical native producer and SDK CLI interface
+      shell: bash
+      env:
+        RUNTIME_KIND: ${{ inputs.runtime-kind }}
+        RUNTIME_ROOT: ${{ inputs.root }}
+        TOOLS_SOURCE: ${{ inputs.tools-source }}
+        TOOLS_COMMIT: ${{ inputs.tools-commit }}
+        INTERFACE_OUTPUT: ${{ inputs.output }}
+        RUNTIME_LOCK: ${{ inputs.lock }}
+      run: |
+        set -euo pipefail
+        [[ "$TOOLS_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+        test "$(git -C "$TOOLS_SOURCE" rev-parse HEAD)" = "$TOOLS_COMMIT"
+        test -z "$(git -C "$TOOLS_SOURCE" status --porcelain)"
+        source_version=$(git -C "$TOOLS_SOURCE" show HEAD:Cargo.toml |
+          python3 -B -c 'import sys,tomllib; print(tomllib.loads(sys.stdin.read())["workspace"]["package"]["version"])')
+        case "$RUNTIME_KIND" in
+          development)
+            test "$(cat "$RUNTIME_ROOT/DEVELOPMENT_RUNTIME.txt")" = "development-only tools commit: $TOOLS_COMMIT"
+            runtime_sha=$(awk '$2 == "bin/aros" { if (NF != 2 || length($1) != 64 || $1 ~ /[^0-9a-f]/) exit 1; value=$1; count++ } END { if (count != 1) exit 1; print value }' "$RUNTIME_ROOT/SHA256SUMS")
+            expected_version="$source_version"
+            ;;
+          released)
+            expected_version=$(jq -er --arg commit "$TOOLS_COMMIT" --arg version "$source_version" '
+              if .source_commit == $commit and .version == $version then .version
+              else error("Released runtime differs from the selected tools source") end
+            ' "$GITHUB_WORKSPACE/$RUNTIME_LOCK")
+            runtime_sha=$(jq -er '
+              [.files[] | select(.path == "bin/aros")] |
+              if length == 1 then .[0].sha256 else error("Runtime has no unique CLI entry") end
+            ' "$RUNTIME_ROOT/.aros-tools-runtime-manifest.json")
+            ;;
+          *) echo 'Unsupported V2 runtime interface route.' >&2; exit 1;;
+        esac
+        runtime_prefix=${RUNTIME_ROOT%/}
+        case "$INTERFACE_OUTPUT" in
+          "$runtime_prefix"|"$runtime_prefix"/*)
+            echo 'Interface-only receipts must remain outside the runtime root.' >&2
+            exit 1
+            ;;
+        esac
+        python3 -B "$GITHUB_WORKSPACE/scripts/toolchain/check-v2-runtime-interface.py" \
+          --aros "$RUNTIME_ROOT/bin/aros" --aros-sha256 "$runtime_sha" \
+          --expected-version "$expected_version" --output "$INTERFACE_OUTPUT"
+        test -z "$(git -C "$TOOLS_SOURCE" status --porcelain)"

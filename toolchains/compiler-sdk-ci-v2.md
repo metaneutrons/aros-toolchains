@@ -104,7 +104,13 @@ interface-only receipt. A version match alone is insufficient: a development
 V2 binary can expose interfaces absent from an older published binary with the
 same version string. Runtime publication authenticity, native behavior and the
 complete compiler/SDK qualification remain separate requirements. This helper
-is not yet a protected release-start or publication gate.
+runs after runtime transport verification in preparation, before recipes, and
+for every selected host before compiler fan-out. Its expected digest comes from
+the already verified development checksum set or released binary manifest;
+the version is bound to the selected tools source and, for releases, the lock.
+Its receipt stays outside the closed runtime directory and is retained as a
+separate interface-only diagnostic artifact. It is not a protected
+release-start or publication gate and cannot promote a development runtime.
 
 Preparation jobs have only `contents: read`. SDK owning jobs additionally need
 `actions: read`, `id-token: write` and `attestations: write` for original artifact
