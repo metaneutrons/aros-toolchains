@@ -25,6 +25,36 @@ TAG_REF = "refs/tags/v2.4.0"
 SOURCE_WORKFLOW = ".github/workflows/toolchain-release.yml"
 
 
+FAKE_GH = r'''#!/usr/bin/env python3
+import json
+import os
+from pathlib import Path
+import re
+import sys
+
+args = sys.argv[1:]
+endpoint = os.environ["FAKE_GH_ENDPOINT"]
+attempt_endpoint = re.compile(
+    r"repos/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+/actions/runs/"
+    r"[1-9][0-9]*/attempts/[1-9][0-9]*"
+)
+if (len(args) != 2 or args[0] != "api" or args[1] != endpoint or
+        attempt_endpoint.fullmatch(endpoint) is None):
+    raise SystemExit(90)
+responses = json.loads(Path(os.environ["FAKE_GH_RESPONSES"]).read_text(encoding="utf-8"))
+count_path = Path(os.environ["FAKE_GH_CALL_COUNT"])
+count = int(count_path.read_text(encoding="ascii"))
+if count >= len(responses):
+    raise SystemExit(91)
+count_path.write_text(str(count + 1), encoding="ascii")
+response = responses[count]
+if type(response) is not dict or set(response) != {"returncode", "stdout"}:
+    raise SystemExit(92)
+sys.stdout.write(response["stdout"])
+raise SystemExit(response["returncode"])
+'''
+
+
 def _sha(raw: bytes) -> str:
     return hashlib.sha256(raw).hexdigest()
 
@@ -59,6 +89,13 @@ class CompilerOwnerMatrixV2Tests(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory(prefix="compiler-owner-matrix-v2.")
         self.root = Path(self.temporary.name).resolve()
+        self.fake_bin = self.root / "fake-bin"
+        self.fake_bin.mkdir()
+        fake_gh = self.fake_bin / "gh"
+        fake_gh.write_text(FAKE_GH, encoding="utf-8")
+        fake_gh.chmod(0o755)
+        self.gh_responses = self.root / "gh-responses.json"
+        self.gh_call_count = self.root / "gh-call-count.txt"
         self.inputs = self.root / "inputs"
         self.inputs.mkdir()
         self.plan_path = self.root / "plan.json"
@@ -86,6 +123,13 @@ class CompilerOwnerMatrixV2Tests(unittest.TestCase):
             self.context, sort_keys=True, separators=(",", ":"), ensure_ascii=True
         ).encode("utf-8") + b"\n"
         self.context_path.write_bytes(self.context_raw)
+        self.env = os.environ.copy()
+        self.env.update({
+            "PATH": str(self.fake_bin) + os.pathsep + self.env.get("PATH", ""),
+            "FAKE_GH_ENDPOINT": self._gh_endpoint(),
+            "FAKE_GH_RESPONSES": str(self.gh_responses),
+            "FAKE_GH_CALL_COUNT": str(self.gh_call_count),
+        })
 
     def tearDown(self) -> None:
         self.temporary.cleanup()
@@ -96,6 +140,36 @@ class CompilerOwnerMatrixV2Tests(unittest.TestCase):
             self.context, sort_keys=True, separators=(",", ":"), ensure_ascii=True
         ).encode("utf-8") + b"\n"
         self.context_path.write_bytes(self.context_raw)
+        self.env["FAKE_GH_ENDPOINT"] = self._gh_endpoint()
+
+    def _gh_endpoint(self) -> str:
+        return (f'repos/{self.context["repository"]}/actions/runs/'
+                f'{self.context["run_id"]}/attempts/{self.context["run_attempt"]}')
+
+    def _provider_reply(self, event: str = "workflow_dispatch", **changes: object) -> dict:
+        ref = self.context["source_ref"]
+        _, _, suffix = ref.partition("/")
+        _, _, branch = suffix.partition("/")
+        run = {
+            "id": self.context["run_id"],
+            "run_attempt": self.context["run_attempt"],
+            "head_sha": self.context["producer_commit"],
+            "head_branch": branch,
+            "path": self.context["workflow"],
+            "head_repository": {
+                "id": self.context["repository_id"],
+                "full_name": self.context["repository"],
+            },
+            "event": event,
+        }
+        run.update(changes)
+        return {
+            "returncode": 0,
+            "stdout": json.dumps(run, sort_keys=True, separators=(",", ":")),
+        }
+
+    def _set_provider_replies(self, replies: list[dict]) -> None:
+        self.provider_replies = replies
 
     def write_plan(self, plan: dict | None = None) -> bytes:
         raw = _compact(plan if plan is not None else self.plan)
@@ -123,7 +197,17 @@ class CompilerOwnerMatrixV2Tests(unittest.TestCase):
     def run_cli(self, raw: bytes | None = None, *, timeout: float = 10,
                 arguments: list[str] | None = None) -> subprocess.CompletedProcess[str]:
         command = arguments if arguments is not None else self.arguments(raw)
-        return subprocess.run(command, capture_output=True, text=True, check=False, timeout=timeout)
+        replies = getattr(self, "provider_replies", None)
+        if replies is None:
+            reply = self._provider_reply()
+            replies = [reply, reply]
+        self.gh_responses.write_text(
+            json.dumps(replies, sort_keys=True, separators=(",", ":")), encoding="utf-8"
+        )
+        self.gh_call_count.write_text("0", encoding="ascii")
+        self.env["FAKE_GH_ENDPOINT"] = self._gh_endpoint()
+        return subprocess.run(command, capture_output=True, text=True, check=False, timeout=timeout,
+                              env=self.env)
 
     def assert_rejected(self, result: subprocess.CompletedProcess[str]) -> None:
         self.assertNotEqual(result.returncode, 0, result.stdout)
@@ -210,43 +294,34 @@ class CompilerOwnerMatrixV2Tests(unittest.TestCase):
                                         ensure_ascii=True) + "\n"
         self.assertEqual(result.stdout, expected_canonical)
 
-    def test_branch_and_tag_contexts_select_the_existing_complete_projection_routes(self) -> None:
-        module = _load_owner_selector()
-        original_project = module.release_matrix.project
-        for source_ref, expected_event, expected_full_qualification in (
-            (SOURCE_REF, "workflow_dispatch", True),
-            (TAG_REF, "push", False),
+    def test_actual_provider_event_selects_only_valid_projection_routes(self) -> None:
+        for source_ref, event in (
+            (SOURCE_REF, "workflow_dispatch"),
+            (TAG_REF, "push"),
+            (TAG_REF, "workflow_dispatch"),
         ):
-            with self.subTest(source_ref=source_ref):
+            with self.subTest(source_ref=source_ref, event=event):
                 self.set_source_ref(source_ref)
                 raw = self.write_plan()
-                selected_route = {}
-
-                def capture_project(**kwargs):
-                    selected_route.update({
-                        "event": kwargs["event"], "scope": kwargs["scope"],
-                        "full_qualification": kwargs["full_qualification"],
-                    })
-                    return original_project(**kwargs)
-
-                module.release_matrix.project = capture_project
-                try:
-                    command = self.arguments(raw)
-                    result = module.select(module._parser().parse_args(command[3:]))
-                finally:
-                    module.release_matrix.project = original_project
-                self.assertEqual(len(result["owners"]), 24)
-                self.assertEqual(selected_route, {
-                    "event": expected_event, "scope": "full",
-                    "full_qualification": expected_full_qualification,
-                })
+                reply = self._provider_reply(event)
+                self._set_provider_replies([reply, reply])
+                result = self.run_cli(raw)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(self.gh_call_count.read_text(encoding="ascii"), "2")
+                wrapper = json.loads(result.stdout)
+                self.assertEqual(len(wrapper["owners"]), 24)
 
     def test_unrecognized_source_ref_is_rejected_without_stdout(self) -> None:
         self.set_source_ref("refs/pull/17/merge")
         self.assert_rejected(self.run_cli())
+        self.assertEqual(self.gh_call_count.read_text(encoding="ascii"), "0")
         module = _load_owner_selector()
-        with self.assertRaises(module.artifact_origin.OriginError):
-            module._projection_route("refs/pull/17/merge")
+        for ref, event in (("refs/pull/17/merge", "workflow_dispatch"),
+                           (SOURCE_REF, None), (SOURCE_REF, "workflow_run"),
+                           (SOURCE_REF, "unexpected")):
+            with self.subTest(ref=ref, event=event):
+                with self.assertRaises(module.artifact_origin.OriginError):
+                    module._projection_route(ref, event)
 
     def test_duplicate_plan_json_field_is_rejected_without_stdout(self) -> None:
         raw = self.write_plan()
@@ -283,10 +358,53 @@ class CompilerOwnerMatrixV2Tests(unittest.TestCase):
         arguments = self.arguments(raw)
         arguments[arguments.index("--source-ref") + 1] = "refs/heads/other"
         self.assert_rejected(self.run_cli(arguments=arguments))
+        self.assertEqual(self.gh_call_count.read_text(encoding="ascii"), "0")
 
         arguments = self.arguments(raw)
         arguments[arguments.index("--source-context-sha256") + 1] = "e" * 64
         self.assert_rejected(self.run_cli(arguments=arguments))
+        self.assertEqual(self.gh_call_count.read_text(encoding="ascii"), "0")
+
+    def test_provider_event_ref_identity_and_api_failures_emit_no_json(self) -> None:
+        missing_event = self._provider_reply()
+        missing_run = json.loads(missing_event["stdout"])
+        del missing_run["event"]
+        missing_event["stdout"] = json.dumps(
+            missing_run, sort_keys=True, separators=(",", ":")
+        )
+        cases: list[tuple[str, str, list[dict]]] = [
+            (SOURCE_REF, "push", [self._provider_reply("push")]),
+            (TAG_REF, "workflow_run", [self._provider_reply("workflow_run")]),
+            (SOURCE_REF, "missing-event", [missing_event]),
+            (SOURCE_REF, "unknown-event", [self._provider_reply("deployment")]),
+            (SOURCE_REF, "run-id-mismatch", [self._provider_reply(id=123457)]),
+            (SOURCE_REF, "attempt-mismatch", [self._provider_reply(run_attempt=3)]),
+            (SOURCE_REF, "ref-mismatch", [self._provider_reply(head_branch="other")]),
+            (SOURCE_REF, "malformed-json", [{"returncode": 0, "stdout": "{bad-json"}]),
+            (SOURCE_REF, "malformed-run", [{"returncode": 0, "stdout": "[]"}]),
+            (SOURCE_REF, "provider-failure", [{"returncode": 1, "stdout": ""}]),
+        ]
+        for source_ref, label, replies in cases:
+            with self.subTest(source_ref=source_ref, failure=label):
+                self.set_source_ref(source_ref)
+                self._set_provider_replies(replies)
+                self.assert_rejected(self.run_cli())
+
+    def test_changed_provider_event_or_identity_before_stdout_is_rejected(self) -> None:
+        self.set_source_ref(TAG_REF)
+        self._set_provider_replies([
+            self._provider_reply("workflow_dispatch"),
+            self._provider_reply("push"),
+        ])
+        self.assert_rejected(self.run_cli())
+        self.assertEqual(self.gh_call_count.read_text(encoding="ascii"), "2")
+
+        self._set_provider_replies([
+            self._provider_reply("workflow_dispatch"),
+            self._provider_reply("workflow_dispatch", run_attempt=3),
+        ])
+        self.assert_rejected(self.run_cli())
+        self.assertEqual(self.gh_call_count.read_text(encoding="ascii"), "2")
 
     def test_reference_symlink_is_rejected_without_stdout(self) -> None:
         raw = self.write_plan()
