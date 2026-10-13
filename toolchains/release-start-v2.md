@@ -60,7 +60,24 @@ They report whether the bypass field is visible, its count, and the public
 policy digest; they do not expose actors or credentials. Neither report is an
 admission receipt. This probe is intended to determine whether the normal
 protected-start job token suffices before introducing another credential.
+The write-capable job is restricted to protected main; its initial controlled
+branch observation used the explicitly inspected source commit, not arbitrary
+dispatch input code.
+The read-only job additionally observes the documented GraphQL ruleset
+connection's bypass count without actor identities. This is an alternative
+visibility probe, not a fallback that admits a candidate. A reported zero
+alone does not prove complete visibility; a known nonempty provider
+counterprobe is required before this interface could replace governance reads.
 It creates no tag, draft, release, dispatch claim or package publication.
+
+The initial REST provider probe, run
+[38456476174](https://github.com/metaneutrons/aros-toolchains/actions/runs/38456476174)
+on inspected commit `36d300dc35ac69f8a015ccbb8107b7ba8ea25eff`, passed its
+contracts and both visibility jobs. Both normal job tokens omitted
+`bypass_actors`: `contents: read` and `contents: write` returned the same
+public policy digest, but neither proved an empty bypass list. No credential
+was created or copied and no tag/release was changed. The normal token is
+therefore insufficient for the complete REST governance gate tested here.
 
 ## Event sequence
 
@@ -161,6 +178,18 @@ behavior or production qualification:
   activation, including multiple pending and historical terminal PRs.
 
 ### Remaining integration proof
+
+`scripts/toolchain/compiler-sdk-release-start-v2.py` is an inactive reader for
+the future signed start. It verifies the independently selected original
+main-based workflow/run/attempt and successful owning job, authenticates the
+exact record subject through GitHub attestations, rereads the frozen input
+blobs, and checks the annotated tag plus exact private empty draft. It repeats
+run/job observations and record/bundle byte readbacks before returning.
+Its offline fixtures do not prove a real signed start. No workflow currently
+calls it, and it neither constructs a start nor consumes or dispatches one.
+Runtime materialization, fresh privileged absence, mutation outcome checks,
+record signing/retention and exclusive consumption still require the complete
+protected controller and a genuine provider observation.
 
 `scripts/toolchain/prepare-release-draft-config-v2.py` derives an inactive draft
 configuration from the committed `release-please-config.json`. It preserves the
