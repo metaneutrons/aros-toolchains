@@ -78,6 +78,20 @@ sealed contract, ABI and explicitly selected reproducibility epoch.
 
 ## Safety and remaining release work
 
+`release-admission-v2.py` is an inactive, read-only metadata adapter for the
+future automatic Release Please route. It binds a unique App-authored version
+merge to protected main, its complete successful Producer contracts attempt,
+committed runtime and selection identities, and authenticated immutable-tag
+governance. It creates no tag, draft, dispatch or publication. Its receipt does
+not authenticate runtime payload bytes, prove CLI capabilities, or qualify the
+compiler/SDK matrix.
+
+A read-scoped GitHub release lookup establishes only visible-release absence;
+it cannot establish private-draft absence. A future protected start job must
+repeat this check with contents-write visibility before creating anything.
+The adapter is not wired into a workflow while that start boundary, released
+runtime qualification and complete publication path remain unfinished.
+
 Preparation jobs have only `contents: read`. SDK owning jobs additionally need
 `actions: read`, `id-token: write` and `attestations: write` for original artifact
 observation and keyless transport signing. They have no publication environment,
