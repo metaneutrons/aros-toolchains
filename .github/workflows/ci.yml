@@ -6,6 +6,10 @@ on:
     branches: [main]
   workflow_dispatch:
     inputs:
+      governance_visibility_probe:
+        description: 'Observe normal read/write job-token ruleset visibility without publication'
+        type: boolean
+        default: false
       artifact_origin_probe:
         description: 'Run the non-publishing owning-job artifact transport probe'
         type: boolean
@@ -29,6 +33,44 @@ env:
   PYTHONHASHSEED: '0'
 
 jobs:
+  governance-visibility-read:
+    name: Governance visibility with contents read
+    if: github.event_name == 'workflow_dispatch' && inputs.governance_visibility_probe
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Observe only normal job-token metadata visibility
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python3 -B scripts/toolchain/release-admission-v2.py probe-governance-visibility \
+            --contents-permission read --output "$RUNNER_TEMP/governance-read.json"
+
+  governance-visibility-write:
+    name: Governance visibility with contents write
+    if: github.event_name == 'workflow_dispatch' && inputs.governance_visibility_probe
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Observe only normal job-token metadata visibility
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python3 -B scripts/toolchain/release-admission-v2.py probe-governance-visibility \
+            --contents-permission write --output "$RUNNER_TEMP/governance-write.json"
+
   contracts:
     runs-on: ubuntu-24.04
     steps:

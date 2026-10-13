@@ -33,6 +33,35 @@ implicit fallback. Environment protection and credential access must be
 confirmed separately before activation; a workflow referencing an environment
 does not prove that protection exists.
 
+### Governance credential qualification
+
+Do not assume that `Administration: read` exposes all tag governance details.
+The [repository ruleset API](https://docs.github.com/en/rest/repos/rules#get-a-repository-ruleset)
+requires only metadata read access for the rule document, but documents that
+`bypass_actors` is returned only when the caller has write access to the ruleset.
+A successful GET therefore does not establish that the caller can prove an
+empty bypass list. On 2026-10-13 the public read of the active tag ruleset
+omitted that field, while the existing privileged operator read explicitly
+returned an empty list. Neither observation qualifies a proposed read-only
+installation token.
+
+Before configuring a governance credential, probe its exact granted scope and
+the complete response, including an explicit empty bypass list. Keep the current
+missing-field rejection. Do not grant administrative write rights merely to
+make this probe pass, silently substitute the operator's token, or infer no
+bypasses from an omitted field. The fresh pre-mutation recheck must use a caller
+whose visibility is independently proven; a saved receipt does not make hidden
+current policy visible. This credential boundary remains unqualified.
+
+The existing contracts workflow has an opt-in `governance_visibility_probe`
+dispatch. Its two jobs use only the automatically issued job token, with
+`contents: read` and `contents: write` respectively, and perform bounded GETs.
+They report whether the bypass field is visible, its count, and the public
+policy digest; they do not expose actors or credentials. Neither report is an
+admission receipt. This probe is intended to determine whether the normal
+protected-start job token suffices before introducing another credential.
+It creates no tag, draft, release, dispatch claim or package publication.
+
 ## Event sequence
 
 1. The existing PR-only Release Please workflow prepares the version PR.
@@ -154,6 +183,12 @@ Existing seven-field contexts and signed origin formats remain unchanged.
 These transport checks do not yet bind native matrix projections to that event
 or authorize a production tag dispatch; those caller integrations remain open.
 
+Compiler owner selection and the compiler, combined-candidate and native-evidence
+adapters now preserve the actual provider event with the canonical source
+context. They reobserve the exact source attempt before emitting results.
+This closes their event projection boundary, not START-A5 through START-A7 or
+the production workflow entry.
+
 ### Provider observations (2026-10-13)
 
 The pinned action was exercised in a separate private test repository with
@@ -181,6 +216,23 @@ admission and dispatch still require independent qualification. Do not copy the 
 lightweight-tag conversion sequence or retarget a tag to accommodate the library.
 An archived repository's draft 404 is not evidence of absence: require an active
 repository before using privileged absence checks.
+
+The same isolated private fixture also exercised fixed-name draft asset
+consumption without a native dispatch. A confirmed existing name rejected a
+second upload with HTTP 422. A fresh-name parallel upload returned HTTP 201
+and HTTP 404, with exactly one retained asset; numeric-ID downloads matched
+the submitted bytes and the annotated test tags remained unchanged. The
+expected 422 race-loser assertion failed: this is not a wholly successful
+consumption proof. The fixture was archived again without publishing or
+deleting its test assets.
+
+The dispatcher must proceed only after its own confirmed HTTP 201 and exact
+numeric asset readback. Any other or unknown mutation result, including 404,
+stops that invocation without retry, deletion, replacement or an alternate
+claim name. The fixed-name claim must bind the independently authenticated
+original start and exact tag/draft/input identities and remain in the closed
+candidate inventory. The provider uniqueness observation alone proves neither
+that binding nor a successful exclusive native dispatch; START-A7 stays open.
 
 The released V2 runtime, source qualification and complete compiler/SDK matrix
 remain prerequisites. This design neither changes source pins nor waives
