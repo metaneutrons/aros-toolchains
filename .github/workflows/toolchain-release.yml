@@ -563,6 +563,79 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
 
+  v2-readback:
+    name: Read back original SDK owners
+    if: inputs.mode == 'qualify-v2-full'
+    needs: [v2-prepare, v2-runtimes, v2-build, v2-sdk]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+      attestations: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: diagnostic-v2-native-runtime-linux-x86_64
+          path: ${{ runner.temp }}/diagnostic-runtime
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: diagnostic-v2-inputs
+          path: ${{ runner.temp }}/diagnostic-inputs
+      - name: Authenticate the complete SDK owner matrix
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_TOOLS: ${{ needs.v2-prepare.outputs.tools_commit }}
+          CURRENT_JOB: Read back original SDK owners
+        run: |
+          set -euo pipefail
+          runtime="$RUNNER_TEMP/diagnostic-runtime"
+          (cd "$runtime" && shasum -a 256 -c SHA256SUMS)
+          chmod +x "$runtime"/bin/*
+          python3 -B - <<'PY'
+          import importlib.util
+          import os
+          from pathlib import Path
+          spec = importlib.util.spec_from_file_location('origin', 'scripts/toolchain/artifact-origin.py')
+          origin = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(origin)
+          root = Path(os.environ['RUNNER_TEMP']).resolve() / 'sdk-owner-context'
+          root.mkdir(mode=0o700)
+          with (root / 'context.json').open('xb') as handle:
+              handle.write(origin.canonical(origin.context_from_environment('.github/workflows/toolchain-release.yml')))
+          PY
+          context="$RUNNER_TEMP/sdk-owner-context/context.json"
+          context_sha=$(shasum -a 256 "$context" | awk '{print $1}')
+          runtime_sha=$(shasum -a 256 "$runtime/bin/aros" | awk '{print $1}')
+          inputs_sha=$(shasum -a 256 "$RUNNER_TEMP/diagnostic-inputs/toolchain-release-inputs-v2.json" | awk '{print $1}')
+          bash scripts/toolchain/collect-sdk-owners-v2.sh \
+            --aros "$runtime/bin/aros" --aros-sha256 "$runtime_sha" \
+            --inputs-dir "$RUNNER_TEMP/diagnostic-inputs" --inputs-sha256 "$inputs_sha" \
+            --producer-commit "$GITHUB_SHA" --tools-commit "$EXPECTED_TOOLS" \
+            --source-context "$context" --source-context-sha256 "$context_sha" \
+            --source-workflow .github/workflows/toolchain-release.yml --source-ref "$GITHUB_REF" \
+            --workflow .github/workflows/toolchain-release.yml --job-name "$CURRENT_JOB" --same-attempt \
+            --root "$RUNNER_TEMP/complete-sdk-readback"
+      - name: Retain diagnostic selection metadata only
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: diagnostic-v2-sdk-owner-selection
+          path: |
+            ${{ runner.temp }}/sdk-owner-context/
+            ${{ runner.temp }}/complete-sdk-readback/matrix.json
+            ${{ runner.temp }}/complete-sdk-readback/selection-fragment.json
+            ${{ runner.temp }}/complete-sdk-readback/owners/*/selection.json
+            ${{ runner.temp }}/complete-sdk-readback/owners/*/readback/readback.json
+            ${{ runner.temp }}/complete-sdk-readback/owners/*/readback/origin-verification.log
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 7
+
   v2-qualify:
     name: Compiler A/B and SDK (${{ matrix.group_id }}, ${{ matrix.host }}, ${{ matrix.profile }})
     if: inputs.mode == 'qualify-v2'

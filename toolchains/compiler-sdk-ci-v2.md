@@ -87,10 +87,11 @@ compiler/SDK matrix. None of those reader or release-admission gates is replaced
 by a signed `sdk-lane.json` claim or a package-only summary. See
 [owning-job artifact transport](artifact-origin.md).
 
-The SDK action and readers support an explicitly selected `sdk` transport role
-for future complete SDK owners. The current diagnostic workflow still selects
-`diagnostic`; no role is inferred or promoted from a signed payload. Neither
-role substitutes for the complete native SDK matrix and release-admission gates.
+The narrowed diagnostic selects the explicit `diagnostic` transport role.
+The full nonpublishing workflow selects `sdk` for its separate SDK owners.
+Readers require the caller's exact role; no role is inferred or promoted from
+a signed payload. Neither role substitutes for the complete native SDK matrix
+and release-admission gates.
 
 Dispatch only after both exact tools and source commits are remotely available,
 the selected tools checks and producer contracts are green, and the source
@@ -131,6 +132,22 @@ the authoritative receipt validator and must bind the exact original build-resul
 hash. This is authenticated original-job evidence, not a claim that the SDK job
 executed the compiler build itself. Explicit caller-selected admission remains
 available separately through `admit-lane-v2.sh`.
+
+After every compiler and SDK owner succeeds, the readback job independently
+derives the full SDK owner set from a fresh native release plan. It selects each
+exact successful provider job and its SDK-role payload/proof names, authenticates
+the original owner and reads the retained bytes back. Every SDK/group/profile/host
+tuple must be present exactly once; no narrowed matrix or diagnostic owner role
+can replace this closure.
+
+The emitted generation-selection fragment describes authenticated transport
+paths and digests only. It grants no SDK generation, ABI or release qualification.
+The native complete SDK-matrix factory must still reacquire those bytes with the
+complete compiler evidence, establish cross-host equality and produce the combined
+inventory. Selection metadata uploaded as diagnostics contains job-local paths;
+it is not a portable publisher input. Final native acquisition must run in this
+same readback job or independently reacquire the original owners.
+
 This full scheduling coverage is not release admission: the runtime is still a
 development build, and original-owner verification, complete native matrix
 readback, combined inventory, signatures and isolated release gates remain

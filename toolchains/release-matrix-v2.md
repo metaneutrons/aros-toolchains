@@ -33,11 +33,13 @@ on each declared host; duplicate, unknown, unordered or incomplete lanes fail.
 The complete matrix is limited by GitHub's 256-job matrix boundary after A/B
 expansion. There is no Intel macOS mapping or target-specific runner exception.
 
-The helper permits the full selection only for the `push` scheduling path.
-Manual `workflow_dispatch` scheduling is limited to `linux-x86_64` or `linux`.
-Manual full selection and a partial push selection are rejected. Actual tag,
-protected workflow and publication checks remain separate workflow gates;
-the helper's event argument does not authenticate a GitHub event.
+The `push` scheduling path requires a full selection. Manual
+`workflow_dispatch` permits the narrowed `linux-x86_64` or `linux` diagnostic
+scope, or a full selection with explicit `--full-qualification`. The latter
+requires the workflow's nonpublishing `qualify-v2-full` mode; a group filter is
+not permitted. A partial push selection or implicit manual full selection is
+rejected. Actual tag, protected workflow and publication checks remain separate
+workflow gates; the helper's event argument does not authenticate a GitHub event.
 
 `sdk_matrix` projects the native plan's validated SDK selections, including
 identity file/hash, source preset and compiler group/profile associations. SDKs
@@ -58,9 +60,9 @@ assurance boundary.
 ## Integration boundary
 
 The offline producer contract suite exercises this helper. The manual
-[compiler/SDK diagnostic](compiler-sdk-ci-v2.md) consumes its bounded Linux
-projection using an exactly pinned development runtime. This is not production
-activation. The published runtime lock is unchanged and legacy tag publication
+[compiler/SDK diagnostic](compiler-sdk-ci-v2.md) consumes its narrowed Linux
+or explicit full projection using an exactly pinned development runtime. This
+is not production activation. The published runtime lock is unchanged and legacy tag publication
 is blocked during migration. The complete V2 provenance, release and recovery
 graph still requires the independently released V2-capable runtime and qualified
 input collection.
