@@ -133,11 +133,33 @@ tag-ref manual event without weakening the branch diagnostic boundary. Original
 owner collection, attestation verification and native evidence readback must
 preserve that real event identity throughout the complete plan-derived matrix.
 
-Prove, using the pinned Release Please implementation and an isolated test
-repository, that draft creation preserves a pre-existing fresh annotated tag
-and reports the exact candidate. Do not assume this behavior or copy the older
-lightweight-tag conversion sequence. If it cannot be established, stop for an
-explicit design decision; do not retarget a tag to accommodate the library.
+### Provider observations (2026-10-13)
+
+The pinned action was exercised in a separate private test repository with
+its repository-scoped workflow token. It prepared an exact three-file version
+PR, then created its private draft after an inspected merge and fresh annotated
+test tag. No product repository, App, secret or published release was changed.
+
+| Case | Measured result |
+| :--- | :--- |
+| Prepare PR only | Manifest, changelog and version file changed; no tag or release created. |
+| Create draft with `force-tag-creation: false` | One private empty draft on the exact candidate commit; `releases_created` true. The annotated tag object, peeled commit and timestamp remained unchanged. |
+| Wrong expected tag object | Caller admission failed; the Release Please step was skipped. Existing tag and draft remained unchanged. |
+| Existing private draft | Caller admission failed; the Release Please step was skipped. No second draft or tag mutation. |
+| Historical merged PR marked pending | The PR-only preparation phase aborted with the library's outstanding-untagged-PR diagnostic; it created no next PR. |
+| Two merged pending PRs, including an otherwise valid fresh candidate | Caller admission failed before Release Please. No fresh draft was created; both annotated tags and the earlier private draft remained unchanged. |
+| Archive the private fixture | Draft listing became empty and its numeric GET returned 404. Briefly unarchiving returned the same unchanged draft ID; the repository was then archived again. |
+
+This proves the tested provider behavior and fixture guards, not production
+START acceptance. The fixture used GitHub Actions' bot rather than the
+production Release Please App; it did not authenticate a released runtime,
+sign a start record, dispatch native qualification or prove durable consumption.
+The test labels were restored and the private fixture repository archived
+without publishing, deleting or retargeting either test version. Production
+admission and dispatch still require independent qualification. Do not copy the older
+lightweight-tag conversion sequence or retarget a tag to accommodate the library.
+An archived repository's draft 404 is not evidence of absence: require an active
+repository before using privileged absence checks.
 
 The released V2 runtime, source qualification and complete compiler/SDK matrix
 remain prerequisites. This design neither changes source pins nor waives
