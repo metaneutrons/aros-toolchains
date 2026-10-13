@@ -218,11 +218,28 @@ missing or ambiguous relations fail. The closed native evidence DTO is kept
 outside the release inventory. This selection does not execute the final
 native release factory or authenticate signatures.
 
-This is the pre-attestation stage only. The diagnostic base URL names a future
-candidate and is not evidence that downloads exist. No checksums, provenance
-bundle, tag, draft or publication are fabricated. Genuine signing, final
-native index/readback, every SDK generation and compatibility proof, and
-independent final candidate qualification remain mandatory.
+The next diagnostic steps attest that exact external subject manifest using
+GitHub's OIDC-backed provenance action. The external verifier checks the source
+commit and branch ref, workflow, complete subject set and certificate run/attempt.
+The original bundle is copied exclusively into the release inventory and verified
+again there. Native `producer index --stage final` writes the final checksums;
+native `verify-release-evidence` then reads back the complete compiler A/B,
+compatibility and SDK-generation matrix. Held input, index, subject, selection
+and runtime digests, exact asset/SDK tuple sets and native result counts remain
+checked across these steps. The signing job needs `attestations: write`, but
+keeps `contents: read` and never uses a publication environment.
+This permission is job-wide: the manually selected repository branch and its
+readback code are trusted, not code from a fork PR. Its certificate binds that
+branch ref and run attempt; it cannot satisfy a production tag's source claims.
+This diagnostic scope is not approval to reuse the job as a publication job.
+
+The diagnostic base URL names a future candidate; it does not prove downloads
+exist. No tag, draft, fabricated provenance or public release is created.
+Branch attestation is not a tagged qualification record. The local Rust result
+explicitly reports byte consistency only; original-owner authentication and
+external signature verification remain separate gates. The production tag path,
+durable qualification/recovery and independent isolated release audit still
+require qualification before publication.
 
 This full scheduling coverage is not release admission: the runtime is still a
 development build, and original-owner verification, complete native matrix

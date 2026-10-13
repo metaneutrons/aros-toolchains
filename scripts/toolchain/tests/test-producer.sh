@@ -451,6 +451,7 @@ python3 -B "$source_root/scripts/toolchain/tests/test-compiler-candidate-assembl
 python3 -B "$source_root/scripts/toolchain/tests/test-sdk-candidate-assembly-v2.py"
 python3 -B "$source_root/scripts/toolchain/tests/test-release-candidate-assembly-v2.py"
 python3 -B "$source_root/scripts/toolchain/tests/test-native-release-evidence-selection-v2.py"
+python3 -B "$source_root/scripts/toolchain/tests/test-final-candidate-workflow-v2.py"
 python3 -B "$source_root/scripts/toolchain/tests/test-compiler-owner-matrix-v2.py"
 python3 -B "$source_root/scripts/toolchain/tests/test-collect-compiler-owners-v2.py"
 bash -n "$source_root/scripts/toolchain/collect-compiler-owners-v2.sh"
