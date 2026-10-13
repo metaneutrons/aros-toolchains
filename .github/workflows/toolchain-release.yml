@@ -658,6 +658,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          fetch-depth: 0
           persist-credentials: false
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
@@ -982,8 +983,133 @@ jobs:
                 .record.sha256 == $generation.generation_record_sha256 and
                 .compatibility.manifest_sha256 == $generation.compatibility_manifest_sha256))
           ' "$final_evidence" >/dev/null
-          # Ref-bound attestation and complete byte readback still do not issue
-          # a qualification record or permission to publish.
+          # Byte readback is not publication permission. Only a separately
+          # authenticated product-tag route may record complete qualification.
+      - name: Record complete tag-bound V2 qualification
+        id: complete-qualification
+        if: github.event_name == 'push' && needs.v2-prepare.outputs.runtime_kind == 'released'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SELECTED_TAG_OBJECT: ${{ needs.v2-prepare.outputs.tag_object }}
+          SELECTED_RELEASE_ID: ${{ needs.v2-prepare.outputs.release_id }}
+          EXPECTED_INDEX_SHA: ${{ steps.candidate.outputs.index_sha256 }}
+          EXPECTED_SUBJECT_SHA: ${{ steps.candidate.outputs.subject_sha256 }}
+          EXPECTED_SELECTION_SHA: ${{ steps.candidate.outputs.selection_sha256 }}
+          EXPECTED_SUMMARY_SHA: ${{ steps.candidate.outputs.summary_sha256 }}
+          EXPECTED_INPUTS_SHA: ${{ steps.candidate.outputs.inputs_sha256 }}
+          EXPECTED_RUNTIME_SHA: ${{ steps.candidate.outputs.runtime_sha256 }}
+        run: |
+          set -euo pipefail
+          set -C
+          [[ "$GITHUB_EVENT_NAME" == push && "$GITHUB_REF_TYPE" == tag && "$GITHUB_RUN_ATTEMPT" == 1 ]]
+          [[ "$GITHUB_REF" == "refs/tags/$SELECTED_RELEASE_ID" && "$SELECTED_TAG_OBJECT" =~ ^[0-9a-f]{40}$ ]]
+          route="$RUNNER_TEMP/qualification-route.env"
+          test ! -e "$route" && test ! -L "$route"
+          python3 -B scripts/toolchain/select-compiler-sdk-route-v2.py \
+            --event "$GITHUB_EVENT_NAME" --ref-type "$GITHUB_REF_TYPE" --source-ref "$GITHUB_REF" \
+            --repository "$GITHUB_REPOSITORY" --producer-commit "$GITHUB_SHA" \
+            --run-attempt "$GITHUB_RUN_ATTEMPT" --producer-dir "$GITHUB_WORKSPACE" \
+            --selection "$GITHUB_WORKSPACE/toolchains/compiler-sdk-ci-selection-v2.json" \
+            --runtime-lock "$GITHUB_WORKSPACE/$TOOLS_RUNTIME_LOCK" --github-output "$route"
+          grep -Fx "tag_object=$SELECTED_TAG_OBJECT" "$route" >/dev/null
+          grep -Fx "release_id=$SELECTED_RELEASE_ID" "$route" >/dev/null
+          grep -Fx 'runtime_kind=released' "$route" >/dev/null
+          # Recording must be outside both forbidden build roots. This small
+          # runner-owned directory is evidence only, never a new build tree.
+          parent=$(mktemp -d "$HOME/aros-v2-qualification.XXXXXX")
+          parent=$(cd "$parent" && pwd -P)
+          operation="$parent/record"
+          summary="$parent/record-result.json"
+          printf 'parent=%s\n' "$parent" >> "$GITHUB_OUTPUT"
+          runtime="$RUNNER_TEMP/diagnostic-runtime"
+          python3 -B scripts/toolchain/materialize-aros-tools-runtime.py verify \
+            --lock "$GITHUB_WORKSPACE/$TOOLS_RUNTIME_LOCK" --host linux-x86_64 --directory "$runtime"
+          created=$(date +%s)
+          expires=$((created + 7 * 24 * 60 * 60))
+          python3 -B scripts/toolchain/record-complete-qualification-v2.py \
+            --runtime "$runtime/bin/aros" --runtime-sha256 "$EXPECTED_RUNTIME_SHA" \
+            --release-dir "$RUNNER_TEMP/release-candidate/release" \
+            --inputs-sha256 "$EXPECTED_INPUTS_SHA" --index-sha256 "$EXPECTED_INDEX_SHA" \
+            --selection "$RUNNER_TEMP/native-release-evidence-selection.json" --selection-sha256 "$EXPECTED_SELECTION_SHA" \
+            --subject-manifest "$RUNNER_TEMP/release-candidate/subject-manifest.json" --subject-manifest-sha256 "$EXPECTED_SUBJECT_SHA" \
+            --candidate-summary "$RUNNER_TEMP/release-candidate-summary.json" --candidate-summary-sha256 "$EXPECTED_SUMMARY_SHA" \
+            --repository "$GITHUB_REPOSITORY" --workflow .github/workflows/toolchain-release.yml \
+            --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --source-tag "$SELECTED_RELEASE_ID" --source-tag-object "$SELECTED_TAG_OBJECT" --source-tag-commit "$GITHUB_SHA" \
+            --created-at "$created" --expires-at "$expires" --operation-dir "$operation" \
+            --forbidden-prefix "$GITHUB_WORKSPACE" --forbidden-prefix "$RUNNER_TEMP" > "$summary"
+          evidence="$operation/qualification-evidence-v2.json"
+          evidence_sha=$(shasum -a 256 "$evidence" | awk '{print $1}')
+          jq -e --arg path "$evidence" --arg digest "$evidence_sha" --arg tag "$SELECTED_RELEASE_ID" \
+            --arg object "$SELECTED_TAG_OBJECT" --arg commit "$GITHUB_SHA" \
+            --arg run "$GITHUB_RUN_ID" --arg attempt "$GITHUB_RUN_ATTEMPT" '
+            .schema == "aros-toolchain-full-qualification-record-adapter-v2" and
+            .operation == "record-full-qualification" and
+            .qualification_evidence == {path: $path, sha256: $digest} and
+            .source_observation.tag == $tag and .source_observation.tag_object == $object and
+            .source_observation.peeled_commit == $commit and
+            (.source_observation.run_id | tostring) == $run and
+            (.source_observation.run_attempt | tostring) == $attempt and
+            .scope.publication == false
+          ' "$summary" >/dev/null
+          printf 'evidence=%s\nevidence_sha256=%s\n' "$evidence" "$evidence_sha" >> "$GITHUB_OUTPUT"
+      - name: Attest the unchanged complete qualification record
+        id: qualification-signature
+        if: github.event_name == 'push' && steps.complete-qualification.outcome == 'success'
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373
+        with:
+          subject-path: ${{ steps.complete-qualification.outputs.evidence }}
+      - name: Seal qualification transport metadata
+        if: github.event_name == 'push' && steps.qualification-signature.outcome == 'success'
+        env:
+          QUALIFICATION_PARENT: ${{ steps.complete-qualification.outputs.parent }}
+          QUALIFICATION_PATH: ${{ steps.complete-qualification.outputs.evidence }}
+          QUALIFICATION_SHA: ${{ steps.complete-qualification.outputs.evidence_sha256 }}
+          QUALIFICATION_BUNDLE: ${{ steps.qualification-signature.outputs.bundle-path }}
+        run: |
+          set -euo pipefail
+          python3 -B - <<'PY'
+          import importlib.util
+          import os
+          from pathlib import Path
+          spec = importlib.util.spec_from_file_location('qualification', 'scripts/toolchain/record-complete-qualification-v2.py')
+          qualification = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(qualification)
+          parent = Path(os.environ['QUALIFICATION_PARENT'])
+          evidence = Path(os.environ['QUALIFICATION_PATH'])
+          measurement, _, fingerprint = qualification._read_owned(evidence, qualification.MAX_METADATA, 'qualification record')
+          if measurement['sha256'] != os.environ['QUALIFICATION_SHA']:
+              raise SystemExit('qualification record changed during attestation')
+          for source, name in (
+              (Path(os.environ['QUALIFICATION_BUNDLE']), 'qualification.sigstore.json'),
+              (Path(os.environ['RUNNER_TEMP']) / 'qualification-route.env', 'qualification-route.env'),
+          ):
+              selected, data, identity = qualification._read_owned(source, qualification.MAX_METADATA, name)
+              with (parent / name).open('xb') as output:
+                  output.write(data)
+              qualification._stat_expected(source, qualification.MAX_METADATA, name, selected, identity)
+          qualification._stat_expected(evidence, qualification.MAX_METADATA, 'qualification record', measurement, fingerprint)
+          PY
+      - name: Retain complete qualification and its signed provenance
+        if: github.event_name == 'push' && steps.qualification-signature.outcome == 'success'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: complete-v2-qualification-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ steps.complete-qualification.outputs.parent }}/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 90
+      - name: Retain bounded qualification failure diagnostics
+        if: failure() && steps.complete-qualification.outputs.parent != ''
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: failed-v2-qualification-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ steps.complete-qualification.outputs.parent }}/
+            ${{ runner.temp }}/qualification-route.env
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 7
       - name: Retain diagnostic selection metadata only
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

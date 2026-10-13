@@ -101,8 +101,9 @@ closed release index, isolated signature/attestation audit and consumer cutover.
 
 ## Durable V2 qualification adapter
 
-`record-complete-qualification-v2.py` is a production-only recording adapter,
-not an enabled production workflow. It requires independently held runtime,
+`record-complete-qualification-v2.py` is a product-tag recording adapter. The
+workflow invokes it only after complete original-owner readback, genuine staged
+provenance verification and final native evidence verification. It requires independently held runtime,
 collection, index, selection, candidate-summary and external subject-list
 digests. The candidate release ID and download URL must match the selected
 SemVer tag and repository; diagnostic identities cannot be recorded through it.
@@ -122,7 +123,16 @@ Place the fresh operation directory beneath an owned parent outside the release,
 selected evidence and all forbidden build prefixes. In particular, an output
 under `RUNNER_TEMP` cannot be used when that entire root is a forbidden prefix.
 
-The protected caller still authenticates original owning jobs, obtains genuine
+The workflow reauthenticates the tag against the preparation observation and
+rechecks the released runtime immediately before recording. Its fresh evidence
+directory is outside the forbidden workspace and temporary build roots. The
+unchanged verified qualification document receives its own provenance attestation;
+the record, policy, diagnostics and signature are retained together for 90 days.
+Failed recordings retain separately named diagnostics, not success qualification.
+The candidate qualification window is seven days and is never extended by this
+step. Artifact retention is not permission to replay or publish expired evidence.
+
+The protected caller authenticates original owning jobs, obtains genuine
 provider/tag observations and independently verifies the released runtime.
 Supplied tag-object metadata and a binary hash do not establish those properties.
 This adapter neither creates tags/releases nor grants publication authority.
@@ -198,6 +208,8 @@ are rejected before restoration.
 The full native plan selects owning jobs and SDK generations. The validated tag
 name reaches both compiler owners, combined assembly and the final index, while
 SDK product versions remain source-owned and independent. These tag-bound byte
-readbacks still do not issue publication authority: complete native qualification,
-durable recovery evidence and an isolated final release audit must be wired and
-verified before publication. The retained V1 publisher cannot receive a tag push.
+readbacks still do not issue publication authority. A product tag additionally
+records and signs complete native qualification, but durable recovery readback,
+the final Release Please production trigger and isolated publication audit must
+still be wired and verified before publication. The retained V1 publisher cannot
+receive a tag push.
