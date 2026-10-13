@@ -11,6 +11,9 @@ contracts remain owned by AROS-NX.
 
 1. Build the exact selected development aros-tools checkout. This exception is
    restricted to the manual diagnostic graph. It is not a signed release runtime.
+   Full qualification first checks its portable package-readback interface;
+   a runtime lacking required owner-readback selectors fails before the native
+   matrix starts. This structural check is not a compiler or receipt proof.
 2. Use native recipe creation, source materialization and `sdk verify-source`
    to bind all compiler groups and SDK identity documents. Native `release-plan`
    validates the collection before the bounded scheduler projects its matrix.
@@ -134,13 +137,16 @@ executed the compiler build itself. Explicit caller-selected admission remains
 available separately through `admit-lane-v2.sh`.
 
 After every compiler and SDK owner succeeds, the readback job independently
-derives the full SDK owner set from a fresh native release plan. It selects each
+derives the full compiler and SDK owner sets from fresh native release plans.
+Each original A/B compiler job must have a distinct authenticated numeric owner;
+the compiler collector preserves package, measurement, executor and environment
+selections without rebuilding. It selects each
 exact successful provider job and its SDK-role payload/proof names, authenticates
 the original owner and reads the retained bytes back. Every SDK/group/profile/host
 tuple must be present exactly once; no narrowed matrix or diagnostic owner role
 can replace this closure.
 
-The emitted generation-selection fragment describes authenticated transport
+The emitted compiler-build and SDK-generation selection fragments describe authenticated transport
 paths and digests only. It grants no SDK generation, ABI or release qualification.
 The native complete SDK-matrix factory must still reacquire those bytes with the
 complete compiler evidence, establish cross-host equality and produce the combined

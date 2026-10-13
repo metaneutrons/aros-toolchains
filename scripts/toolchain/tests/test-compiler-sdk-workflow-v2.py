@@ -416,6 +416,13 @@ def validate_v2_policy(documents: Documents) -> dict[str, int]:
     )
     require("uses: ./.github/actions/materialize-development-aros-tools" in prepare,
             "V2 preparation must use the local development-only tools helper")
+    require(
+        "name: Check portable readback interface before full qualification" in prepare
+        and 'readback_help=$("$READBACK_AROS" toolchain producer verify-package --help)' in prepare
+        and "for option in package-measurement package-measurement-sha256 executor-contract-sha256 executor-binary-sha256; do" in prepare
+        and prepare.index("name: Check portable readback interface") < prepare.index("- id: matrix"),
+        "full preparation must reject unsupported portable readback before native matrix work",
+    )
     require("needs: v2-prepare" in sources, "V2 source preparation must depend on V2 preparation")
     require(
         "needs: [v2-prepare, v2-sources, v2-runtimes]" in qualify,
@@ -494,9 +501,13 @@ def validate_v2_policy(documents: Documents) -> dict[str, int]:
         and "runs-on: ubuntu-24.04" in readback
         and "name: diagnostic-v2-native-runtime-linux-x86_64" in readback
         and "collect-sdk-owners-v2.sh" in readback
+        and "collect-compiler-owners-v2.sh" in readback
+        and readback.index("collect-compiler-owners-v2.sh") < readback.index("collect-sdk-owners-v2.sh")
+        and '--release-id "toolchain-dev-${GITHUB_SHA:0:12}"' in readback
+        and '--forbidden-prefix "$GITHUB_WORKSPACE" --forbidden-prefix "$RUNNER_TEMP"' in readback
         and '--producer-commit "$GITHUB_SHA" --tools-commit "$EXPECTED_TOOLS"' in readback
         and '--source-context "$context" --source-context-sha256 "$context_sha"' in readback
-        and '--job-name "$CURRENT_JOB" --same-attempt' in readback
+        and readback.count('--job-name "$CURRENT_JOB" --same-attempt') == 2
         and "selection-fragment.json" in readback
         and "build-lane-v2.sh" not in readback
         and "sdk build" not in readback,
@@ -661,6 +672,46 @@ def mutate_job(text: str, name: str, old: str, new: str) -> str:
 
 
 class CompilerSdkWorkflowV2Tests(unittest.TestCase):
+    def test_portable_readback_preflight_executes_the_actual_shell(self) -> None:
+        workflow = Documents().text(WORKFLOW)
+        block = workflow.split("name: Check portable readback interface before full qualification", 1)[1]
+        self.assertIn("if: inputs.mode == 'qualify-v2-full'", block.split("- id: matrix", 1)[0])
+        script = block.split("        run: |\n", 1)[1].split("      - id: matrix", 1)[0]
+        script = "\n".join(line[10:] for line in script.splitlines()) + "\n"
+        options = ("package-measurement", "package-measurement-sha256",
+                   "executor-contract-sha256", "executor-binary-sha256")
+        with tempfile.TemporaryDirectory() as temporary:
+            executable = Path(temporary) / "aros"
+            for missing in (None, *options, "backend-failure"):
+                with self.subTest(missing=missing):
+                    help_text = "\n".join(f"  --{option} <VALUE>" for option in options if option != missing)
+                    executable.write_text(
+                        "#!/usr/bin/env python3\nimport sys\n"
+                        "assert sys.argv[1:] == ['toolchain','producer','verify-package','--help']\n"
+                        + ("raise SystemExit(42)\n" if missing == "backend-failure"
+                           else f"print({help_text!r})\n"), encoding="utf-8",
+                    )
+                    executable.chmod(0o700)
+                    result = subprocess.run(
+                        ["/bin/bash", "-c", script], capture_output=True, text=True,
+                        env={**os.environ, "READBACK_AROS": str(executable)}, check=False,
+                    )
+                    if missing is None:
+                        self.assertEqual(result.returncode, 0, result.stderr)
+                    else:
+                        self.assertNotEqual(result.returncode, 0)
+                        if missing != "backend-failure":
+                            self.assertIn(f"--{missing}", result.stderr)
+
+    def test_rejects_disconnected_portable_readback_preflight(self) -> None:
+        documents = self.new_documents()
+        documents.set_text(WORKFLOW, documents.text(WORKFLOW).replace(
+            'readback_help=$("$READBACK_AROS" toolchain producer verify-package --help)',
+            'readback_help="unsupported runtime"', 1,
+        ))
+        with self.assertRaisesRegex(PolicyViolation, "unsupported portable readback"):
+            validate_v2_policy(documents)
+
     def new_documents(self) -> Documents:
         return Documents()
 
@@ -831,6 +882,8 @@ class CompilerSdkWorkflowV2Tests(unittest.TestCase):
             ("needs: [v2-prepare, v2-runtimes, v2-build, v2-sdk]", "needs: [v2-prepare, v2-runtimes, v2-build]"),
             ("if: inputs.mode == 'qualify-v2-full'", "if: inputs.mode == 'qualify-v2'"),
             ("collect-sdk-owners-v2.sh", "unverified-sdk-download.sh"),
+            ("collect-compiler-owners-v2.sh", "unverified-compiler-download.sh"),
+            ('--release-id "toolchain-dev-${GITHUB_SHA:0:12}"', '--release-id stale-candidate'),
             ('--job-name "$CURRENT_JOB" --same-attempt', '--job-name "$CURRENT_JOB"'),
         ):
             with self.subTest(before=before):

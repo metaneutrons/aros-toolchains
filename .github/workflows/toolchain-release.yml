@@ -123,6 +123,19 @@ jobs:
           source-dir: ${{ github.workspace }}/dependencies/aros-tools
           commit: ${{ steps.selection.outputs.tools_commit }}
           destination: ${{ runner.temp }}/diagnostic-runtime
+      - name: Check portable readback interface before full qualification
+        if: inputs.mode == 'qualify-v2-full'
+        env:
+          READBACK_AROS: ${{ steps.runtime.outputs.root }}/bin/aros
+        run: |
+          set -euo pipefail
+          readback_help=$("$READBACK_AROS" toolchain producer verify-package --help)
+          for option in package-measurement package-measurement-sha256 executor-contract-sha256 executor-binary-sha256; do
+            if ! grep -Eq "^[[:space:]]*--$option([[:space:]]|$)" <<< "$readback_help"; then
+              echo "Selected tools lack the portable readback option --$option; full qualification cannot start." >&2
+              exit 1
+            fi
+          done
       - id: matrix
         name: Bind native recipes, source SDK identities and compiler/SDK selections
         env:
@@ -564,7 +577,7 @@ jobs:
           retention-days: 7
 
   v2-readback:
-    name: Read back original SDK owners
+    name: Read back original compiler and SDK owners
     if: inputs.mode == 'qualify-v2-full'
     needs: [v2-prepare, v2-runtimes, v2-build, v2-sdk]
     runs-on: ubuntu-24.04
@@ -590,7 +603,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           EXPECTED_TOOLS: ${{ needs.v2-prepare.outputs.tools_commit }}
-          CURRENT_JOB: Read back original SDK owners
+          CURRENT_JOB: Read back original compiler and SDK owners
         run: |
           set -euo pipefail
           runtime="$RUNNER_TEMP/diagnostic-runtime"
@@ -612,6 +625,16 @@ jobs:
           context_sha=$(shasum -a 256 "$context" | awk '{print $1}')
           runtime_sha=$(shasum -a 256 "$runtime/bin/aros" | awk '{print $1}')
           inputs_sha=$(shasum -a 256 "$RUNNER_TEMP/diagnostic-inputs/toolchain-release-inputs-v2.json" | awk '{print $1}')
+          bash scripts/toolchain/collect-compiler-owners-v2.sh \
+            --aros "$runtime/bin/aros" --aros-sha256 "$runtime_sha" \
+            --inputs-dir "$RUNNER_TEMP/diagnostic-inputs" --inputs-sha256 "$inputs_sha" \
+            --producer-commit "$GITHUB_SHA" --tools-commit "$EXPECTED_TOOLS" \
+            --source-context "$context" --source-context-sha256 "$context_sha" \
+            --source-workflow .github/workflows/toolchain-release.yml --source-ref "$GITHUB_REF" \
+            --workflow .github/workflows/toolchain-release.yml --job-name "$CURRENT_JOB" --same-attempt \
+            --release-id "toolchain-dev-${GITHUB_SHA:0:12}" \
+            --forbidden-prefix "$GITHUB_WORKSPACE" --forbidden-prefix "$RUNNER_TEMP" \
+            --root "$RUNNER_TEMP/complete-compiler-readback"
           bash scripts/toolchain/collect-sdk-owners-v2.sh \
             --aros "$runtime/bin/aros" --aros-sha256 "$runtime_sha" \
             --inputs-dir "$RUNNER_TEMP/diagnostic-inputs" --inputs-sha256 "$inputs_sha" \
@@ -627,6 +650,11 @@ jobs:
           name: diagnostic-v2-sdk-owner-selection
           path: |
             ${{ runner.temp }}/sdk-owner-context/
+            ${{ runner.temp }}/complete-compiler-readback/matrix.json
+            ${{ runner.temp }}/complete-compiler-readback/selection-fragment.json
+            ${{ runner.temp }}/complete-compiler-readback/owners/*/selection.json
+            ${{ runner.temp }}/complete-compiler-readback/owners/*/readback/observation.json
+            ${{ runner.temp }}/complete-compiler-readback/owners/*/readback/origin-verification.log
             ${{ runner.temp }}/complete-sdk-readback/matrix.json
             ${{ runner.temp }}/complete-sdk-readback/selection-fragment.json
             ${{ runner.temp }}/complete-sdk-readback/owners/*/selection.json
