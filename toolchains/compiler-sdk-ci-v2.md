@@ -115,8 +115,19 @@ plan before selecting every host and compiler lane. It preserves the actual
 manual event identity; it does not simulate a tag push.
 
 Each selected host builds the exact development tools commit natively. Lanes
-consume only their own host runtime, verify its checksums and independently
-build both compiler copies before SDK generation. macOS Intel remains excluded.
+consume only their own host runtime and verify its checksums. Full qualification
+uses separate original jobs and absolute build roots for compiler copies A and
+B. Each job retains its native package and signed execution observations.
+The subsequent SDK job independently selects both successful owners, verifies
+their provenance and reads their package bytes back before comparison and SDK
+generation; it never rebuilds the compilers. macOS Intel remains excluded.
+
+The reader takes executor observations from the authenticated original native
+build result, not from portable export metadata. Native `verify-package` remains
+the authoritative receipt validator and must bind the exact original build-result
+hash. This is authenticated original-job evidence, not a claim that the SDK job
+executed the compiler build itself. Explicit caller-selected admission remains
+available separately through `admit-lane-v2.sh`.
 This full scheduling coverage is not release admission: the runtime is still a
 development build, and original-owner verification, complete native matrix
 readback, combined inventory, signatures and isolated release gates remain

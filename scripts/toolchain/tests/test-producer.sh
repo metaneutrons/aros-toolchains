@@ -27,7 +27,7 @@ diagnostic_workflow = workflow
 # The retained V1 graph remains separately audited, but cannot publish during
 # migration. Development-only V2 jobs have their own closed policy probes.
 workflow = re.sub(
-    r"^  v2-(?:prepare|sources|qualify):\n.*?(?=^  [a-zA-Z0-9_-]+:|\Z)",
+    r"^  v2-(?:prepare|sources|runtimes|qualify|build|sdk):\n.*?(?=^  [a-zA-Z0-9_-]+:|\Z)",
     "", workflow, flags=re.MULTILINE | re.DOTALL,
 )
 
@@ -436,6 +436,10 @@ python3 -B "$source_root/scripts/toolchain/tests/test-artifact-origin-source.py"
 python3 -B "$source_root/scripts/toolchain/tests/test-release-matrix-v2.py"
 python3 -B "$source_root/scripts/toolchain/tests/test-prepare-compiler-sdk-inputs-v2.py"
 python3 -B "$source_root/scripts/toolchain/tests/test-compiler-sdk-workflow-v2.py"
+python3 -B "$source_root/scripts/toolchain/tests/test-qualify-owned-compiler-lane-v2.py"
+python3 -B "$source_root/scripts/toolchain/tests/test-read-native-owner-v2.py"
+bash -n "$source_root/scripts/toolchain/read-native-owner-v2.sh"
+shellcheck "$source_root/scripts/toolchain/read-native-owner-v2.sh"
 python3 -B "$source_root/scripts/toolchain/tests/test-development-runtime-hosts.py"
 python3 -B "$source_root/scripts/toolchain/tests/test-select-owner-artifacts-v2.py"
 python3 -B "$source_root/scripts/toolchain/tests/test-gcc-checksum-inputs.py"
@@ -466,7 +470,7 @@ release_path = Path(sys.argv[1])
 source_root = release_path.parents[2]
 workflow = release_path.read_text(encoding="utf-8")
 workflow = re.sub(
-    r"^  v2-(?:prepare|sources|qualify):\n.*?(?=^  [a-zA-Z0-9_-]+:|\Z)",
+    r"^  v2-(?:prepare|sources|runtimes|qualify|build|sdk):\n.*?(?=^  [a-zA-Z0-9_-]+:|\Z)",
     "", workflow, flags=re.MULTILINE | re.DOTALL,
 )
 recovery = Path(sys.argv[2]).read_text(encoding="utf-8")

@@ -146,13 +146,15 @@ def require_read_only_job(job: str, name: str) -> None:
                 cursor += 1
             break
     expected_permissions = ["contents: read"]
-    if name == "v2-qualify":
+    if name in {"v2-qualify", "v2-build", "v2-sdk"}:
         expected_permissions += ["actions: read", "id-token: write", "attestations: write"]
     if permissions != expected_permissions:
         raise PolicyViolation(f"{name} permissions must exactly match its non-publishing job scope")
     if re.search(r"(?m)^\s*environment:", job):
         raise PolicyViolation(f"{name} must not use a publication environment")
-    if re.search(r"\bsecrets\.", job) or "GH_TOKEN" in job or "GITHUB_TOKEN" in job:
+    permitted_reader_token = "GH_TOKEN: ${{ github.token }}" if name == "v2-sdk" else ""
+    inspected_job = job.replace(permitted_reader_token, "") if permitted_reader_token else job
+    if re.search(r"\bsecrets\.", inspected_job) or "GH_TOKEN" in inspected_job or "GITHUB_TOKEN" in inspected_job:
         raise PolicyViolation(f"{name} must not request credentials or secrets")
     if re.search(r"(?im)^\s*(?:gh\s+release|git\s+(?:tag|push)\b)", job):
         raise PolicyViolation(f"{name} must not publish a release or create/push a tag")
@@ -378,14 +380,17 @@ def validate_v2_policy(documents: Documents) -> dict[str, int]:
     require("- qualify-v2" in workflow, "workflow_dispatch must expose qualify-v2 mode")
     names = job_names(workflow)
     v2_names = {name for name in names if name.startswith("v2-")}
-    expected_names = {"v2-prepare", "v2-sources", "v2-runtimes", "v2-qualify"}
+    expected_names = {"v2-prepare", "v2-sources", "v2-runtimes", "v2-qualify", "v2-build", "v2-sdk"}
     require(v2_names == expected_names, "workflow V2 diagnostic job set is not closed")
     prepare = workflow_job(workflow, "v2-prepare")
     sources = workflow_job(workflow, "v2-sources")
     qualify = workflow_job(workflow, "v2-qualify")
     runtimes = workflow_job(workflow, "v2-runtimes")
+    builds = workflow_job(workflow, "v2-build")
+    sdk = workflow_job(workflow, "v2-sdk")
     for name, job in (("v2-prepare", prepare), ("v2-sources", sources),
-                      ("v2-runtimes", runtimes), ("v2-qualify", qualify)):
+                      ("v2-runtimes", runtimes), ("v2-qualify", qualify),
+                      ("v2-build", builds), ("v2-sdk", sdk)):
         require_read_only_job(job, name)
         require(re.search(r"(?m)^    timeout-minutes: [1-9][0-9]*$", job) is not None,
                 f"{name} must have a bounded job timeout")
@@ -453,6 +458,32 @@ def validate_v2_policy(documents: Documents) -> dict[str, int]:
         and 'if [[ "$REQUESTED_MODE" == qualify-v2-full ]]; then' in prepare
         and 'group_arguments+=(--full-qualification)' in prepare,
         "V2 matrix preparation must use explicit native-plan full qualification without event spoofing",
+    )
+    require(
+        "if: inputs.mode == 'qualify-v2'" in qualify
+        and "if: inputs.mode == 'qualify-v2-full'" in builds
+        and "if: inputs.mode == 'qualify-v2-full'" in sdk
+        and "build_matrix: ${{ steps.matrix.outputs.build_matrix }}" in prepare
+        and "matrix: ${{ fromJSON(needs.v2-prepare.outputs.build_matrix) }}" in builds
+        and "uses: ./.github/actions/build-native-lane-v2" in builds
+        and "copy: ${{ matrix.copy }}" in builds
+        and "root: ${{ runner.temp }}/native-lane-${{ matrix.copy }}" in builds
+        and "job-name: Native compiler (${{ matrix.group_id }}, ${{ matrix.host }}, ${{ matrix.profile }}, ${{ matrix.copy }})" in builds,
+        "full native compiler copies must execute in distinct original owning jobs and roots",
+    )
+    require(
+        "needs: [v2-prepare, v2-sources, v2-runtimes, v2-build]" in sdk
+        and "matrix: ${{ fromJSON(needs.v2-prepare.outputs.matrix) }}" in sdk
+        and "name: diagnostic-v2-native-runtime-${{ matrix.host }}" in sdk
+        and "select-owner-artifacts-v2.py" in sdk
+        and '--job-name "Native compiler ($SELECTED_GROUP, $SELECTED_HOST, $SELECTED_PRESET, $copy)"' in sdk
+        and "--role build" in sdk
+        and "--owner-a-selection" in sdk and "--owner-b-selection" in sdk
+        and '--job-name "$CURRENT_JOB" --same-attempt' in sdk
+        and ".[0].job.id != .[1].job.id" in sdk
+        and "owner-role: sdk" in sdk
+        and "job-name: SDK from owned compilers (${{ matrix.group_id }}, ${{ matrix.host }}, ${{ matrix.profile }})" in sdk,
+        "SDK owners must authenticate two distinct original compilers without rebuilding",
     )
     require(
         "host_matrix: ${{ steps.matrix.outputs.host_matrix }}" in prepare
@@ -752,6 +783,31 @@ class CompilerSdkWorkflowV2Tests(unittest.TestCase):
         documents.set_text(WORKFLOW, workflow)
         with self.assertRaisesRegex(PolicyViolation, "optional diagnostic group"):
             validate_v2_policy(documents)
+
+    def test_rejects_collapsed_original_compiler_owners(self) -> None:
+        for before, after in (
+            ("copy: ${{ matrix.copy }}", "copy: a"),
+            ("root: ${{ runner.temp }}/native-lane-${{ matrix.copy }}", "root: ${{ runner.temp }}/native-lane"),
+            ("if: inputs.mode == 'qualify-v2-full'", "if: inputs.mode == 'qualify-v2'"),
+        ):
+            with self.subTest(before=before):
+                documents = self.new_documents()
+                documents.set_text(WORKFLOW, mutate_job(documents.text(WORKFLOW), "v2-build", before, after))
+                with self.assertRaisesRegex(PolicyViolation, "distinct original owning jobs"):
+                    validate_v2_policy(documents)
+
+    def test_rejects_sdk_without_original_owner_admission(self) -> None:
+        for before, after in (
+            ("needs: [v2-prepare, v2-sources, v2-runtimes, v2-build]", "needs: [v2-prepare, v2-sources, v2-runtimes]"),
+            ("--owner-a-selection", "--unverified-a-selection"),
+            ("--owner-b-selection", "--unverified-b-selection"),
+            ("select-owner-artifacts-v2.py", "unverified-owner-selection.py"),
+        ):
+            with self.subTest(before=before):
+                documents = self.new_documents()
+                documents.set_text(WORKFLOW, mutate_job(documents.text(WORKFLOW), "v2-sdk", before, after))
+                with self.assertRaisesRegex(PolicyViolation, "authenticate two distinct original compilers"):
+                    validate_v2_policy(documents)
 
     def test_rejects_missing_development_runtime_helper(self) -> None:
         documents = self.new_documents()

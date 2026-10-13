@@ -3,7 +3,7 @@ description: Cold native compiler build, guarded package readback and a separate
 
 inputs:
   aros:
-    description: Absolute CLI from the independently verified released runtime.
+    description: Absolute independently selected native CLI; development runtimes are nonpublishing only.
     required: true
   aros-sha256:
     description: CLI SHA-256 selected from the verified runtime inventory, not a build result.
@@ -24,7 +24,7 @@ inputs:
     description: Clean exact producer checkout.
     required: true
   tools-dir:
-    description: Clean tools source matching the released runtime.
+    description: Clean tools source matching the independently selected runtime commit.
     required: true
   cache-dir:
     description: Prepared and independently verified source/Cargo cache.

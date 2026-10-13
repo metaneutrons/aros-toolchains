@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Same-job diagnostic compiler A/B and source-bound SDK qualification.
+# Same-job compiler A/B by default; explicit owner mode reads authenticated
+# independent builds before the same source-bound SDK qualification.
 # No upload is admitted as release evidence; this adapter cannot publish.
 set -euo pipefail
 set -C
@@ -20,8 +21,16 @@ observe_gcc_inputs() {
 }
 aros='' inputs='' selection='' source='' producer='' tools='' cache='' upstream=''
 group='' preset='' host='' root='' jobs='' deadline='' runtime_sha=''
+owner_a_selection='' owner_b_selection='' source_workflow='' source_ref=''
+workflow='' job_name='' same_attempt=false owner_mode=false
 seen='|'
 while (( $# )); do
+    if [[ "$1" == --same-attempt ]]; then
+        [[ "$same_attempt" == false ]] || fail 'duplicate same-attempt selector'
+        same_attempt=true
+        shift
+        continue
+    fi
     (( $# >= 2 )) || fail "missing value for $1"
     key=$1 value=$2
     [[ "$seen" != *"|$key|"* && -n "$value" && "$value" != *$'\n'* && "$value" != *$'\r'* ]] || fail 'duplicate or invalid option'
@@ -34,6 +43,10 @@ while (( $# )); do
         --upstream-source-dir) upstream=$value;; --group) group=$value;;
         --preset) preset=$value;; --host) host=$value;; --root) root=$value;;
         --jobs) jobs=$value;; --timeout-seconds) deadline=$value;;
+        --owner-a-selection) owner_a_selection=$value;;
+        --owner-b-selection) owner_b_selection=$value;;
+        --source-workflow) source_workflow=$value;; --source-ref) source_ref=$value;;
+        --workflow) workflow=$value;; --job-name) job_name=$value;;
         *) fail "unknown option $key";;
     esac
     shift 2
@@ -41,6 +54,49 @@ done
 for name in aros runtime_sha inputs selection source producer tools cache upstream group preset host root jobs deadline; do
     [[ -n "${!name}" ]] || fail "missing $name"
 done
+
+# Owner selection is an explicit mode switch. Validate its complete caller
+# context before checking the runtime bytes or creating the operation root so
+# a malformed owner request can never fall through to diagnostic rebuilding.
+owner_count=0
+for name in owner_a_selection owner_b_selection source_workflow source_ref workflow job_name; do
+    [[ -z "${!name}" ]] || ((owner_count += 1))
+done
+if (( owner_count > 0 )); then
+    (( owner_count == 6 )) || fail 'compiler owner selectors must be supplied together'
+    owner_mode=true
+    for owner_selection in "$owner_a_selection" "$owner_b_selection"; do
+        [[ "$owner_selection" == /* && -f "$owner_selection" && ! -L "$owner_selection" ]] || \
+            fail 'owner selections must be absolute regular nonlinked files'
+        owner_selection_parent=${owner_selection%/*}
+        owner_selection_name=${owner_selection##*/}
+        [[ -n "$owner_selection_parent" && -n "$owner_selection_name" &&
+           "$owner_selection" == "$(cd "$owner_selection_parent" && pwd -P)/$owner_selection_name" ]] || \
+            fail 'owner selections must use canonical paths'
+        owner_selection_size=$(wc -c < "$owner_selection" | tr -d '[:space:]')
+        if [[ ! "$owner_selection_size" =~ ^[0-9]{1,8}$ ]] || (( 10#$owner_selection_size > 16777216 )); then
+            fail 'owner selection exceeds its byte limit'
+        fi
+    done
+    [[ "$owner_a_selection" != "$owner_b_selection" ]] || fail 'owner selections must be distinct files'
+    for selected_workflow in "$workflow" "$source_workflow"; do
+        [[ "$selected_workflow" =~ ^\.github/workflows/[A-Za-z0-9_-]+\.yml$ ]] || \
+            fail 'workflow selector is invalid'
+    done
+    (( ${#job_name} <= 256 )) || fail 'job name is too long'
+    [[ "$source_ref" =~ ^refs/(heads|tags)/[A-Za-z0-9._/-]+$ ]] || fail 'source ref is invalid'
+    ref_tail=${source_ref#refs/*/}
+    [[ -n "$ref_tail" && "$ref_tail" != *'..'* && "$ref_tail" != *'@{'* &&
+       "$ref_tail" != *//* && "$ref_tail" != */ && "$ref_tail" != *. && "$ref_tail" != *@ ]] || \
+        fail 'source ref is not canonical'
+    IFS='/' read -r -a ref_parts <<< "$ref_tail"
+    for ref_part in "${ref_parts[@]}"; do
+        [[ -n "$ref_part" && "$ref_part" != .* && "$ref_part" != *. && "$ref_part" != *.lock ]] || \
+            fail 'source ref is not canonical'
+    done
+else
+    [[ "$same_attempt" == false ]] || fail '--same-attempt requires explicit compiler owners'
+fi
 [[ "$runtime_sha" =~ ^[0-9a-f]{64}$ && "$jobs" =~ ^[1-9][0-9]*$ && "$deadline" =~ ^[1-9][0-9]*$ ]] || fail 'invalid digest or execution budget'
 case "$host" in linux-x86_64|linux-aarch64|macos-aarch64) ;; *) fail 'unsupported native diagnostic host';; esac
 [[ "$aros" == /* && -x "$aros" && -f "$aros" && ! -L "$aros" && "$(digest "$aros")" == "$runtime_sha" ]] || fail 'runtime bytes differ from selection'
@@ -69,15 +125,31 @@ ports_relative=$(jq -er --arg group "$group" '.groups | map(select(.id == $group
 ports="$producer/$ports_relative"
 release_id="toolchain-dev-$(git -C "$producer" rev-parse --short=12 HEAD)"
 for copy in a b; do
-    bash "$producer/scripts/toolchain/build-lane-v2.sh" \
-        --aros "$aros" --aros-sha256 "$runtime_sha" --recipe "$recipe" \
-        --source-lock "$lock" --profiles "$profiles" --source-dir "$source" \
-        --producer-dir "$producer" --tools-dir "$tools" --cache-dir "$cache" \
-        --preset "$preset" --host "$host" --release-id "$release_id" \
-        --jobs "$jobs" --timeout-seconds "$deadline" --root "$root/compiler-$copy" \
-        --forbidden-prefix "$parent"
-    if [[ "$compiler_family" == gnu ]]; then
-        observe_gcc_inputs "$root/compiler-$copy"
+    if [[ "$owner_mode" == true ]]; then
+        owner_selection=$owner_a_selection
+        if [[ "$copy" == b ]]; then owner_selection=$owner_b_selection; fi
+        owner_selection_sha=$(digest "$owner_selection")
+        owner_args=(--aros "$aros" --aros-sha256 "$runtime_sha" --recipe "$recipe"
+            --recipe-file-sha256 "$(digest "$recipe")" --source-lock "$lock"
+            --source-lock-sha256 "$(digest "$lock")" --profiles "$profiles"
+            --profiles-sha256 "$(digest "$profiles")" --source-selection "$owner_selection"
+            --source-selection-sha256 "$owner_selection_sha" --workflow "$workflow"
+            --job-name "$job_name" --source-workflow "$source_workflow" --source-ref "$source_ref"
+            --group "$group" --preset "$preset" --host "$host" --copy "$copy"
+            --release-id "$release_id" --root "$root/compiler-$copy" --forbidden-prefix "$parent")
+        if [[ "$same_attempt" == true ]]; then owner_args+=(--same-attempt); fi
+        bash "$producer/scripts/toolchain/read-native-owner-v2.sh" "${owner_args[@]}"
+    else
+        bash "$producer/scripts/toolchain/build-lane-v2.sh" \
+            --aros "$aros" --aros-sha256 "$runtime_sha" --recipe "$recipe" \
+            --source-lock "$lock" --profiles "$profiles" --source-dir "$source" \
+            --producer-dir "$producer" --tools-dir "$tools" --cache-dir "$cache" \
+            --preset "$preset" --host "$host" --release-id "$release_id" \
+            --jobs "$jobs" --timeout-seconds "$deadline" --root "$root/compiler-$copy" \
+            --forbidden-prefix "$parent"
+        if [[ "$compiler_family" == gnu ]]; then
+            observe_gcc_inputs "$root/compiler-$copy"
+        fi
     fi
 done
 "$aros" toolchain producer compare --left "$root/compiler-a/payload/package" \
