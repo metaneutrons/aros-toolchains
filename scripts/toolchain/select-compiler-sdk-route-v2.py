@@ -4,6 +4,7 @@
 import argparse
 import importlib.util
 import json
+import os
 from pathlib import Path
 import re
 import subprocess
@@ -17,6 +18,13 @@ HERE = Path(__file__).resolve().parent
 SPEC = importlib.util.spec_from_file_location("v2_release_tag", HERE / "validate-release-tag.py")
 TAG = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(TAG)
+ADMISSION_SPEC = importlib.util.spec_from_file_location(
+    "v2_route_admission", HERE / "release-admission-v2.py"
+)
+ADMISSION = importlib.util.module_from_spec(ADMISSION_SPEC)
+ADMISSION_SPEC.loader.exec_module(ADMISSION)
+MAX_COMMAND_STDOUT = 8 * 1024 * 1024
+MAX_COMMAND_STDERR = 64 * 1024
 
 
 class RouteError(ValueError):
@@ -45,8 +53,21 @@ def document(path):
 
 
 def command(arguments, *, allow_failure=False):
-    result = subprocess.run(arguments, capture_output=True, text=True, timeout=60,
-                            encoding="utf-8", errors="strict")
+    environment = dict(os.environ)
+    environment.pop("GOVERNANCE_TOKEN", None)
+    try:
+        captured = ADMISSION._bounded_subprocess(
+            arguments, cwd=None, timeout=60,
+            stdout_limit=MAX_COMMAND_STDOUT, stderr_limit=MAX_COMMAND_STDERR,
+            env=environment, label="route identity command",
+        )
+    except ADMISSION.AdmissionError as error:
+        raise RouteError(str(error)) from error
+    result = subprocess.CompletedProcess(
+        arguments, captured.returncode,
+        captured.stdout.decode("utf-8", errors="strict"),
+        captured.stderr.decode("utf-8", errors="strict"),
+    )
     require(allow_failure or result.returncode == 0, "route identity command failed")
     return result
 

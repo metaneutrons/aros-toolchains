@@ -9,18 +9,24 @@ not establish anything about the state of a real GitHub repository.
 from __future__ import annotations
 
 import json
+import importlib.util
 import os
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 
 TOOLCHAIN = Path(__file__).resolve().parents[1]
 SCRIPT = TOOLCHAIN / "select-compiler-sdk-route-v2.py"
 TAGGER_EPOCH = "1700000000"
 SENTINEL = b"pre-existing workflow output\n"
+
+ROUTE_SPEC = importlib.util.spec_from_file_location("route_under_test", SCRIPT)
+ROUTE = importlib.util.module_from_spec(ROUTE_SPEC)
+ROUTE_SPEC.loader.exec_module(ROUTE)
 
 
 def canonical(value: object) -> bytes:
@@ -483,6 +489,42 @@ class CompilerSdkRouteTests(unittest.TestCase):
             f'"object":{{"type":"tag","sha":"{self.fixture.tag_object}"}}}}'
         )
         self.assert_rejected(self.fixture.run(), gh_calls=1)
+
+
+class BoundedRouteCommandTests(unittest.TestCase):
+    def test_exact_capture_limits_and_failure_contract(self):
+        with mock.patch.object(ROUTE, "MAX_COMMAND_STDOUT", 128), \
+                mock.patch.object(ROUTE, "MAX_COMMAND_STDERR", 128):
+            result = ROUTE.command([
+                sys.executable, "-c",
+                "import os; os.write(1, b'x'*128); os.write(2, b'y'*128)",
+            ])
+            self.assertEqual(result.stdout, "x" * 128)
+            self.assertEqual(result.stderr, "y" * 128)
+            failure = [sys.executable, "-c", "raise SystemExit(7)"]
+            self.assertEqual(ROUTE.command(failure, allow_failure=True).returncode, 7)
+            with self.assertRaisesRegex(ROUTE.RouteError, "identity command failed"):
+                ROUTE.command(failure)
+
+    def test_both_streams_reject_oversized_output_before_decode(self):
+        with mock.patch.object(ROUTE, "MAX_COMMAND_STDOUT", 128), \
+                mock.patch.object(ROUTE, "MAX_COMMAND_STDERR", 128):
+            for descriptor in (1, 2):
+                with self.subTest(descriptor=descriptor), self.assertRaisesRegex(
+                    ROUTE.RouteError, "exceeded its output limit"
+                ):
+                    ROUTE.command([
+                        sys.executable, "-c",
+                        f"import os; os.write({descriptor}, b'x'*129)",
+                    ], allow_failure=True)
+
+    def test_governance_credential_is_not_inherited(self):
+        with mock.patch.dict(os.environ, {"GOVERNANCE_TOKEN": "inert-fixture"}):
+            result = ROUTE.command([
+                sys.executable, "-c",
+                "import os; print('GOVERNANCE_TOKEN' in os.environ)",
+            ])
+        self.assertEqual(result.stdout, "False\n")
 
 
 if __name__ == "__main__":
