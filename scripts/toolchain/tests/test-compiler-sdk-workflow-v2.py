@@ -550,59 +550,82 @@ def validate_v2_policy(documents: Documents) -> dict[str, int]:
         "SDK package projection must follow authentication with exact independent bindings",
     )
     documents.read("scripts/toolchain/select-sdk-package-inputs-v2.py")
-    compiler_assembler = "python3 -B scripts/toolchain/assemble-compiler-candidate-v2.py"
-    require(compiler_assembler in readback, "compiler candidate assembly must use the reviewed adapter")
-    assembly_command = readback.split(compiler_assembler, 1)[1].split('> "$compiler_summary"', 1)[0]
+    combined_assembler = "python3 -B scripts/toolchain/assemble-release-candidate-v2.py"
+    require(combined_assembler in readback, "combined candidate assembly must use the reviewed adapter")
+    assembly_command = readback.split(combined_assembler, 1)[1].split('> "$candidate_summary"', 1)[0]
     require(
         readback.index(sdk_selector) < readback.index('required_paths="$RUNNER_TEMP/compiler-candidate-required-paths.json"')
         < readback.index("python3 -B scripts/toolchain/required-compiler-payload-v2.py")
-        < readback.index(compiler_assembler)
+        < readback.index(combined_assembler)
         and 'policy="$GITHUB_WORKSPACE/toolchains/compiler-required-payload-v1.json"' in readback
         and 'policy_sha=$(shasum -a 256 "$policy"' in readback
         and '--policy "$policy" --policy-sha256 "$policy_sha"' in readback
         and 'required_paths_sha=$(shasum -a 256 "$required_paths"' in readback
         and 'compiler_fragment="$RUNNER_TEMP/complete-compiler-readback/selection-fragment.json"' in readback
         and 'compiler_fragment_sha=$(shasum -a 256 "$compiler_fragment"' in readback
-        and 'compiler_summary="$RUNNER_TEMP/compiler-candidate-summary.json"' in readback
-        and '--root "$RUNNER_TEMP/compiler-candidate" > "$compiler_summary"' in readback
+        and 'candidate_summary="$RUNNER_TEMP/release-candidate-summary.json"' in readback
+        and '--root "$RUNNER_TEMP/release-candidate" > "$candidate_summary"' in readback
         and 'test ! -e "$required_paths" && test ! -L "$required_paths"' in readback
-        and 'test ! -e "$compiler_summary" && test ! -L "$compiler_summary"' in readback
+        and 'test ! -e "$candidate_summary" && test ! -L "$candidate_summary"' in readback
         and all(argument in assembly_command for argument in (
             '--aros "$runtime/bin/aros" --aros-sha256 "$runtime_sha"',
             '--plan "$plan" --plan-sha256 "$plan_sha"',
             '--inputs-dir "$RUNNER_TEMP/diagnostic-inputs" --inputs-sha256 "$inputs_sha"',
             '--producer-commit "$GITHUB_SHA" --tools-commit "$EXPECTED_TOOLS"',
-            '--fragment "$compiler_fragment" --fragment-sha256 "$compiler_fragment_sha"',
-            '--owner-root "$RUNNER_TEMP/complete-compiler-readback"',
+            '--compiler-fragment "$compiler_fragment" --compiler-fragment-sha256 "$compiler_fragment_sha"',
+            '--compiler-owner-root "$RUNNER_TEMP/complete-compiler-readback"',
+            '--sdk-fragment "$fragment" --sdk-fragment-sha256 "$fragment_sha"',
+            '--sdk-owner-root "$RUNNER_TEMP/complete-sdk-readback"',
             '--required-paths "$required_paths" --required-paths-sha256 "$required_paths_sha"',
             '--release-id "toolchain-dev-${GITHUB_SHA:0:12}"',
             '--forbidden-prefix "$GITHUB_WORKSPACE" --forbidden-prefix "$RUNNER_TEMP"',
-            '--root "$RUNNER_TEMP/compiler-candidate"',
+            '--support-dir "$support" --manifest-schema-sha256 "$manifest_schema_sha"',
+            '--tree-fixture-sha256 "$tree_fixture_sha"',
+            '--base-url "https://github.com/$GITHUB_REPOSITORY/releases/download/toolchain-dev-${GITHUB_SHA:0:12}"',
+            '--root "$RUNNER_TEMP/release-candidate"',
         )),
-        "compiler candidate assembly must follow authentication with independently selected policy and exact bindings",
+        "combined candidate assembly must follow authentication with independently selected policy and exact bindings",
     )
     documents.read("scripts/toolchain/assemble-compiler-candidate-v2.py")
-    sdk_assembler = "python3 -B scripts/toolchain/assemble-sdk-candidate-v2.py"
-    require(sdk_assembler in readback, "SDK candidate assembly must use the reviewed adapter")
-    sdk_assembly_command = readback.split(sdk_assembler, 1)[1].split('> "$sdk_summary"', 1)[0]
+    documents.read("scripts/toolchain/assemble-sdk-candidate-v2.py")
+    documents.read("scripts/toolchain/assemble-release-candidate-v2.py")
+    evidence_selector = "python3 -B scripts/toolchain/select-native-release-evidence-v2.py"
+    require(evidence_selector in readback, "native evidence selection must use the reviewed adapter")
+    evidence_command = readback.split(evidence_selector, 1)[1].split('> "$evidence_selection"', 1)[0]
     require(
-        readback.index(compiler_assembler) < readback.index(sdk_assembler)
-        and 'sdk_summary="$RUNNER_TEMP/sdk-candidate-summary.json"' in readback
-        and 'test ! -e "$sdk_summary" && test ! -L "$sdk_summary"' in readback
-        and '--root "$RUNNER_TEMP/sdk-candidate" > "$sdk_summary"' in readback
-        and all(argument in sdk_assembly_command for argument in (
-            '--aros "$runtime/bin/aros" --aros-sha256 "$runtime_sha"',
+        readback.index(combined_assembler) < readback.index(evidence_selector)
+        and 'compiler_lanes="$RUNNER_TEMP/release-candidate/compiler-stage/compiler-index-lanes.json"' in readback
+        and 'compiler_evidence="$RUNNER_TEMP/release-candidate/compiler-stage/compiler-evidence-fragment.json"' in readback
+        and 'candidate_index="$RUNNER_TEMP/release-candidate/release/toolchain-index-v2.json"' in readback
+        and 'evidence_selection="$RUNNER_TEMP/native-release-evidence-selection.json"' in readback
+        and 'test ! -e "$evidence_selection" && test ! -L "$evidence_selection"' in readback
+        and all(binding in readback for binding in (
+            'compiler_lanes_sha=$(shasum -a 256 "$compiler_lanes"',
+            'compiler_evidence_sha=$(shasum -a 256 "$compiler_evidence"',
+            'candidate_index_sha=$(shasum -a 256 "$candidate_index"',
+        ))
+        and all(argument in evidence_command for argument in (
             '--plan "$plan" --plan-sha256 "$plan_sha"',
             '--inputs-dir "$RUNNER_TEMP/diagnostic-inputs" --inputs-sha256 "$inputs_sha"',
             '--producer-commit "$GITHUB_SHA" --tools-commit "$EXPECTED_TOOLS"',
-            '--fragment "$fragment" --fragment-sha256 "$fragment_sha"',
-            '--owner-root "$RUNNER_TEMP/complete-sdk-readback"',
-            '--forbidden-prefix "$GITHUB_WORKSPACE" --forbidden-prefix "$RUNNER_TEMP"',
-            '--root "$RUNNER_TEMP/sdk-candidate"',
+            '--compiler-lanes "$compiler_lanes" --compiler-lanes-sha256 "$compiler_lanes_sha"',
+            '--compiler-evidence "$compiler_evidence" --compiler-evidence-sha256 "$compiler_evidence_sha"',
+            '--sdk-fragment "$fragment" --sdk-fragment-sha256 "$fragment_sha"',
+            '--sdk-owner-root "$RUNNER_TEMP/complete-sdk-readback"',
+            '--index "$candidate_index" --index-sha256 "$candidate_index_sha"',
         )),
-        "SDK candidate assembly must follow authenticated byte selection with exact independent bindings",
+        "native evidence selection must bind complete original-owner evidence to the measured candidate index",
     )
-    documents.read("scripts/toolchain/assemble-sdk-candidate-v2.py")
+    documents.read("scripts/toolchain/select-native-release-evidence-v2.py")
+    require(
+        "repository: metaneutrons/aros-tools\n          ref: ${{ needs.v2-prepare.outputs.tools_commit }}\n          persist-credentials: false\n          path: dependencies/aros-tools-fixtures" in readback
+        and 'support="$GITHUB_WORKSPACE/dependencies/aros-tools-fixtures/crates/aros-common/tests/fixtures"' in readback
+        and 'manifest_schema_sha=$(shasum -a 256 "$support/toolchain-manifest-v2.schema.json"' in readback
+        and 'tree_fixture_sha=$(shasum -a 256 "$support/tree-digest-v1.fixture.json"' in readback
+        and "python3 -B scripts/toolchain/assemble-compiler-candidate-v2.py" not in readback
+        and "python3 -B scripts/toolchain/assemble-sdk-candidate-v2.py" not in readback,
+        "combined candidate support must come from the exact tools checkout without duplicate package stages",
+    )
     require(
         "host_matrix: ${{ steps.matrix.outputs.host_matrix }}" in prepare
         and "matrix: ${{ fromJSON(needs.v2-prepare.outputs.host_matrix) }}" in runtimes
@@ -1024,22 +1047,22 @@ class CompilerSdkWorkflowV2Tests(unittest.TestCase):
 
     def test_rejects_disconnected_compiler_candidate_assembly(self) -> None:
         for before, after in (
-            ("python3 -B scripts/toolchain/assemble-compiler-candidate-v2.py", "python3 -B unreviewed.py"),
-            ('--fragment "$compiler_fragment" --fragment-sha256 "$compiler_fragment_sha"',
-             '--fragment "$compiler_fragment"'),
+            ("python3 -B scripts/toolchain/assemble-release-candidate-v2.py", "python3 -B unreviewed.py"),
+            ('--compiler-fragment "$compiler_fragment" --compiler-fragment-sha256 "$compiler_fragment_sha"',
+             '--compiler-fragment "$compiler_fragment"'),
             ('--required-paths "$required_paths" --required-paths-sha256 "$required_paths_sha"',
              '--required-paths "$required_paths"'),
-            ('--owner-root "$RUNNER_TEMP/complete-compiler-readback"',
-             '--owner-root "$RUNNER_TEMP/complete-sdk-readback"'),
-            ('compiler_summary="$RUNNER_TEMP/compiler-candidate-summary.json"',
-             'compiler_summary="$RUNNER_TEMP/diagnostic-inputs/compiler-candidate-summary.json"'),
-            ('--root "$RUNNER_TEMP/compiler-candidate" > "$compiler_summary"',
-             '--root "$RUNNER_TEMP/other-candidate" > "$compiler_summary"'),
+            ('--compiler-owner-root "$RUNNER_TEMP/complete-compiler-readback"',
+             '--compiler-owner-root "$RUNNER_TEMP/complete-sdk-readback"'),
+            ('candidate_summary="$RUNNER_TEMP/release-candidate-summary.json"',
+             'candidate_summary="$RUNNER_TEMP/diagnostic-inputs/release-candidate-summary.json"'),
+            ('--root "$RUNNER_TEMP/release-candidate" > "$candidate_summary"',
+             '--root "$RUNNER_TEMP/other-candidate" > "$candidate_summary"'),
         ):
             with self.subTest(before=before):
                 documents = self.new_documents()
                 documents.set_text(WORKFLOW, mutate_job(documents.text(WORKFLOW), "v2-readback", before, after))
-                with self.assertRaisesRegex(PolicyViolation, "compiler candidate assembly"):
+                with self.assertRaisesRegex(PolicyViolation, "combined candidate assembly"):
                     validate_v2_policy(documents)
 
     def test_rejects_manifest_derived_compiler_payload_policy(self) -> None:
@@ -1053,16 +1076,16 @@ class CompilerSdkWorkflowV2Tests(unittest.TestCase):
             validate_v2_policy(documents)
 
     def test_rejects_disconnected_sdk_candidate_assembly(self) -> None:
-        assembler = "python3 -B scripts/toolchain/assemble-sdk-candidate-v2.py"
+        assembler = "python3 -B scripts/toolchain/assemble-release-candidate-v2.py"
         for before, after in (
             ('--aros "$runtime/bin/aros" --aros-sha256 "$runtime_sha"',
              '--aros "$runtime/bin/aros"'),
             ('--plan "$plan" --plan-sha256 "$plan_sha"', '--plan "$plan"'),
-            ('--fragment "$fragment" --fragment-sha256 "$fragment_sha"', '--fragment "$fragment"'),
-            ('--owner-root "$RUNNER_TEMP/complete-sdk-readback"',
-             '--owner-root "$RUNNER_TEMP/complete-compiler-readback"'),
-            ('--root "$RUNNER_TEMP/sdk-candidate" > "$sdk_summary"',
-             '--root "$RUNNER_TEMP/other-sdk-candidate" > "$sdk_summary"'),
+            ('--sdk-fragment "$fragment" --sdk-fragment-sha256 "$fragment_sha"', '--sdk-fragment "$fragment"'),
+            ('--sdk-owner-root "$RUNNER_TEMP/complete-sdk-readback"',
+             '--sdk-owner-root "$RUNNER_TEMP/complete-compiler-readback"'),
+            ('--root "$RUNNER_TEMP/release-candidate" > "$candidate_summary"',
+             '--root "$RUNNER_TEMP/other-sdk-candidate" > "$candidate_summary"'),
         ):
             with self.subTest(before=before):
                 documents = self.new_documents()
@@ -1070,18 +1093,49 @@ class CompilerSdkWorkflowV2Tests(unittest.TestCase):
                 prefix, command = workflow.split(assembler, 1)
                 self.assertIn(before, command)
                 documents.set_text(WORKFLOW, prefix + assembler + command.replace(before, after, 1))
-                with self.assertRaisesRegex(PolicyViolation, "SDK candidate assembly"):
+                with self.assertRaisesRegex(PolicyViolation, "combined candidate assembly"):
                     validate_v2_policy(documents)
 
     def test_later_sdk_call_cannot_mask_unbound_compiler_assembly(self) -> None:
         documents = self.new_documents()
         workflow = documents.text(WORKFLOW)
-        assembler = "python3 -B scripts/toolchain/assemble-compiler-candidate-v2.py"
+        assembler = "python3 -B scripts/toolchain/assemble-release-candidate-v2.py"
         prefix, command = workflow.split(assembler, 1)
         command = command.replace('--plan "$plan" --plan-sha256 "$plan_sha"', '--plan "$plan"', 1)
+        command = command.replace('> "$candidate_summary"',
+                                  '> "$candidate_summary"\n          echo --plan "$plan" --plan-sha256 "$plan_sha"', 1)
         documents.set_text(WORKFLOW, prefix + assembler + command)
-        with self.assertRaisesRegex(PolicyViolation, "compiler candidate assembly"):
+        with self.assertRaisesRegex(PolicyViolation, "combined candidate assembly"):
             validate_v2_policy(documents)
+
+    def test_rejects_unbound_or_producer_owned_support_fixtures(self) -> None:
+        for before, after in (
+            ('ref: ${{ needs.v2-prepare.outputs.tools_commit }}', 'ref: main'),
+            ('support="$GITHUB_WORKSPACE/dependencies/aros-tools-fixtures/crates/aros-common/tests/fixtures"',
+             'support="$GITHUB_WORKSPACE/toolchains"'),
+            ('--manifest-schema-sha256 "$manifest_schema_sha"', '--manifest-schema-sha256 stale'),
+            ('--tree-fixture-sha256 "$tree_fixture_sha"', '--tree-fixture-sha256 stale'),
+        ):
+            with self.subTest(before=before):
+                documents = self.new_documents()
+                documents.set_text(WORKFLOW, mutate_job(documents.text(WORKFLOW), "v2-readback", before, after))
+                with self.assertRaisesRegex(PolicyViolation, "combined candidate"):
+                    validate_v2_policy(documents)
+
+    def test_rejects_disconnected_native_evidence_selection(self) -> None:
+        for before, after in (
+            ('python3 -B scripts/toolchain/select-native-release-evidence-v2.py', 'python3 -B unreviewed.py'),
+            ('--compiler-lanes-sha256 "$compiler_lanes_sha"', '--compiler-lanes-sha256 stale'),
+            ('--compiler-evidence-sha256 "$compiler_evidence_sha"', '--compiler-evidence-sha256 stale'),
+            ('--index-sha256 "$candidate_index_sha"', '--index-sha256 stale'),
+            ('candidate_index="$RUNNER_TEMP/release-candidate/release/toolchain-index-v2.json"',
+             'candidate_index="$RUNNER_TEMP/unbound-index.json"'),
+        ):
+            with self.subTest(before=before):
+                documents = self.new_documents()
+                documents.set_text(WORKFLOW, mutate_job(documents.text(WORKFLOW), "v2-readback", before, after))
+                with self.assertRaisesRegex(PolicyViolation, "native evidence selection"):
+                    validate_v2_policy(documents)
 
     def test_rejects_missing_development_runtime_helper(self) -> None:
         documents = self.new_documents()

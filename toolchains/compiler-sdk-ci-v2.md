@@ -177,9 +177,11 @@ This is package-byte selection only. Run it after authenticated collection in
 the same invocation; its output cannot replace original-owner authentication,
 native SDK package verification or complete generation/compatibility readback.
 
-The same readback invocation runs `assemble-compiler-candidate-v2.py` after
+The same readback invocation runs `assemble-release-candidate-v2.py` after
 deriving an independent required-payload selection from the committed policy
-and its fresh native plan. It rechecks retained original compiler transports,
+and its fresh native plan. It delegates package acquisition to the compiler
+and SDK assembly stages rather than repeating those stages in the workflow.
+The compiler stage rechecks retained original compiler transports,
 invokes native portable `verify-package` for both copies, and invokes native
 `compare` for each complete plan lane. Only unchanged copy-A package members
 are staged. The generated compiler index-lane selection and evidence fragment
@@ -188,7 +190,7 @@ inventory and complete native release qualification are separate gates.
 The diagnostic upload retains summaries and reports, not a publishable package
 set. No build, original transport, package or receipt is normalized or replaced.
 
-`assemble-sdk-candidate-v2.py` repeats the complete authenticated SDK byte
+The SDK stage, `assemble-sdk-candidate-v2.py`, repeats the complete authenticated SDK byte
 selection before and after native verification. Each explicitly selected
 host-independent package must pass `aros sdk verify-package` against its
 plan-bound identity and independently measured archive and tree digests before
@@ -197,6 +199,30 @@ native-index package expectations and verification-result selectors. This
 package staging does not replace the complete twelve-generation readback,
 ordinary and relocated link evidence, signed combined inventory or final
 native release factory.
+
+The combined stage copies unchanged package members and only the input
+documents referenced by the native plan into one absent release directory.
+The manifest schema and tree-digest fixture come from the exact selected
+aros-tools checkout, with explicit independent digests; producer copies and
+diagnostic plan/matrix files are not substituted. Native `aros sdk sbom`
+generates one deterministic SDK SBOM per product. Native `producer index`
+then verifies the complete shared inventory and writes the pre-attestation
+index and an external subject manifest. The index input uses `sdks` for SDK
+package expectations; native evidence selection uses `sdk_packages`.
+
+After assembly, `select-native-release-evidence-v2.py` joins the measured
+compiler lane metadata, A/B measurements and comparisons, all original SDK
+generation records, and the exact candidate index. Compiler compatibility
+selectors follow the unique SDK relation declared by the source-bound plan;
+missing or ambiguous relations fail. The closed native evidence DTO is kept
+outside the release inventory. This selection does not execute the final
+native release factory or authenticate signatures.
+
+This is the pre-attestation stage only. The diagnostic base URL names a future
+candidate and is not evidence that downloads exist. No checksums, provenance
+bundle, tag, draft or publication are fabricated. Genuine signing, final
+native index/readback, every SDK generation and compatibility proof, and
+independent final candidate qualification remain mandatory.
 
 This full scheduling coverage is not release admission: the runtime is still a
 development build, and original-owner verification, complete native matrix

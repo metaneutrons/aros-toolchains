@@ -633,6 +633,16 @@ class CompilerCandidateAssemblyTests(unittest.TestCase):
         self.assertIn("repeated command-line option", result.stderr)
         self.assertFalse(root.exists())
 
+    def test_abbreviated_selector_cannot_bypass_duplicate_argument_policy(self) -> None:
+        root = self.base / "abbreviated-selector"
+        arguments = self.fixture.args(root)
+        arguments.extend(("--aros-sha", self.fixture.aros_sha))
+        result = subprocess.run(arguments, capture_output=True, text=True, check=False, timeout=120)
+        self.assertEqual(result.returncode, 2)
+        self.assertEqual(result.stdout, "")
+        self.assertIn("unrecognized arguments", result.stderr)
+        self.assertFalse(root.exists())
+
     def test_native_output_limit_is_enforced_by_the_real_child(self) -> None:
         executable = self.base / "limited-native"
         executable.write_text(

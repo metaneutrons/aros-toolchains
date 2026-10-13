@@ -1373,7 +1373,7 @@ def _verify_owned_result_files(root: Path, selected_files: dict) -> None:
 
 
 def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     parser.add_argument("--aros", type=Path, required=True)
     parser.add_argument("--aros-sha256", required=True)
     parser.add_argument("--plan", type=Path, required=True)
