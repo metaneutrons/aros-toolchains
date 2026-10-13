@@ -219,6 +219,14 @@ while IFS= read -r sdk; do
     operation="$root/sdk-$id"
     mkdir "$operation" "$operation/engine-work"
     build_sdk_with_diagnostics
+    if [[ "$compiler_family" == gnu ]]; then
+        AROS_TEST_SOURCE_ROOT="$source" \
+            AROS_TEST_GNU_SOURCE_PRESET="$source_preset" \
+            AROS_TEST_GNU_TOOLCHAIN_ROOT="$operation/first" \
+            AROS_TEST_AROS="$aros" \
+            "$tools/scripts/check-workspace.sh" gnu-package-test \
+            > "$operation/gnu-role-fixture.log" 2>&1
+    fi
 done < "$root/sdk-selections.jsonl"
 [[ "$(digest "$aros")" == "$runtime_sha" ]] || fail 'runtime changed during qualification'
 printf 'Compiler A/B and SDK local generation completed. No release admission or publication.\n'
