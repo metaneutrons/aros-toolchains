@@ -20,6 +20,12 @@ contracts remain owned by AROS-NX.
    The independently hash-bound [required payload policy](compiler-required-payload.md)
    must cover the complete native compiler plan before scheduling starts. Its
    retained selection is metadata only, not package or release qualification.
+   Before this preparation, run the selected source's CI contract, GNU recipe,
+   hygiene and SDK exporter checks. Locked product-source transport uses the
+   measured repository Zlib seed offline; it never repeats the fragile upstream
+   archive request. Child configuration homes are private. Bounded step logs
+   and a source-only report survive failures. These checks do not replace
+   AROS-NX's required product CI or qualify SDK generation.
 3. Fetch and verify the selected compiler, compatibility, Python and Cargo
    inputs once. No native build phase is allowed to populate missing inputs.
    Transfer this cache as one archive whose SHA-256 is retained by the source
@@ -27,6 +33,10 @@ contracts remain owned by AROS-NX.
    native verification: zipped directory artifacts normalize permissions,
    which invalidates the mode-bound Cargo vendor receipt. Do not repair the
    receipt or normalize the downloaded vendor files to bypass that failure.
+   For each selected GNU source lock, hash/size-check the GCC archive and run
+   the source-owned two-root libcody object/library comparison and Classic
+   counterprobes before uploading the shared cache. This bounded regression
+   does not replace the complete native compiler A/B proof.
 4. Narrow diagnostics build both Family-V2 compiler copies in one job. Full
    qualification builds each copy in its own original job; the SDK job
    authenticates and reads back both owners without rebuilding. Compare their
