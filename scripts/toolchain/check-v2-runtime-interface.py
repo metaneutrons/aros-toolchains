@@ -506,7 +506,8 @@ def _run_held(
     environment = os.environ.copy()
     for variable in (
         "GOVERNANCE_TOKEN", "GH_TOKEN", "GITHUB_TOKEN", "GH_AUTH_TOKEN",
-        "GH_ENTERPRISE_TOKEN",
+        "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN",
+        "ACTIONS_ID_TOKEN_REQUEST_TOKEN", "ACTIONS_ID_TOKEN_REQUEST_URL",
     ):
         environment.pop(variable, None)
     for variable in tuple(environment):
