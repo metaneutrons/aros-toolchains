@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import copy
 from datetime import datetime, timezone
 import json
 import os
@@ -28,9 +29,17 @@ RUN_ATTEMPT = 1
 PR_ID = 1100
 PR_NUMBER = 11
 RULESET_ID = 55
+RULESET_NODE_ID = "RRS_lAC_lifecycle_fixture"
 JOB_ID = 4400
 GOV_TOKEN = "governance-secret-fixture"
 JOB_TOKEN = "job-token-fixture"
+GRAPHQL_QUERY = (
+    "query ReleaseAdmissionTagRuleset($rulesetID: ID!) { "
+    "node(id: $rulesetID) { __typename id "
+    "... on RepositoryRuleset { databaseId "
+    "bypassActors(first: 100) { totalCount nodes { __typename } pageInfo { hasNextPage } } "
+    "} } }"
+)
 
 BRANCH_PATH = f"repos/{REPOSITORY}/branches/main"
 REPOSITORY_PATH = f"repos/{REPOSITORY}"
@@ -39,6 +48,7 @@ PR_FILES_PATH = f"repos/{REPOSITORY}/pulls/{PR_NUMBER}/files"
 CLOSED_PULLS_PATH = f"repos/{REPOSITORY}/pulls"
 RULESETS_PATH = f"repos/{REPOSITORY}/rulesets"
 RULESET_PATH = f"{RULESETS_PATH}/{RULESET_ID}"
+GRAPHQL_RULESET_PATH = "graphql:tag-ruleset-bypass"
 CI_RUNS_PATH = f"repos/{REPOSITORY}/actions/workflows/ci.yml/runs"
 RUN_PATH = f"repos/{REPOSITORY}/actions/runs/{RUN_ID}"
 ATTEMPT_PATH = f"{RUN_PATH}/attempts/{RUN_ATTEMPT}"
@@ -58,29 +68,57 @@ from pathlib import Path
 import sys
 
 args = sys.argv[1:]
-if len(args) != 4 or args[:3] != ["api", "--method", "GET"]:
-    print("unexpected fake gh command", file=sys.stderr)
-    raise SystemExit(91)
-endpoint = args[3]
-base = endpoint.split("?", 1)[0]
-is_ruleset = base.startswith("repos/metaneutrons/aros-toolchains/rulesets")
+is_graphql = args[:4] == ["api", "--method", "POST", "graphql"]
+if is_graphql:
+    fields = args[4:]
+    if len(fields) != 4:
+        print("unexpected fake gh GraphQL command", file=sys.stderr)
+        raise SystemExit(91)
+    parsed = {}
+    for index in (0, 2):
+        option, field = fields[index:index + 2]
+        if option != "-f" or "=" not in field:
+            print("unexpected fake gh GraphQL parameter", file=sys.stderr)
+            raise SystemExit(91)
+        name, value = field.split("=", 1)
+        if name in parsed:
+            print("duplicate fake gh GraphQL parameter", file=sys.stderr)
+            raise SystemExit(91)
+        parsed[name] = value
+    if (set(parsed) != {"query", "rulesetID"}
+            or parsed["query"] != os.environ.get("FAKE_GRAPHQL_QUERY")
+            or not parsed["query"].startswith("query ")
+            or "mutation" in parsed["query"].lower()):
+        print("unexpected or mutating fake gh GraphQL document", file=sys.stderr)
+        raise SystemExit(91)
+    endpoint = "graphql:tag-ruleset-bypass"
+    base = endpoint
+    method = "POST"
+    is_ruleset = True
+else:
+    if len(args) != 4 or args[:3] != ["api", "--method", "GET"]:
+        print("unexpected fake gh command", file=sys.stderr)
+        raise SystemExit(91)
+    endpoint = args[3]
+    base = endpoint.split("?", 1)[0]
+    method = "GET"
+    is_ruleset = base.startswith("repos/metaneutrons/aros-toolchains/rulesets")
 if "GOVERNANCE_TOKEN" in os.environ:
     print("governance credential leaked outside its adapter", file=sys.stderr)
     raise SystemExit(92)
 token = os.environ.get("GH_TOKEN", "")
-if token == os.environ.get("FAKE_GOV_TOKEN") and not is_ruleset:
-    print("governance token used outside rulesets", file=sys.stderr)
-    raise SystemExit(93)
-if is_ruleset and token not in {os.environ.get("FAKE_GOV_TOKEN"), os.environ.get("FAKE_JOB_TOKEN")}:
-    print("ruleset read lacks an allowed read token", file=sys.stderr)
+if token != os.environ.get("FAKE_JOB_TOKEN"):
+    print("provider read did not use the job token", file=sys.stderr)
     raise SystemExit(94)
 
 log_path = Path(os.environ["FAKE_GH_LOG"])
 with log_path.open("a", encoding="utf-8") as handle:
     handle.write(json.dumps({
         "endpoint": endpoint,
-        "method": "GET",
-        "credential": "governance" if token == os.environ.get("FAKE_GOV_TOKEN") else "job",
+        "method": method,
+        "transport": "graphql" if is_graphql else "rest",
+        "ruleset_node_id": parsed["rulesetID"] if is_graphql else None,
+        "credential": "job",
         "governance_env_present": "GOVERNANCE_TOKEN" in os.environ,
     }, sort_keys=True) + "\n")
 
@@ -106,7 +144,7 @@ if isinstance(value, dict) and "__sequence" in value:
 if value is None:
     print("synthetic provider body governance-secret-fixture (HTTP 404)", file=sys.stderr)
     raise SystemExit(1)
-if (configuration.get("redact_job_bypass") and is_ruleset
+if (configuration.get("redact_job_bypass") and is_ruleset and not is_graphql
         and token == os.environ.get("FAKE_JOB_TOKEN") and isinstance(value, dict)):
     value = {key: item for key, item in value.items() if key != "bypass_actors"}
 if isinstance(value, dict) and "__http" in value:
@@ -250,12 +288,23 @@ class ReleaseAdmissionTests(unittest.TestCase):
             RULESETS_PATH: [{"id": RULESET_ID, "target": "tag", "enforcement": "active"}],
             RULESET_PATH: {
                 "id": RULESET_ID,
+                "node_id": RULESET_NODE_ID,
                 "target": "tag",
                 "enforcement": "active",
                 "conditions": {"ref_name": {"include": ["refs/tags/v*"], "exclude": []}},
                 "rules": [{"type": "update"}, {"type": "deletion"}],
                 "bypass_actors": [],
             },
+            GRAPHQL_RULESET_PATH: {"data": {"node": {
+                "__typename": "RepositoryRuleset",
+                "id": RULESET_NODE_ID,
+                "databaseId": RULESET_ID,
+                "bypassActors": {
+                    "totalCount": 0,
+                    "nodes": [],
+                    "pageInfo": {"hasNextPage": False},
+                },
+            }}},
             RUNTIME_RELEASE_PATH: {
                 "id": self.lock["release_id"],
                 "tag_name": self.lock["tag"],
@@ -325,8 +374,8 @@ class ReleaseAdmissionTests(unittest.TestCase):
             "GITHUB_EVENT_PATH": str(self.event_path),
             "GH_TOKEN": JOB_TOKEN,
             "GOVERNANCE_TOKEN": GOV_TOKEN,
-            "FAKE_GOV_TOKEN": GOV_TOKEN,
             "FAKE_JOB_TOKEN": JOB_TOKEN,
+            "FAKE_GRAPHQL_QUERY": GRAPHQL_QUERY,
             "FAKE_GH_RESPONSES": str(self.responses_path),
             "FAKE_GH_LOG": str(self.log_path),
         })
@@ -410,6 +459,7 @@ class ReleaseAdmissionTests(unittest.TestCase):
         self.assertTrue(entries)
         self.assertTrue(all(entry["credential"] == "job" for entry in entries))
         self.assertTrue(all(entry["method"] == "GET" for entry in entries))
+        self.assertTrue(all(entry["transport"] == "rest" for entry in entries))
 
     def test_visibility_probe_distinguishes_omitted_and_nonempty_bypass(self) -> None:
         original = dict(self.responses[RULESET_PATH])
@@ -500,7 +550,7 @@ class ReleaseAdmissionTests(unittest.TestCase):
         self.assertFalse(output.exists())
         self.assertEqual(github_output.read_bytes(), b"")
 
-    def test_positive_admission_is_closed_metadata_receipt_and_only_get(self) -> None:
+    def test_positive_admission_is_closed_metadata_receipt_and_read_only(self) -> None:
         result, output, github_output = self._run_admit()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue(output.is_file())
@@ -528,10 +578,18 @@ class ReleaseAdmissionTests(unittest.TestCase):
         self.assertEqual(json.loads(output_lines[1].removeprefix("admission=")), receipt)
         log = [json.loads(line) for line in self.log_path.read_text(encoding="utf-8").splitlines()]
         self.assertTrue(log)
-        self.assertTrue(all(entry["method"] == "GET" for entry in log))
-        self.assertTrue(all(not entry["governance_env_present"] for entry in log))
         self.assertTrue(all(
-            entry["credential"] == ("governance" if "/rulesets" in entry["endpoint"] else "job")
+            entry["method"] == ("POST" if entry["transport"] == "graphql" else "GET")
+            for entry in log
+        ))
+        self.assertTrue(all(not entry["governance_env_present"] for entry in log))
+        self.assertTrue(all(entry["credential"] == "job" for entry in log))
+        self.assertTrue(any(entry["endpoint"] == GRAPHQL_RULESET_PATH for entry in log))
+        graphql_calls = [entry for entry in log if entry["transport"] == "graphql"]
+        self.assertTrue(graphql_calls)
+        self.assertTrue(all(entry["ruleset_node_id"] == RULESET_NODE_ID for entry in graphql_calls))
+        self.assertTrue(all(
+            entry["transport"] == ("graphql" if entry["endpoint"] == GRAPHQL_RULESET_PATH else "rest")
             for entry in log
         ))
         self.assertFalse(any("releases/assets" in entry["endpoint"] for entry in log))
@@ -632,11 +690,11 @@ class ReleaseAdmissionTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(output.read_bytes(), admission_path.read_bytes())
         log = [json.loads(line) for line in self.log_path.read_text(encoding="utf-8").splitlines()]
-        recheck_rules = [entry for entry in log if "/rulesets" in entry["endpoint"]][2:]
+        recheck_rules = [entry for entry in log if entry["endpoint"] == GRAPHQL_RULESET_PATH][1:]
         self.assertTrue(recheck_rules)
-        self.assertTrue(all(entry["credential"] == "governance" for entry in recheck_rules))
+        self.assertTrue(all(entry["credential"] == "job" for entry in recheck_rules))
 
-    def test_recheck_uses_fresh_governance_visibility_not_job_token(self) -> None:
+    def test_recheck_uses_fresh_graphql_counter_with_the_job_token(self) -> None:
         configuration = json.loads(self.responses_path.read_text(encoding="utf-8"))
         configuration["redact_job_bypass"] = True
         self.responses_path.write_text(json.dumps(configuration), encoding="utf-8")
@@ -648,22 +706,28 @@ class ReleaseAdmissionTests(unittest.TestCase):
         self.assertEqual(rechecked.returncode, 0, rechecked.stderr)
         self.assertEqual(rechecked_path.read_bytes(), admission_path.read_bytes())
         entries = [json.loads(line) for line in self.log_path.read_text(encoding="utf-8").splitlines()]
-        fresh_rules = [entry for entry in entries[before:] if "/rulesets" in entry["endpoint"]]
+        fresh_rules = [entry for entry in entries[before:] if entry["endpoint"] == GRAPHQL_RULESET_PATH]
         self.assertTrue(fresh_rules)
-        self.assertTrue(all(entry["credential"] == "governance" for entry in fresh_rules))
+        self.assertTrue(all(entry["credential"] == "job" for entry in fresh_rules))
 
         environment = self._environment(event="workflow_dispatch")
         environment.pop("GOVERNANCE_TOKEN")
-        failed_path = self.base / "no-governance-recheck.json"
-        failed = self._run_recheck(admission_path, failed_path, environment=environment)
-        self._assert_rejected(failed)
-        self.assertIn("authenticated governance metadata is unavailable", failed.stderr)
-        self.assertFalse(failed_path.exists())
+        no_legacy_secret_path = self.base / "no-legacy-secret-recheck.json"
+        no_legacy_secret = self._run_recheck(admission_path, no_legacy_secret_path, environment=environment)
+        self.assertEqual(no_legacy_secret.returncode, 0, no_legacy_secret.stderr)
+        self.assertEqual(no_legacy_secret_path.read_bytes(), admission_path.read_bytes())
 
-    def test_valid_candidate_cannot_fall_back_to_job_token_for_governance(self) -> None:
+    def test_governance_uses_job_token_and_never_falls_back_to_legacy_secret(self) -> None:
         result, output, github_output = self._run_admit(environment={"GOVERNANCE_TOKEN": None})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(output.exists())
+        entries = [json.loads(line) for line in self.log_path.read_text(encoding="utf-8").splitlines()]
+        self.assertTrue(entries)
+        self.assertTrue(all(entry["credential"] == "job" for entry in entries))
+
+        result, output, github_output = self._run_admit(environment={"GH_TOKEN": None})
         self._assert_rejected(result)
-        self.assertIn("authenticated governance metadata is unavailable", result.stderr)
+        self.assertIn("authenticated GitHub metadata is unavailable", result.stderr)
         self.assertFalse(output.exists())
         self.assertEqual(github_output.read_bytes(), b"")
 
@@ -892,32 +956,166 @@ class ReleaseAdmissionTests(unittest.TestCase):
             self._assert_rejected(result)
         self._api_route(RUNTIME_RELEASE_PATH, valid_release)
 
-    def test_governance_requires_explicit_empty_bypass_and_exact_scope(self) -> None:
+    def test_governance_requires_graphql_zero_and_consistent_rest_metadata(self) -> None:
         ruleset = dict(self.responses[RULESET_PATH])
         ruleset.pop("bypass_actors")
         self._api_route(RULESET_PATH, ruleset)
-        result, _, github_output = self._run_admit()
+        result, output, github_output = self._run_admit()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(output.exists())
+        self.assertIn("ready=true", github_output.read_text(encoding="utf-8"))
+
+        ruleset["bypass_actors"] = [{
+            "actor_type": "Integration", "actor_id": 123, "bypass_mode": "always",
+        }]
+        self._api_route(RULESET_PATH, ruleset)
+        result, output, github_output = self._run_admit()
         self._assert_rejected(result)
+        self.assertFalse(output.exists())
         self.assertEqual(github_output.read_bytes(), b"")
+
+        ruleset["bypass_actors"] = {"malformed": True}
+        self._api_route(RULESET_PATH, ruleset)
+        result, output, github_output = self._run_admit()
+        self._assert_rejected(result)
+        self.assertFalse(output.exists())
+        self.assertEqual(github_output.read_bytes(), b"")
+
         ruleset["bypass_actors"] = []
         ruleset["conditions"] = {"ref_name": {"include": ["refs/tags/*"], "exclude": []}}
         self._api_route(RULESET_PATH, ruleset)
-        result, _, _ = self._run_admit()
+        result, output, github_output = self._run_admit()
         self._assert_rejected(result)
+        self.assertFalse(output.exists())
+        self.assertEqual(github_output.read_bytes(), b"")
+
+    def test_graphql_bypass_counter_rejects_hidden_nonempty_rest_bypass(self) -> None:
+        ruleset = dict(self.responses[RULESET_PATH])
+        ruleset.pop("bypass_actors")
+        self._api_route(RULESET_PATH, ruleset)
+        graph = copy.deepcopy(self.responses[GRAPHQL_RULESET_PATH])
+        graph["data"]["node"]["bypassActors"] = {
+            "totalCount": 1,
+            "nodes": [{"__typename": "Team"}],
+            "pageInfo": {"hasNextPage": False},
+        }
+        self._api_route(GRAPHQL_RULESET_PATH, graph)
+        result, output, github_output = self._run_admit()
+        self._assert_rejected(result)
+        self.assertFalse(output.exists())
+        self.assertEqual(github_output.read_bytes(), b"")
+        entries = [json.loads(line) for line in self.log_path.read_text(encoding="utf-8").splitlines()]
+        self.assertIn(GRAPHQL_RULESET_PATH, [entry["endpoint"] for entry in entries])
+        ruleset_reads = [entry for entry in entries if entry["endpoint"] == RULESET_PATH]
+        self.assertTrue(ruleset_reads)
+        self.assertTrue(all(entry["credential"] == "job" for entry in entries))
+
+    def test_graphql_identity_count_and_pagination_attacks_reject_without_output(self) -> None:
+        original = copy.deepcopy(self.responses[GRAPHQL_RULESET_PATH])
+        def changed(**updates: object) -> dict[str, object]:
+            value = copy.deepcopy(original)
+            node = value["data"]["node"]
+            node.update(updates)
+            return value
+
+        cases = (
+            ("wrong node type", changed(__typename="Team")),
+            ("wrong opaque node id", changed(id="RRS_wrong_fixture")),
+            ("boolean database id", changed(databaseId=True)),
+            ("wrong database id", changed(databaseId=RULESET_ID + 1)),
+            ("boolean total count", changed(bypassActors={
+                "totalCount": False, "nodes": [], "pageInfo": {"hasNextPage": False},
+            })),
+            ("string zero count", changed(bypassActors={
+                "totalCount": "0", "nodes": [], "pageInfo": {"hasNextPage": False},
+            })),
+            ("nonzero count", changed(bypassActors={
+                "totalCount": 1, "nodes": [], "pageInfo": {"hasNextPage": False},
+            })),
+            ("unexpected nodes", changed(bypassActors={
+                "totalCount": 0, "nodes": [{"__typename": "Team"}],
+                "pageInfo": {"hasNextPage": False},
+            })),
+            ("has next page", changed(bypassActors={
+                "totalCount": 0, "nodes": [], "pageInfo": {"hasNextPage": True},
+            })),
+            ("malformed next page flag", changed(bypassActors={
+                "totalCount": 0, "nodes": [], "pageInfo": {"hasNextPage": 0},
+            })),
+        )
+        for label, response in cases:
+            with self.subTest(label=label):
+                self._api_route(GRAPHQL_RULESET_PATH, response)
+                result, output, github_output = self._run_admit()
+                self._assert_rejected(result)
+                self.assertFalse(output.exists())
+                self.assertEqual(github_output.read_bytes(), b"")
+        self._api_route(GRAPHQL_RULESET_PATH, original)
+
+    def test_graphql_null_malformed_errors_and_http_failures_reject_without_output(self) -> None:
+        invalid_responses = (
+            ("null data", {"data": None}),
+            ("null node", {"data": {"node": None}}),
+            ("GraphQL errors", {
+                "errors": [{"message": "permission denied"}],
+                "data": copy.deepcopy(self.responses[GRAPHQL_RULESET_PATH]["data"]),
+            }),
+            ("malformed errors", {"errors": None, "data": {"node": None}}),
+            ("missing counter fields", {"data": {"node": {
+                "__typename": "RepositoryRuleset", "id": RULESET_NODE_ID,
+                "databaseId": RULESET_ID,
+            }}}),
+        )
+        for label, response in invalid_responses:
+            with self.subTest(label=label):
+                self._api_route(GRAPHQL_RULESET_PATH, response)
+                result, output, github_output = self._run_admit()
+                self._assert_rejected(result)
+                self.assertFalse(output.exists())
+                self.assertEqual(github_output.read_bytes(), b"")
+
+        self.responses[GRAPHQL_RULESET_PATH] = {"__raw_json": "{not-json"}
+        self._save_responses()
+        result, output, github_output = self._run_admit()
+        self._assert_rejected(result)
+        self.assertFalse(output.exists())
+        self.assertEqual(github_output.read_bytes(), b"")
+
+        for status in (401, 403, 429, 502):
+            with self.subTest(status=status):
+                self._api_error(GRAPHQL_RULESET_PATH, status)
+                result, output, github_output = self._run_admit()
+                self._assert_rejected(result)
+                self.assertFalse(output.exists())
+                self.assertEqual(github_output.read_bytes(), b"")
+                self.errors.pop(GRAPHQL_RULESET_PATH, None)
+                self._save_responses()
+
+    def test_graphql_transport_failure_rejects_without_output(self) -> None:
+        self._api_error(GRAPHQL_RULESET_PATH, "transport")
+        result, output, github_output = self._run_admit()
+        self._assert_rejected(result)
+        self.assertFalse(output.exists())
+        self.assertEqual(github_output.read_bytes(), b"")
 
     def test_new_bypass_after_admission_rejects_recheck_without_output(self) -> None:
         admitted, admission_path, _ = self._run_admit()
         self.assertEqual(admitted.returncode, 0, admitted.stderr)
         original = admission_path.read_bytes()
         ruleset = dict(self.responses[RULESET_PATH])
-        ruleset["bypass_actors"] = [{
-            "actor_type": "Integration", "actor_id": 123, "bypass_mode": "always",
-        }]
+        ruleset.pop("bypass_actors")
         self._api_route(RULESET_PATH, ruleset)
+        graph = copy.deepcopy(self.responses[GRAPHQL_RULESET_PATH])
+        graph["data"]["node"]["bypassActors"] = {
+            "totalCount": 1,
+            "nodes": [{"__typename": "Integration"}],
+            "pageInfo": {"hasNextPage": False},
+        }
+        self._api_route(GRAPHQL_RULESET_PATH, graph)
         output = self.base / "changed-bypass-recheck.json"
         rejected = self._run_recheck(admission_path, output)
         self._assert_rejected(rejected)
-        self.assertIn("explicitly expose an empty bypass list", rejected.stderr)
+        self.assertIn("GraphQL bypass actors are nonempty", rejected.stderr)
         self.assertFalse(output.exists())
         self.assertEqual(admission_path.read_bytes(), original)
 
