@@ -29,6 +29,8 @@ operation/
       package-verify.json
       measurement.json
   handoff.json           caller-retained local selectors, outside payload
+  transport-payload/     exact ten-file copy of package/ and evidence/
+  native-payload-staging.json  local staging observations, not transported
   proof/                 added only by the owning-job action
     origin.json
     origin.sigstore.json
@@ -61,7 +63,15 @@ caller requires `contents: read`, `actions: read`, `attestations: write` and
 missing runner OIDC request configuration before starting the native build.
 That presence check does not prove provider access or authenticate a job.
 
-After the native stage, the action uploads the original payload once, records
+Native publication retains a zero-length `.aros-lock-*` advisory-lock inode
+beside the package directory. That control-plane file must not be deleted or
+included in the signed transport. `stage-native-owner-payload-v2.py` checks the
+exact package/evidence closure, permits only unchanged ordinary empty journal
+locks beside it, and copies the ten selected files unchanged into a fresh
+transport directory. Missing, extra, linked or changed members fail staging.
+This is byte-consistency staging, not compiler or provenance qualification.
+
+After staging, the action uploads the closed original-owner bytes once, records
 its numeric artifact ID/upload ZIP digest through `artifact-origin.py` in the
 still-running owner, signs `origin.json`, and uploads the separate two-file
 proof. Both names include the SHA-256 of the NUL-delimited, case-preserving

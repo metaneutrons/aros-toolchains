@@ -126,6 +126,13 @@ runs:
           --preset "$ARGS_PRESET" --host "$ARGS_HOST" --release-id "$ARGS_RELEASE_ID" \
           --jobs "$ARGS_JOBS" --timeout-seconds "$ARGS_TIMEOUT" --root "$ARGS_ROOT" \
           --forbidden-prefix "$GITHUB_WORKSPACE" --forbidden-prefix "$RUNNER_TEMP"
+        # Native publication keeps its advisory-lock inode in the transaction
+        # namespace. Stage only the closed ten-file transport; never remove locks
+        # or weaken the signed inventory to admit control-plane files.
+        python3 -B "$GITHUB_ACTION_PATH/../../../scripts/toolchain/stage-native-owner-payload-v2.py" \
+          --source-dir "$ARGS_ROOT/payload" --output-dir "$ARGS_ROOT/transport-payload" \
+          > "$ARGS_ROOT/native-payload-staging.json"
+        printf 'payload-dir=%s/transport-payload\n' "$ARGS_ROOT" >> "$GITHUB_OUTPUT"
         printf 'handoff=%s/handoff.json\n' "$ARGS_ROOT" >> "$GITHUB_OUTPUT"
         printf 'payload-name=%s\nproof-name=%s\n' "$payload_name" "$proof_name" >> "$GITHUB_OUTPUT"
 
@@ -134,7 +141,7 @@ runs:
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
       with:
         name: ${{ steps.build.outputs.payload-name }}
-        path: ${{ inputs.root }}/payload/
+        path: ${{ steps.build.outputs.payload-dir }}/
         if-no-files-found: error
         include-hidden-files: true
         retention-days: 14
@@ -147,6 +154,7 @@ runs:
         PAYLOAD_SHA256: ${{ steps.payload.outputs.artifact-digest }}
         PAYLOAD_NAME: ${{ steps.build.outputs.payload-name }}
         ORIGIN_ROOT: ${{ inputs.root }}
+        ORIGIN_PAYLOAD: ${{ steps.build.outputs.payload-dir }}
         ORIGIN_WORKFLOW: ${{ inputs.workflow }}
         ORIGIN_JOB_NAME: ${{ inputs.job-name }}
         ORIGIN_GROUP: ${{ inputs.group }}
@@ -159,7 +167,7 @@ runs:
         python3 -B "$GITHUB_ACTION_PATH/../../../scripts/toolchain/artifact-origin.py" record \
           --workflow "$ORIGIN_WORKFLOW" --job-name "$ORIGIN_JOB_NAME" \
           --artifact-id "$PAYLOAD_ID" --artifact-name "$PAYLOAD_NAME" \
-          --artifact-sha256 "$PAYLOAD_SHA256" --payload-dir "$ORIGIN_ROOT/payload" \
+          --artifact-sha256 "$PAYLOAD_SHA256" --payload-dir "$ORIGIN_PAYLOAD" \
           --role build --group "$ORIGIN_GROUP" --host "$ORIGIN_HOST" \
           --profile="$ORIGIN_PRESET" --copy "$ORIGIN_COPY" \
           --output "$ORIGIN_ROOT/proof/origin.json"

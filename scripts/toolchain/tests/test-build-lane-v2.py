@@ -695,10 +695,11 @@ def validate_owner_sequence(text: str) -> None:
     if len(stages) != 6:
         raise ValueError("owning-job action must retain six ordered stages")
     required = (
-        ("id: build", "build-lane-v2.sh", "ACTIONS_ID_TOKEN_REQUEST_URL", "ACTIONS_ID_TOKEN_REQUEST_TOKEN"),
-        ("id: payload", "actions/upload-artifact@", "path: ${{ inputs.root }}/payload/", "include-hidden-files: true"),
+        ("id: build", "build-lane-v2.sh", "stage-native-owner-payload-v2.py", "ACTIONS_ID_TOKEN_REQUEST_URL", "ACTIONS_ID_TOKEN_REQUEST_TOKEN",
+         '--source-dir "$ARGS_ROOT/payload" --output-dir "$ARGS_ROOT/transport-payload"'),
+        ("id: payload", "actions/upload-artifact@", "path: ${{ steps.build.outputs.payload-dir }}/", "include-hidden-files: true"),
         ("artifact-origin.py\" record", "steps.payload.outputs.artifact-id", "steps.payload.outputs.artifact-digest",
-         '--role build', '--payload-dir "$ORIGIN_ROOT/payload"', '--output "$ORIGIN_ROOT/proof/origin.json"'),
+         '--role build', 'ORIGIN_PAYLOAD: ${{ steps.build.outputs.payload-dir }}', '--payload-dir "$ORIGIN_PAYLOAD"', '--output "$ORIGIN_ROOT/proof/origin.json"'),
         ("id: signature", "actions/attest-build-provenance@", "subject-path: ${{ inputs.root }}/proof/origin.json"),
         ("steps.signature.outputs.bundle-path", '"$ORIGIN_ROOT/proof/origin.sigstore.json"'),
         ("id: proof", "actions/upload-artifact@", "path: ${{ inputs.root }}/proof/", "include-hidden-files: true"),
@@ -706,6 +707,10 @@ def validate_owner_sequence(text: str) -> None:
     for stage, needles in zip(stages, required, strict=True):
         if not all(needle in stage for needle in needles):
             raise ValueError("owning-job stage lost its exact transport boundary")
+    if stages[0].index("build-lane-v2.sh") >= stages[0].index("stage-native-owner-payload-v2.py"):
+        raise ValueError("native transport must be staged after guarded package readback")
+    if "printf 'payload-dir=%s/transport-payload\\n'" not in stages[0]:
+        raise ValueError("native transport directory must be bound to the staged result")
     if "continue-on-error" in text or re.search(r"(?m)^\s+if:", text):
         raise ValueError("owning-job stages must not suppress or skip a required gate")
     # Inputs enter executable shell through env, never through direct expression
@@ -734,6 +739,9 @@ class OwnerActionContractTests(unittest.TestCase):
             valid.replace("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "OTHER_REQUEST_TOKEN"),
             valid.replace("artifact-origin.py\" record", "artifact-origin.py\" verify", 1),
             valid.replace('--role build', '--role diagnostic', 1),
+            valid.replace('stage-native-owner-payload-v2.py', 'echo-no-staging.py', 1),
+            valid.replace('path: ${{ steps.build.outputs.payload-dir }}/', 'path: ${{ inputs.root }}/payload/', 1),
+            valid.replace('--payload-dir "$ORIGIN_PAYLOAD"', '--payload-dir "$ORIGIN_ROOT/payload"', 1),
             valid.replace('"$ARGS_AROS"', '"${{ inputs.aros }}"', 1),
         )
         for mutant in mutants:
