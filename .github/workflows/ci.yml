@@ -64,6 +64,23 @@ jobs:
             -f query='query($id:ID!) { node(id:$id) { ... on RepositoryRuleset { id databaseId target enforcement bypassActors(first:1) { totalCount pageInfo { hasNextPage } } } } }' \
             -f "id=$node_id" \
             --jq '.data.node | {id,databaseId,target,enforcement,bypass_count:.bypassActors.totalCount,has_next_page:.bypassActors.pageInfo.hasNextPage}'
+      - name: Verify the actual closed governance reader with the read-only job token
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python3 -B - <<'PY'
+          import importlib.util
+          import json
+          spec = importlib.util.spec_from_file_location(
+              "release_admission", "scripts/toolchain/release-admission-v2.py")
+          module = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(module)
+          print(json.dumps({
+              "assurance": "live-governance-only-not-release-admission",
+              "governance": module._governance(),
+          }, sort_keys=True))
+          PY
 
   governance-visibility-write:
     name: Governance visibility with contents write
