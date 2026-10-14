@@ -52,6 +52,13 @@ PAGE_SIZE = 100
 API_TIMEOUT_SECONDS = 30
 GIT_TIMEOUT_SECONDS = 20
 GOVERNANCE_RECEIPT_SECONDS = 900
+GRAPHQL_TAG_RULESET_BYPASS_QUERY = (
+    "query ReleaseAdmissionTagRuleset($rulesetID: ID!) { "
+    "node(id: $rulesetID) { __typename id "
+    "... on RepositoryRuleset { databaseId "
+    "bypassActors(first: 100) { totalCount nodes { __typename } pageInfo { hasNextPage } } "
+    "} } }"
+)
 INPUT_PATHS = (
     ".release-please-manifest.json",
     "version.txt",
@@ -157,15 +164,11 @@ def _exact_keys(value: Any, expected: set[str], label: str) -> dict[str, Any]:
     return result
 
 
-def _subprocess_environment(*, governance: bool = False) -> dict[str, str]:
+def _subprocess_environment(*, require_job_token: bool = False) -> dict[str, str]:
     environment = dict(os.environ)
-    token = environment.pop("GOVERNANCE_TOKEN", None)
-    if governance:
-        if not token:
-            fail("authenticated governance metadata is unavailable")
-        # The dedicated credential reaches only the two GET ruleset endpoints.
-        environment.pop("GH_TOKEN", None)
-        environment["GH_TOKEN"] = token
+    environment.pop("GOVERNANCE_TOKEN", None)
+    if require_job_token and not environment.get("GH_TOKEN"):
+        fail("authenticated GitHub metadata is unavailable")
     return environment
 
 
@@ -244,7 +247,7 @@ def api(path: str, *, allow_404: bool = False, governance: bool = False) -> Any:
         r"repos/metaneutrons/aros-toolchains/rulesets(?:\?includes_parents=true&targets=tag&per_page=100&page=[1-9][0-9]*|/[1-9][0-9]*)",
         path,
     ) is None:
-        fail("governance credential is restricted to GET ruleset endpoints")
+        fail("governance metadata reads are restricted to tag ruleset endpoints")
     command = ["gh", "api", "--method", "GET", path]
     try:
         result = _bounded_subprocess(
@@ -253,7 +256,7 @@ def api(path: str, *, allow_404: bool = False, governance: bool = False) -> Any:
             timeout=API_TIMEOUT_SECONDS,
             stdout_limit=MAX_API_BYTES,
             stderr_limit=MAX_API_STDERR_BYTES,
-            env=_subprocess_environment(governance=governance),
+            env=_subprocess_environment(require_job_token=True),
             label="GitHub GET response",
         )
     except subprocess.TimeoutExpired:
@@ -269,6 +272,74 @@ def api(path: str, *, allow_404: bool = False, governance: bool = False) -> Any:
     if not result.stdout:
         fail(f"GitHub GET returned an empty response for {path}")
     return parse_json(result.stdout, f"GitHub GET response for {path}")
+
+
+def _graphql_tag_ruleset_bypass(node_id: str, database_id: int) -> None:
+    if type(node_id) is not str or not node_id:
+        fail("tag ruleset GraphQL node id is malformed")
+    _positive_int(database_id, "tag ruleset REST id")
+    command = [
+        "gh", "api", "--method", "POST", "graphql",
+        "-f", f"query={GRAPHQL_TAG_RULESET_BYPASS_QUERY}",
+        "-f", f"rulesetID={node_id}",
+    ]
+    try:
+        result = _bounded_subprocess(
+            command,
+            cwd=None,
+            timeout=API_TIMEOUT_SECONDS,
+            stdout_limit=MAX_API_BYTES,
+            stderr_limit=MAX_API_STDERR_BYTES,
+            env=_subprocess_environment(require_job_token=True),
+            label="GitHub GraphQL response",
+        )
+    except subprocess.TimeoutExpired:
+        fail("GitHub GraphQL transport failed for tag ruleset bypass metadata")
+    if result.returncode:
+        error = result.stderr.decode("utf-8", errors="replace")
+        status = re.search(r"\(HTTP ([0-9]{3})\)", error)
+        code = status.group(1) if status else None
+        detail = f" (HTTP {code})" if code else ""
+        fail(f"GitHub GraphQL query failed{detail} for tag ruleset bypass metadata")
+    if not result.stdout:
+        fail("GitHub GraphQL returned an empty response for tag ruleset bypass metadata")
+    response = _required_object(
+        parse_json(result.stdout, "GitHub GraphQL response"), "GitHub GraphQL response"
+    )
+    if set(response) - {"data", "errors", "extensions"}:
+        fail("GitHub GraphQL response has unexpected fields")
+    if "errors" in response:
+        errors = response["errors"]
+        if not isinstance(errors, list) or errors:
+            fail("GitHub GraphQL query returned errors")
+    data = _exact_keys(response.get("data"), {"node"}, "GitHub GraphQL data")
+    node = _required_object(data.get("node"), "GitHub GraphQL ruleset node")
+    node = _exact_keys(
+        node,
+        {"__typename", "id", "databaseId", "bypassActors"},
+        "GitHub GraphQL ruleset node",
+    )
+    if (type(node.get("__typename")) is not str
+            or node["__typename"] != "RepositoryRuleset"
+            or type(node.get("id")) is not str
+            or node["id"] != node_id
+            or type(node.get("databaseId")) is not int
+            or node["databaseId"] != database_id):
+        fail("GitHub GraphQL ruleset identity differs from the REST ruleset")
+    connection = _exact_keys(
+        node.get("bypassActors"), {"totalCount", "nodes", "pageInfo"},
+        "GitHub GraphQL ruleset bypass connection",
+    )
+    page_info = _exact_keys(
+        connection.get("pageInfo"), {"hasNextPage"}, "GitHub GraphQL bypass page info"
+    )
+    if (type(connection.get("totalCount")) is not int
+            or connection["totalCount"] != 0
+            or type(connection.get("nodes")) is not list
+            or connection["nodes"] != []
+            or type(page_info.get("hasNextPage")) is not bool
+            or page_info["hasNextPage"] is not False):
+        fail("tag ruleset GraphQL bypass actors are nonempty, paginated, or malformed")
 
 
 def paginated(
@@ -601,6 +672,8 @@ def _governance(receipt: dict[str, Any] | None = None) -> dict[str, Any]:
         api(f"repos/{REPOSITORY}/rulesets/{identifier}", governance=True),
         "tag ruleset details",
     )
+    rest_id = _positive_int(ruleset.get("id"), "tag ruleset detail id")
+    node_id = ruleset.get("node_id")
     conditions = ruleset.get("conditions")
     ref_names = conditions.get("ref_name") if isinstance(conditions, dict) else None
     rules = ruleset.get("rules")
@@ -608,7 +681,7 @@ def _governance(receipt: dict[str, Any] | None = None) -> dict[str, Any]:
         isinstance(rule, dict) for rule in rules
     ) else []
     if not (
-        _positive_int(ruleset.get("id"), "tag ruleset detail id") == identifier
+        rest_id == identifier
         and ruleset.get("target") == "tag"
         and ruleset.get("enforcement") == "active"
         and isinstance(ref_names, dict)
@@ -617,9 +690,13 @@ def _governance(receipt: dict[str, Any] | None = None) -> dict[str, Any]:
         and {"update", "deletion"} <= set(rule_types)
     ):
         fail("active tag ruleset does not enforce the exact immutable v* ref scope")
-    bypass = ruleset.get("bypass_actors", None)
-    if "bypass_actors" not in ruleset or bypass != []:
-        fail("tag ruleset must explicitly expose an empty bypass list")
+    if "bypass_actors" in ruleset:
+        rest_bypass = ruleset["bypass_actors"]
+        if type(rest_bypass) is not list or rest_bypass != []:
+            fail("REST tag ruleset bypass metadata is nonempty or malformed")
+    if type(node_id) is not str or not node_id:
+        fail("tag ruleset REST node id is malformed")
+    _graphql_tag_ruleset_bypass(node_id, rest_id)
     policy_digest = hashlib.sha256(canonical_json(_public_policy(ruleset)).encode("utf-8")).hexdigest()
     if receipt is not None:
         if identifier != receipt["ruleset_id"] or policy_digest != receipt["policy_sha256"]:
