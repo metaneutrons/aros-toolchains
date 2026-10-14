@@ -346,7 +346,12 @@ derives runtime digests from retained files and rechecks candidate, runtime,
 source and own job before returning. The signed-start reader independently
 checks that fixed provider runner label in both job snapshots. Construction
 does not create candidates, authenticate publication on behalf of the caller,
-sign or retain records, consume claims, or activate workflows. Those genuine
+sign records, consume claims, or activate workflows. Its CLI bounds the
+admission, tag and draft input files, repeats their byte checks after
+construction, and writes only one canonical unsigned record to an absent
+regular output path. An occupied or linked output, changed input or failed
+constructor produces no record. This local output is not an attestation or
+release authority. Those genuine
 provider, admission/runtime-authentication and publication gates remain open.
 
 The released V2 runtime, source qualification and complete compiler/SDK matrix
