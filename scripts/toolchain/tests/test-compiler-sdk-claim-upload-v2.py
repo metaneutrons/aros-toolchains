@@ -506,6 +506,28 @@ class ClaimTransportTests(unittest.TestCase):
                 upload.fixed_metadata("repos/other/aros-toolchains")
         transport.assert_not_called()
 
+    def test_real_admission_ci_pagination_uses_the_composed_metadata_reader(self) -> None:
+        result = subprocess.CompletedProcess(
+            ["gh"], 0,
+            b'HTTP/2 200 OK\nContent-Type: application/json\n\n{"workflow_runs":[]}', b"")
+        with mock.patch.dict(os.environ, self.environment(), clear=True), \
+                mock.patch.object(upload.START.ADMISSION, "_bounded_subprocess", return_value=result) as bounded:
+            self.assertIsNone(upload.START.ADMISSION._require_ci("a" * 40, None))
+        bounded.assert_called_once()
+        command = bounded.call_args.args[0]
+        self.assertIn("repos/metaneutrons/aros-toolchains/actions/workflows/ci.yml/runs?"
+                      "event=push&branch=main&head_sha=" + "a" * 40 + "&per_page=100&page=1", command)
+        self.assertIn("X-GitHub-Api-Version: 2022-11-28", command)
+        self.assertEqual(bounded.call_args.kwargs["env"]["GH_TOKEN"], self.job_token)
+
+    def test_composed_reader_cannot_select_a_privileged_or_malformed_mode(self) -> None:
+        with mock.patch.object(upload, "gh_response") as transport:
+            for mode in (True, 0, None, "false"):
+                with self.subTest(mode=mode), \
+                        self.assertRaisesRegex(upload.START.StartError, "only ordinary job-token reads"):
+                    upload.START.ADMISSION.api("repos/metaneutrons/aros-toolchains", governance=mode)
+            transport.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
