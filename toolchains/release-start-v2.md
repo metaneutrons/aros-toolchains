@@ -51,7 +51,9 @@ missing-field rejection. Do not grant administrative write rights merely to
 make this probe pass, silently substitute the operator's token, or infer no
 bypasses from an omitted field. The fresh pre-mutation recheck must use a caller
 whose visibility is independently proven; a saved receipt does not make hidden
-current policy visible. This credential boundary remains unqualified.
+current policy visible. The initial REST-only credential boundary was
+unqualified. The independently measured GraphQL job-token reader below
+supersedes that transport limitation; it does not qualify the complete start.
 
 The existing contracts workflow has an opt-in `governance_visibility_probe`
 dispatch. Its two jobs use only the automatically issued job token, with
@@ -79,6 +81,26 @@ public policy digest, but neither proved an empty bypass list. No credential
 was created or copied and no tag/release was changed. The normal token is
 therefore insufficient for the complete REST governance gate tested here.
 
+### Qualified job-token governance reader (2026-10-14)
+
+The ordinary workflow token can prove the bypass connection through a strict
+GraphQL read. An isolated private fixture with one known bypass returned a
+complete connection with count one while REST hid the actor. The temporary
+fixture rule was removed and the fixture repository archived again. No product
+tag, release, App or secret was changed by that counterprobe.
+
+The production reader was then exercised with `contents: read` in
+[run 38488885014](https://github.com/metaneutrons/aros-toolchains/actions/runs/38488885014).
+It joined the exact numeric ruleset ID to its GraphQL node, required count zero,
+an empty node list and no next page, and returned a live governance-only receipt.
+PR #75 merged that reader and its rejection tests. The reader fails on GraphQL
+errors, malformed or incomplete connections, mismatched identities and explicit
+nonempty REST bypass data. Both initial admission and the pre-mutation recheck
+use the job token; no separate governance secret is required by this reader.
+
+These observations establish the governance transport, not runtime admission,
+candidate creation, signed-start authenticity or exclusive native dispatch.
+
 ## Event sequence
 
 1. The existing PR-only Release Please workflow prepares the version PR.
@@ -99,7 +121,11 @@ therefore insufficient for the complete REST governance gate tested here.
    independent artifact selectors. It is not compiler or SDK qualification.
 6. A separate dispatcher wakes only on that successful start completion. It
    authenticates the original record and provider state, then dispatches the
-   native workflow at the immutable tag ref exactly once.
+   native workflow at the immutable tag ref exactly once. Before dispatch it
+   attests the exact canonical claim under its own original workflow/job and
+   retains that signature separately from the sole private-draft claim asset.
+   Native entry independently authenticates this dispatcher signature and
+   successful original owner; unsigned claim fields alone are not causal proof.
 7. The native workflow records the actual `workflow_dispatch` event and tag
    ref. It must not fabricate `push` claims, infer production from a branch
    diagnostic, or trust arbitrary caller-supplied run/tag/draft selectors.
@@ -176,6 +202,9 @@ behavior or production qualification:
   of additional candidates. Draft creation and label changes are not proof of
   compiler/SDK qualification. Qualify the exact-candidate invocation before
   activation, including multiple pending and historical terminal PRs.
+  The protected invocation must set `skip-labeling: true`; its subsequent
+  binding check requires the admitted PR to remain pending. Label transition
+  is not an alternative admission route.
 
 ### Remaining integration proof
 
@@ -293,6 +322,18 @@ The future controller must independently authenticate both provider identities
 and the start before using it, then bind one confirmed HTTP 201 and numeric
 asset readback to those exact bytes. No workflow calls the codec yet, and no
 exclusive consumption or native dispatch has been qualified by its fixtures.
+
+The codec also exposes an inactive read-only dispatcher-signature gate. It
+requires exact selected claim/bundle byte hashes, canonical joins to the
+original start bytes and independently selected dispatcher context, successful
+original provider run/job observations, and a GitHub attestation bound to the
+fixed dispatcher workflow, code commit, main ref and original run invocation.
+The verifier uses private copies of the captured subject and bundle, reobserves
+the owner afterward and rejects changed input bytes. This is only one native
+entry prerequisite: the original start must still be independently authenticated,
+the exact sole draft claim must be downloaded by numeric ID, and actual native
+tag-dispatch identity must match. No workflow currently signs a dispatcher
+claim or invokes this gate; fixture tests are not provider qualification.
 
 `scripts/toolchain/compiler-sdk-claim-upload-v2.py` is an inactive internal
 post-authentication primitive. It requires that exact canonical claim, rechecks

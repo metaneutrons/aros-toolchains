@@ -11,7 +11,9 @@ from __future__ import annotations
 
 import hashlib
 import importlib.util
+import os
 from pathlib import Path
+import tempfile
 
 
 SPEC = importlib.util.spec_from_file_location(
@@ -91,3 +93,85 @@ def validate_claim(raw: bytes, record_bytes: bytes, bundle_bytes: bytes, *, sour
                            dispatcher_event=dispatcher_event, trigger_context=trigger_context)
     START.require(raw == expected, "claim payload differs from the exact selected start and dispatcher")
     return START.ADMISSION.parse_json(raw, "dispatch claim")
+
+
+def verify_dispatcher_claim_signature(claim_path: Path, signature_path: Path, *,
+                                      record_bytes: bytes, start_bundle_bytes: bytes,
+                                      source_context: dict, dispatcher_context: dict,
+                                      dispatcher_job: dict, expected_claim_sha256: str,
+                                      expected_signature_sha256: str) -> dict:
+    """Read-only original-dispatcher signature gate, not native authorization.
+
+    The caller must independently select the original contexts and byte pins,
+    authenticate the signed start, retrieve the sole numeric draft asset, and
+    validate the actual native event. This gate never trusts predicate metadata
+    as provider identity and never uploads, dispatches or publishes anything.
+    An original dispatcher must attest these exact claim bytes before dispatch.
+    No production workflow currently signs or invokes this gate.
+    """
+    START.require(os.environ.get("GH_HOST") == "github.com"
+                  and bool(os.environ.get("GH_TOKEN")),
+                  "dispatcher claim verification requires the fixed-host job token")
+    START.require(claim_path.name == CLAIM_NAME
+                  and claim_path.absolute() != signature_path.absolute(),
+                  "dispatcher claim subject or separate signature path differs")
+    raw = START.ADMISSION.read_regular_file(claim_path, "selected dispatch claim", START.MAX_RECORD)
+    signature = START.ADMISSION.read_regular_file(
+        signature_path, "selected dispatcher signature", START.MAX_BUNDLE)
+    START.require(hashlib.sha256(raw).hexdigest()
+                  == START.digest(expected_claim_sha256, "selected dispatch claim")
+                  and hashlib.sha256(signature).hexdigest()
+                  == START.digest(expected_signature_sha256, "selected dispatcher signature"),
+                  "dispatcher claim or signature differs from selected bytes")
+    claim = validate_claim(
+        raw, record_bytes, start_bundle_bytes, source_context=source_context,
+        dispatcher_context=dispatcher_context, dispatcher_job=dispatcher_job,
+        dispatcher_event="workflow_run", trigger_context=source_context)
+    context = claim["dispatcher"]["context"]
+    job = claim["dispatcher"]["job"]
+
+    def observe_owner() -> None:
+        # The origin reader verifies the attempt-specific repository, workflow,
+        # main ref, source commit and event. The latest run rejects a rerun even
+        # when its retained first attempt had previously succeeded.
+        START.observe_start_run(context)
+        selected = START.ORIGIN.select_source_job(
+            START.ORIGIN.jobs_for(context), context, {"id": job["id"], "name": JOB})
+        START.require(selected == job, "dispatcher claim owning job differs")
+
+    observe_owner()
+    with tempfile.TemporaryDirectory(prefix="aros-dispatch-signature-") as directory:
+        root = Path(directory)
+        root.chmod(0o700)
+        subject = root / CLAIM_NAME
+        bundle = root / "signature.json"
+        for path, content in ((subject, raw), (bundle, signature)):
+            with path.open("xb") as handle:
+                path.chmod(0o600)
+                handle.write(content)
+        verified = START.bounded_gh([
+            "attestation", "verify", str(subject), "--bundle", str(bundle),
+            "--hostname", "github.com", "--repo", context["repository"],
+            "--signer-workflow", f'{context["repository"]}/{WORKFLOW}',
+            "--signer-digest", context["producer_commit"],
+            "--source-digest", context["producer_commit"],
+            "--source-ref", START.ADMISSION.MAIN_REF,
+            "--deny-self-hosted-runners", "--format", "json",
+        ], "dispatcher claim signature authentication")
+    START.require(type(verified) is list and len(verified) == 1,
+                  "dispatcher claim requires exactly one verified signature")
+    result = verified[0]["verificationResult"]
+    invocation = (f'https://github.com/{context["repository"]}/actions/runs/'
+                  f'{context["run_id"]}/attempts/1')
+    START.require(result["signature"]["certificate"]["runInvocationURI"] == invocation,
+                  "dispatcher claim signature belongs to another original attempt")
+    START.require(result["statement"]["subject"] == [{"name": CLAIM_NAME,
+                  "digest": {"sha256": hashlib.sha256(raw).hexdigest()}}],
+                  "dispatcher claim signature subject differs")
+    observe_owner()
+    START.require(START.ADMISSION.read_regular_file(
+        claim_path, "selected dispatch claim", START.MAX_RECORD) == raw
+        and START.ADMISSION.read_regular_file(
+            signature_path, "selected dispatcher signature", START.MAX_BUNDLE) == signature,
+        "dispatcher claim or signature changed during verification")
+    return claim
