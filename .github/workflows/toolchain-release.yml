@@ -157,6 +157,30 @@ jobs:
           path: ${{ runner.temp }}/diagnostic-runtime-interface.json
           if-no-files-found: error
           retention-days: 7
+      - id: source_preflight
+        name: Check exact source contracts before compiler and SDK fan-out
+        env:
+          SELECTED_SOURCE_COMMIT: ${{ steps.selection.outputs.source_commit }}
+        run: |
+          set -euo pipefail
+          aros_sha=$(jq -er '.runtime.sha256' "$RUNNER_TEMP/diagnostic-runtime-interface.json")
+          python3 -B scripts/toolchain/check-compiler-sdk-source-preflight-v2.py \
+            --source-dir "$GITHUB_WORKSPACE/dependencies/aros" \
+            --expected-commit "$SELECTED_SOURCE_COMMIT" \
+            --aros "${{ steps.runtime.outputs.root }}/bin/aros" --aros-sha256 "$aros_sha" \
+            --product-source-seed "$GITHUB_WORKSPACE/toolchains/source-seeds/chromium-zlib-da752eb2.tar.gz" \
+            --output-dir "$RUNNER_TEMP/diagnostic-source-preflight"
+      - name: Retain bounded source preflight evidence including failures
+        if: always() && steps.source_preflight.outcome != 'skipped'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: diagnostic-v2-source-preflight
+          path: |
+            ${{ runner.temp }}/diagnostic-source-preflight/source-preflight-v2.json
+            ${{ runner.temp }}/diagnostic-source-preflight/*.stdout.log
+            ${{ runner.temp }}/diagnostic-source-preflight/*.stderr.log
+          if-no-files-found: error
+          retention-days: 7
       - id: matrix
         name: Bind native recipes, source SDK identities and compiler/SDK selections
         env:
@@ -247,6 +271,15 @@ jobs:
         with:
           name: diagnostic-v2-runtime
           path: ${{ runner.temp }}/diagnostic-runtime
+      - name: Select exact source-owned GNU regression code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: metaneutrons/AROS-NX
+          ref: ${{ needs.v2-prepare.outputs.source_commit }}
+          fetch-depth: 1
+          persist-credentials: false
+          path: dependencies/gnu-source-probe
+          sparse-checkout: tools/crosstools/gnu
       - id: rust
         uses: ./.github/actions/select-native-rust-toolchain
         with:
@@ -270,6 +303,23 @@ jobs:
             "$aros" cache sources fetch --source-lock "$producer/$lock" --dir "$cache"
             "$aros" cache sources fetch --source-lock "$producer/$lock" --dir "$cache" --offline
             "$aros" cache sources verify --source-lock "$producer/$lock" --dir "$cache"
+            if [[ $(jq -r '.family' "$producer/$lock") == gnu ]]; then
+              gcc_name=$(jq -er '[.sources[] | select(.component == "gcc")] | if length == 1 then .[0].filename else error("expected one locked GCC source") end' "$producer/$lock")
+              [[ "$gcc_name" =~ ^[A-Za-z0-9._-]+$ && "$gcc_name" != . && "$gcc_name" != .. ]]
+              gcc_sha=$(jq -er '.sources[] | select(.component == "gcc") | .sha256' "$producer/$lock")
+              gcc_size=$(jq -er '.sources[] | select(.component == "gcc") | .size' "$producer/$lock")
+              [[ $(sha256sum "$cache/$gcc_name" | awk '{print $1}') == "$gcc_sha" ]]
+              [[ $(wc -c < "$cache/$gcc_name" | tr -d '[:space:]') == "$gcc_size" ]]
+              source_probe="$GITHUB_WORKSPACE/dependencies/gnu-source-probe"
+              [[ $(git -C "$source_probe" rev-parse HEAD) == "${{ needs.v2-prepare.outputs.source_commit }}" ]]
+              # Keep only small diagnostic logs as artifacts, not extracted source/build trees.
+              probe_logs="$RUNNER_TEMP/diagnostic-gnu-source-probe"
+              mkdir -p "$probe_logs"
+              printf 'gnu_probe_started=true\n' >> "$GITHUB_OUTPUT"
+              TMPDIR="$probe_logs" AROS_KEEP_CODY_PROBE=1 \
+                sh "$source_probe/tools/crosstools/gnu/tests/test-cody-srcdir.sh" "$cache/$gcc_name" \
+                2>&1 | tee "$probe_logs/runner.log"
+            fi
           done < <(jq -r '.groups[].source_lock' "$producer/toolchains/compiler-sdk-ci-selection-v2.json")
           while IFS= read -r lock; do
             bash scripts/toolchain/seed-compatibility-zlib.sh "$producer/$lock" "$cache" \
@@ -291,6 +341,18 @@ jobs:
           tar -C "$cache" -czf "$RUNNER_TEMP/diagnostic-cache.tar.gz" .
           archive_sha=$(sha256sum "$RUNNER_TEMP/diagnostic-cache.tar.gz" | awk '{print $1}')
           printf 'cache_archive_sha256=%s\n' "$archive_sha" >> "$GITHUB_OUTPUT"
+      - name: Retain source-owned GNU probe logs
+        if: always() && steps.cache.outcome != 'skipped'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: diagnostic-v2-gnu-source-probe-logs
+          path: |
+            ${{ runner.temp }}/diagnostic-gnu-source-probe/runner.log
+            ${{ runner.temp }}/diagnostic-gnu-source-probe/*/*.log
+            ${{ runner.temp }}/diagnostic-gnu-source-probe/*/*.out
+            ${{ runner.temp }}/diagnostic-gnu-source-probe/*/*.err
+          if-no-files-found: ${{ steps.cache.outputs.gnu_probe_started == 'true' && 'error' || 'ignore' }}
+          retention-days: 7
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: diagnostic-v2-cache

@@ -28,6 +28,7 @@ ACTION = ".github/actions/materialize-development-aros-tools/action.yml"
 RUNTIME_ACTION = ".github/actions/verify-aros-tools-runtime-transport/action.yml"
 INTERFACE_ACTION = ".github/actions/check-v2-runtime-interface/action.yml"
 INTERFACE_HELPER = "scripts/toolchain/check-v2-runtime-interface.py"
+SOURCE_PREFLIGHT = "scripts/toolchain/check-compiler-sdk-source-preflight-v2.py"
 PREPARE = "scripts/toolchain/prepare-compiler-sdk-inputs-v2.py"
 QUALIFY = "scripts/toolchain/qualify-compiler-sdk-lane-v2.sh"
 MATRIX = "scripts/toolchain/select-release-matrix-v2.py"
@@ -699,7 +700,104 @@ def validate_v2_policy(documents: Documents) -> dict[str, int]:
         and all("runtime-interface" not in job for job in (sources, qualify, builds, sdk, readback)),
         "interface receipts must remain outside runtime roots and outside later qualification/provenance inputs",
     )
+    source_preflight = prepare.split("      - id: source_preflight\n", 1)
+    require(
+        prepare.count("      - id: source_preflight\n") == 1 and len(source_preflight) == 2,
+        "V2 preparation must define exactly one source preflight gate",
+    )
+    source_preflight_step = source_preflight[1].split("      - ", 1)[0]
+    source_preflight_retention = workflow_step(
+        prepare, "Retain bounded source preflight evidence including failures"
+    )
+    source_preflight_script = documents.text(SOURCE_PREFLIGHT)
+    require(
+        "name: Check exact source contracts before compiler and SDK fan-out" in source_preflight_step
+        and "SELECTED_SOURCE_COMMIT: ${{ steps.selection.outputs.source_commit }}" in source_preflight_step
+        and "set -euo pipefail" in source_preflight_step
+        and 'aros_sha=$(jq -er \'.runtime.sha256\' "$RUNNER_TEMP/diagnostic-runtime-interface.json")' in source_preflight_step
+        and "check-compiler-sdk-source-preflight-v2.py" in source_preflight_step
+        and '--source-dir "$GITHUB_WORKSPACE/dependencies/aros"' in source_preflight_step
+        and '--expected-commit "$SELECTED_SOURCE_COMMIT"' in source_preflight_step
+        and '--aros "${{ steps.runtime.outputs.root }}/bin/aros" --aros-sha256 "$aros_sha"' in source_preflight_step
+        and '--product-source-seed "$GITHUB_WORKSPACE/toolchains/source-seeds/chromium-zlib-da752eb2.tar.gz"' in source_preflight_step
+        and '--output-dir "$RUNNER_TEMP/diagnostic-source-preflight"' in source_preflight_step
+        and "if:" not in source_preflight_step
+        and "continue-on-error:" not in source_preflight_step
+        and prepare.index("checkout-pinned-recursive-source") < prepare.index("Check exact source contracts")
+        and prepare.index("Check the exact V2 interface before recipe preparation")
+        < prepare.index("Retain preparation interface-only evidence")
+        < prepare.index("Check exact source contracts before compiler and SDK fan-out")
+        < prepare.index("Retain bounded source preflight evidence including failures")
+        < prepare.index("- id: matrix")
+        and "if: always() && steps.source_preflight.outcome != 'skipped'" in source_preflight_retention
+        and "name: diagnostic-v2-source-preflight" in source_preflight_retention
+        and "${{ runner.temp }}/diagnostic-source-preflight/source-preflight-v2.json" in source_preflight_retention
+        and "${{ runner.temp }}/diagnostic-source-preflight/*.stdout.log" in source_preflight_retention
+        and "${{ runner.temp }}/diagnostic-source-preflight/*.stderr.log" in source_preflight_retention
+        and "if-no-files-found: error" in source_preflight_retention
+        and "retention-days: 7" in source_preflight_retention
+        and 'REPORT_NAME = "source-preflight-v2.json"' in source_preflight_script
+        and "MAX_CHILD_LOG_BYTES = 1024 * 1024" in source_preflight_script
+        and "MAX_CHILD_LOG_BYTES - len(buffer)" in source_preflight_script,
+        "bounded exact-source preflight must bind selected source/runtime identities, run before matrix fan-out, and retain capped evidence",
+    )
     require("needs: v2-prepare" in sources, "V2 source preparation must depend on V2 preparation")
+    gnu_probe_checkout = workflow_step(sources, "Select exact source-owned GNU regression code")
+    cache_step_parts = sources.split("      - id: cache\n", 1)
+    require(len(cache_step_parts) == 2, "V2 source preparation must define one cache verification step")
+    source_cache_step = "      - id: cache\n" + cache_step_parts[1].split("      - ", 1)[0]
+    gnu_probe_retention = workflow_step(sources, "Retain source-owned GNU probe logs")
+    source_cache_script = source_cache_step.split("        run: |\n", 1)[1]
+    require(
+        "repository: metaneutrons/AROS-NX" in gnu_probe_checkout
+        and "ref: ${{ needs.v2-prepare.outputs.source_commit }}" in gnu_probe_checkout
+        and "fetch-depth: 1" in gnu_probe_checkout
+        and "persist-credentials: false" in gnu_probe_checkout
+        and "path: dependencies/gnu-source-probe" in gnu_probe_checkout
+        and "sparse-checkout: tools/crosstools/gnu" in gnu_probe_checkout
+        and sources.index("Select exact source-owned GNU regression code")
+        < sources.index("Verify runtime bytes and prepare every selected compiler/SDK cache")
+        and all(command in source_cache_script for command in (
+            'cache sources fetch --source-lock "$producer/$lock" --dir "$cache"\n',
+            'cache sources fetch --source-lock "$producer/$lock" --dir "$cache" --offline\n',
+            'cache sources verify --source-lock "$producer/$lock" --dir "$cache"\n',
+            'test-cody-srcdir.sh',
+        ))
+        and source_cache_script.index('cache sources fetch --source-lock "$producer/$lock" --dir "$cache"\n')
+        < source_cache_script.index('cache sources fetch --source-lock "$producer/$lock" --dir "$cache" --offline\n')
+        < source_cache_script.index('cache sources verify --source-lock "$producer/$lock" --dir "$cache"\n')
+        and 'if [[ $(jq -r \'.family\' "$producer/$lock") == gnu ]]; then' in source_cache_script
+        and source_cache_script.index('cache sources verify --source-lock "$producer/$lock" --dir "$cache"')
+        < source_cache_script.index('if [[ $(jq -r \'.family\' "$producer/$lock") == gnu ]]; then')
+        < source_cache_script.index('test-cody-srcdir.sh')
+        and 'gcc_name=$(jq -er \'[.sources[] | select(.component == "gcc")] | if length == 1 then .[0].filename else error("expected one locked GCC source") end\' "$producer/$lock")' in source_cache_script
+        and '[[ "$gcc_name" =~ ^[A-Za-z0-9._-]+$ && "$gcc_name" != . && "$gcc_name" != .. ]]' in source_cache_script
+        and 'gcc_sha=$(jq -er \'.sources[] | select(.component == "gcc") | .sha256\' "$producer/$lock")' in source_cache_script
+        and 'gcc_size=$(jq -er \'.sources[] | select(.component == "gcc") | .size\' "$producer/$lock")' in source_cache_script
+        and 'sha256sum "$cache/$gcc_name" | awk \'{print $1}\') == "$gcc_sha"' in source_cache_script
+        and 'wc -c < "$cache/$gcc_name" | tr -d \'[:space:]\') == "$gcc_size"' in source_cache_script
+        and 'source_probe="$GITHUB_WORKSPACE/dependencies/gnu-source-probe"' in source_cache_script
+        and 'git -C "$source_probe" rev-parse HEAD) == "${{ needs.v2-prepare.outputs.source_commit }}"' in source_cache_script
+        and 'probe_logs="$RUNNER_TEMP/diagnostic-gnu-source-probe"' in source_cache_script
+        and "set -euo pipefail" in source_cache_script
+        and "printf 'gnu_probe_started=true\\n' >> \"$GITHUB_OUTPUT\"" in source_cache_script
+        and 'TMPDIR="$probe_logs" AROS_KEEP_CODY_PROBE=1 \\\n                sh "$source_probe/tools/crosstools/gnu/tests/test-cody-srcdir.sh" "$cache/$gcc_name"' in source_cache_script
+        and '2>&1 | tee "$probe_logs/runner.log"' in source_cache_script
+        and source_cache_script.index("gnu_probe_started=true") < source_cache_script.index("test-cody-srcdir.sh")
+        and source_cache_script.index('gcc_sha=$(jq') < source_cache_script.index('sha256sum "$cache/$gcc_name"')
+        and source_cache_script.index('gcc_size=$(jq') < source_cache_script.index('wc -c < "$cache/$gcc_name"')
+        and source_cache_script.index('wc -c < "$cache/$gcc_name"') < source_cache_script.index('test-cody-srcdir.sh')
+        and source_cache_script.index('rev-parse HEAD') < source_cache_script.index('test-cody-srcdir.sh')
+        and "if: always() && steps.cache.outcome != 'skipped'" in gnu_probe_retention
+        and "name: diagnostic-v2-gnu-source-probe-logs" in gnu_probe_retention
+        and "${{ runner.temp }}/diagnostic-gnu-source-probe/runner.log" in gnu_probe_retention
+        and "${{ runner.temp }}/diagnostic-gnu-source-probe/*/*.log" in gnu_probe_retention
+        and "${{ runner.temp }}/diagnostic-gnu-source-probe/*/*.out" in gnu_probe_retention
+        and "${{ runner.temp }}/diagnostic-gnu-source-probe/*/*.err" in gnu_probe_retention
+        and "if-no-files-found: ${{ steps.cache.outputs.gnu_probe_started == 'true' && 'error' || 'ignore' }}" in gnu_probe_retention
+        and "retention-days: 7" in gnu_probe_retention,
+        "GNU source probe must use the exact sparse source checkout and lock-derived GCC archive identity, after cache verification, with bounded log retention",
+    )
     require(
         "needs: [v2-prepare, v2-sources, v2-runtimes]" in qualify,
         "V2 qualification must depend on both preparation and verified caches",
@@ -1149,6 +1247,12 @@ def mutate_job(text: str, name: str, old: str, new: str) -> str:
     return text[:start] + mutated + text[start + len(block) :]
 
 
+def replace_job(text: str, name: str, replacement: str) -> str:
+    block = workflow_job(text, name)
+    start = text.index(block)
+    return text[:start] + replacement + text[start + len(block) :]
+
+
 class CompilerSdkWorkflowV2Tests(unittest.TestCase):
     def _runtime_interface_fixture(
         self,
@@ -1431,6 +1535,176 @@ class CompilerSdkWorkflowV2Tests(unittest.TestCase):
         selection = Documents().json(SELECTION)
         self.assertEqual(result["group_count"], len(selection["groups"]))
         self.assertEqual(result["sdk_count"], len(selection["sdks"]))
+
+    def test_rejects_source_preflight_skip_misbinding_order_or_unbounded_evidence(self) -> None:
+        for job, old, new in (
+            (
+                "v2-prepare",
+                "SELECTED_SOURCE_COMMIT: ${{ steps.selection.outputs.source_commit }}",
+                "SELECTED_SOURCE_COMMIT: ${{ github.sha }}",
+            ),
+            (
+                "v2-prepare",
+                '--expected-commit "$SELECTED_SOURCE_COMMIT"',
+                '--expected-commit "$GITHUB_SHA"',
+            ),
+            (
+                "v2-prepare",
+                "      - id: source_preflight\n",
+                "      - id: source_preflight\n        if: steps.matrix.outputs.verify_matrix != ''\n",
+            ),
+            (
+                "v2-prepare",
+                "      - id: source_preflight\n",
+                "      - id: source_preflight\n        continue-on-error: true\n",
+            ),
+            (
+                "v2-prepare",
+                'aros_sha=$(jq -er \'.runtime.sha256\' "$RUNNER_TEMP/diagnostic-runtime-interface.json")',
+                'aros_sha=$(jq -er \'.runtime.sha256\' "$RUNNER_TEMP/other-runtime-interface.json")',
+            ),
+            (
+                "v2-prepare",
+                '--aros "${{ steps.runtime.outputs.root }}/bin/aros" --aros-sha256 "$aros_sha"',
+                '--aros "$RUNNER_TEMP/fallback-runtime/bin/aros" --aros-sha256 "$aros_sha"',
+            ),
+            (
+                "v2-prepare",
+                'if: always() && steps.source_preflight.outcome != \'skipped\'',
+                'if: always()',
+            ),
+            (
+                "v2-prepare",
+                '${{ runner.temp }}/diagnostic-source-preflight/*.stderr.log',
+                '${{ runner.temp }}/diagnostic-source-preflight/*.txt',
+            ),
+        ):
+            with self.subTest(job=job, old=old), self.assertRaises(PolicyViolation):
+                documents = self.new_documents()
+                documents.set_text(WORKFLOW, mutate_job(documents.text(WORKFLOW), job, old, new))
+                validate_v2_policy(documents)
+
+        documents = self.new_documents()
+        workflow = documents.text(WORKFLOW)
+        prepare = workflow_job(workflow, "v2-prepare")
+        retention = workflow_step(
+            prepare, "Retain bounded source preflight evidence including failures"
+        )
+        self.assertIn("retention-days: 7", retention)
+        documents.set_text(
+            WORKFLOW,
+            replace_job(
+                workflow,
+                "v2-prepare",
+                prepare.replace(
+                    retention,
+                    retention.replace("retention-days: 7", "retention-days: 30", 1),
+                    1,
+                ),
+            ),
+        )
+        with self.assertRaises(PolicyViolation):
+            validate_v2_policy(documents)
+
+        documents = self.new_documents()
+        workflow = documents.text(WORKFLOW)
+        prepare = workflow_job(workflow, "v2-prepare")
+        source_start = prepare.index("      - id: source_preflight\n")
+        matrix_start = prepare.index("      - id: matrix\n")
+        matrix_tail = prepare[matrix_start:]
+        next_step = re.search(r"(?m)^      - ", matrix_tail[1:])
+        self.assertIsNotNone(next_step)
+        assert next_step is not None
+        matrix_end = matrix_start + 1 + next_step.start()
+        source_and_retention = prepare[source_start:matrix_start]
+        matrix_step = prepare[matrix_start:matrix_end]
+        documents.set_text(
+            WORKFLOW,
+            replace_job(
+                workflow,
+                "v2-prepare",
+                prepare[:source_start] + matrix_step + source_and_retention + prepare[matrix_end:],
+            ),
+        )
+        with self.assertRaises(PolicyViolation):
+            validate_v2_policy(documents)
+
+    def test_rejects_gnu_probe_source_lock_identity_order_or_retention_widening(self) -> None:
+        for old, new in (
+            ("ref: ${{ needs.v2-prepare.outputs.source_commit }}", "ref: main"),
+            (
+                "repository: metaneutrons/AROS-NX\n          ref: ${{ needs.v2-prepare.outputs.source_commit }}\n          fetch-depth: 1\n          persist-credentials: false",
+                "repository: metaneutrons/AROS-NX\n          ref: ${{ needs.v2-prepare.outputs.source_commit }}\n          fetch-depth: 1\n          persist-credentials: true",
+            ),
+            ("sparse-checkout: tools/crosstools/gnu", "sparse-checkout: ."),
+            (
+                'if [[ $(jq -r \'.family\' "$producer/$lock") == gnu ]]; then',
+                'if false; then',
+            ),
+            (
+                'if length == 1 then .[0].filename else error("expected one locked GCC source") end',
+                'if length >= 1 then .[0].filename else error("expected locked GCC source") end',
+            ),
+            (
+                'sha256sum "$cache/$gcc_name" | awk \'{print $1}\') == "$gcc_sha"',
+                'sha256sum "$cache/$gcc_name" | awk \'{print $1}\') == "$gcc_size"',
+            ),
+            (
+                'wc -c < "$cache/$gcc_name" | tr -d \'[:space:]\') == "$gcc_size"',
+                'wc -c < "$cache/$gcc_name" | tr -d \'[:space:]\') == "$gcc_sha"',
+            ),
+            (
+                'rev-parse HEAD) == "${{ needs.v2-prepare.outputs.source_commit }}"',
+                'rev-parse HEAD) == "$GITHUB_SHA"',
+            ),
+            (
+                '${{ runner.temp }}/diagnostic-gnu-source-probe/*/*.err',
+                '${{ runner.temp }}/diagnostic-gnu-source-probe/**/*.err',
+            ),
+            (
+                "${{ runner.temp }}/diagnostic-gnu-source-probe/runner.log",
+                "${{ runner.temp }}/diagnostic-gnu-source-probe/runner.txt",
+            ),
+            (
+                '2>&1 | tee "$probe_logs/runner.log"',
+                '2>&1 | tee /dev/null',
+            ),
+            (
+                "if-no-files-found: ${{ steps.cache.outputs.gnu_probe_started == 'true' && 'error' || 'ignore' }}",
+                "if-no-files-found: ignore",
+            ),
+            (
+                'if: always() && steps.cache.outcome != \'skipped\'',
+                'if: success()',
+            ),
+            (
+                "retention-days: 7",
+                "retention-days: 30",
+            ),
+        ):
+            with self.subTest(old=old), self.assertRaises(PolicyViolation):
+                documents = self.new_documents()
+                documents.set_text(WORKFLOW, mutate_job(documents.text(WORKFLOW), "v2-sources", old, new))
+                validate_v2_policy(documents)
+
+        documents = self.new_documents()
+        workflow = documents.text(WORKFLOW)
+        sources = workflow_job(workflow, "v2-sources")
+        cache_step_parts = sources.split("      - id: cache\n", 1)
+        self.assertEqual(len(cache_step_parts), 2)
+        cache_step = "      - id: cache\n" + cache_step_parts[1].split("      - ", 1)[0]
+        verify_line = '            "$aros" cache sources verify --source-lock "$producer/$lock" --dir "$cache"\n'
+        self.assertIn(verify_line, cache_step)
+        early_probe = (
+            '            sh "$GITHUB_WORKSPACE/dependencies/gnu-source-probe/tools/crosstools/gnu/tests/test-cody-srcdir.sh" "$cache/$gcc_name"\n'
+        )
+        mutated_cache = cache_step.replace(verify_line, early_probe + verify_line, 1)
+        documents.set_text(
+            WORKFLOW,
+            replace_job(workflow, "v2-sources", sources.replace(cache_step, mutated_cache, 1)),
+        )
+        with self.assertRaises(PolicyViolation):
+            validate_v2_policy(documents)
 
     def test_actual_route_shell_accepts_manual_modes_and_rejects_tag_without_runtime_lock(self) -> None:
         prepare = workflow_job(Documents().text(WORKFLOW), "v2-prepare")

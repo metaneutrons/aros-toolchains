@@ -1,7 +1,7 @@
 {
   "schema": "aros-toolchain-profiles-v2",
   "family": "gnu",
-  "upstream_commit": "c3feff2027e4b9146d8dc7c5807d3d139f1863de",
+  "upstream_commit": "abf4ad848e0bf336eb4e37b223e33b81c3d310da",
   "profiles": [
     {
       "name": "rv32-esp32p4",
