@@ -207,6 +207,42 @@ class CacheArchiveTransportTests(unittest.TestCase):
             "bin/tool": ("file", 0o755, b"#!/bin/sh\nexit 0\n"),
         })
 
+    def test_separate_sources_and_native_cargo_restore_without_overlay(self) -> None:
+        sources = archive_bytes([
+            entry(".", "directory", mode=0o755),
+            entry("gcc.tar.xz", "file", b"locked source", 0o644),
+        ])
+        cargo = archive_bytes([
+            entry(".", "directory", mode=0o755),
+            entry("v1/native-key/vendor/empty", "directory", mode=0o700),
+            entry("v1/native-key/receipt.json", "file", b"native identity", 0o444),
+        ])
+        source_archive = self.write_archive(sources, "sources.tar.gz")
+        cargo_archive = self.write_archive(cargo, "cargo.tar.gz")
+        output = self.base / "combined-cache"
+        transport.unpack_archive(str(source_archive), sha256(sources), str(output))
+        transport.unpack_archive(str(cargo_archive), sha256(cargo), str(output / "cargo"))
+        self.assertEqual((output / "gcc.tar.xz").read_bytes(), b"locked source")
+        self.assertEqual((output / "cargo/v1/native-key/receipt.json").read_bytes(), b"native identity")
+        self.assertEqual(stat.S_IMODE((output / "cargo/v1/native-key/receipt.json").stat().st_mode), 0o444)
+        self.assertEqual(stat.S_IMODE((output / "cargo/v1/native-key/vendor/empty").stat().st_mode), 0o700)
+        with self.assertRaises(transport.TransportError):
+            transport.unpack_archive(str(cargo_archive), sha256(cargo), str(output / "cargo"))
+        self.assertEqual((output / "gcc.tar.xz").read_bytes(), b"locked source")
+
+    def test_source_cache_cannot_preseed_or_overwrite_native_cargo_subtree(self) -> None:
+        output = self.unpack(archive_bytes([
+            entry(".", "directory", mode=0o755),
+            entry("cargo", "directory", mode=0o755),
+            entry("cargo/stale", "file", b"wrong host"),
+        ]))
+        cargo = archive_bytes([entry("receipt.json", "file", b"selected native identity")])
+        archive = self.write_archive(cargo, "native-cargo.tar.gz")
+        with self.assertRaises(transport.TransportError):
+            transport.unpack_archive(str(archive), sha256(cargo), str(output / "cargo"))
+        self.assertEqual((output / "cargo/stale").read_bytes(), b"wrong host")
+        self.assertFalse((output / "cargo/receipt.json").exists())
+
     def test_without_explicit_root_entry_uses_private_root_mode(self) -> None:
         output = self.unpack(archive_bytes([entry("empty", "directory", mode=0o755)]))
         self.assertEqual(stat.S_IMODE(output.lstat().st_mode), 0o700)

@@ -34,6 +34,7 @@ QUALIFY = "scripts/toolchain/qualify-compiler-sdk-lane-v2.sh"
 MATRIX = "scripts/toolchain/select-release-matrix-v2.py"
 ROUTE = "scripts/toolchain/select-compiler-sdk-route-v2.py"
 CACHE_TRANSPORT = "scripts/toolchain/cache-archive-transport.py"
+CARGO_CACHE_CATALOG = "scripts/toolchain/collect-native-cargo-caches-v2.py"
 SELECTION = "toolchains/compiler-sdk-ci-selection-v2.json"
 EXECUTOR = "toolchains/producer-executor-v1.toml"
 HEX40 = re.compile(r"[0-9a-f]{40}\Z")
@@ -497,17 +498,22 @@ def validate_v2_policy(documents: Documents) -> dict[str, int]:
     require("- qualify-v2" in workflow, "workflow_dispatch must expose qualify-v2 mode")
     names = job_names(workflow)
     v2_names = {name for name in names if name.startswith("v2-")}
-    expected_names = {"v2-prepare", "v2-sources", "v2-runtimes", "v2-qualify", "v2-build", "v2-sdk", "v2-readback"}
+    expected_names = {
+        "v2-prepare", "v2-sources", "v2-runtimes", "v2-cargo-catalog",
+        "v2-qualify", "v2-build", "v2-sdk", "v2-readback",
+    }
     require(v2_names == expected_names, "workflow V2 diagnostic job set is not closed")
     prepare = workflow_job(workflow, "v2-prepare")
     sources = workflow_job(workflow, "v2-sources")
     qualify = workflow_job(workflow, "v2-qualify")
     runtimes = workflow_job(workflow, "v2-runtimes")
+    cargo_catalog = workflow_job(workflow, "v2-cargo-catalog")
     builds = workflow_job(workflow, "v2-build")
     sdk = workflow_job(workflow, "v2-sdk")
     readback = workflow_job(workflow, "v2-readback")
     for name, job in (("v2-prepare", prepare), ("v2-sources", sources),
-                      ("v2-runtimes", runtimes), ("v2-qualify", qualify),
+                      ("v2-runtimes", runtimes), ("v2-cargo-catalog", cargo_catalog),
+                      ("v2-qualify", qualify),
                       ("v2-build", builds), ("v2-sdk", sdk), ("v2-readback", readback)):
         require_read_only_job(job, name)
         require(re.search(r"(?m)^    timeout-minutes: [1-9][0-9]*$", job) is not None,
@@ -697,7 +703,8 @@ def validate_v2_policy(documents: Documents) -> dict[str, int]:
         and not re.search(r"(?m)^    if: .*full_matrix", runtimes)
         and prepare.count("${{ runner.temp }}/diagnostic-runtime-interface.json") == 2
         and runtimes.count("${{ runner.temp }}/diagnostic-native-runtime-interface-${{ matrix.host }}.json") == 2
-        and all("runtime-interface" not in job for job in (sources, qualify, builds, sdk, readback)),
+        and all("runtime-interface" not in job for job in
+                (sources, cargo_catalog, qualify, builds, sdk, readback)),
         "interface receipts must remain outside runtime roots and outside later qualification/provenance inputs",
     )
     source_preflight = prepare.split("      - id: source_preflight\n", 1)
@@ -799,8 +806,8 @@ def validate_v2_policy(documents: Documents) -> dict[str, int]:
         "GNU source probe must use the exact sparse source checkout and lock-derived GCC archive identity, after cache verification, with bounded log retention",
     )
     require(
-        "needs: [v2-prepare, v2-sources, v2-runtimes]" in qualify,
-        "V2 qualification must depend on both preparation and verified caches",
+        "needs: [v2-prepare, v2-sources, v2-runtimes, v2-cargo-catalog]" in qualify,
+        "V2 qualification must depend on preparation, source cache, runtime and host cargo catalog",
     )
     require(
         "matrix: ${{ fromJSON(needs.v2-prepare.outputs.matrix) }}" in qualify,
@@ -864,6 +871,7 @@ def validate_v2_policy(documents: Documents) -> dict[str, int]:
         "if: inputs.mode == 'qualify-v2'" in qualify
         and "if: needs.v2-prepare.outputs.full_matrix == 'true'" in builds
         and "if: needs.v2-prepare.outputs.full_matrix == 'true'" in sdk
+        and "needs: [v2-prepare, v2-sources, v2-runtimes, v2-cargo-catalog]" in builds
         and "build_matrix: ${{ steps.matrix.outputs.build_matrix }}" in prepare
         and "matrix: ${{ fromJSON(needs.v2-prepare.outputs.build_matrix) }}" in builds
         and "uses: ./.github/actions/build-native-lane-v2" in builds
@@ -881,7 +889,7 @@ def validate_v2_policy(documents: Documents) -> dict[str, int]:
         "authenticated release IDs must flow to full owners and readback without a hardcoded development fallback",
     )
     require(
-        "needs: [v2-prepare, v2-sources, v2-runtimes, v2-build]" in sdk
+        "needs: [v2-prepare, v2-sources, v2-runtimes, v2-cargo-catalog, v2-build]" in sdk
         and "matrix: ${{ fromJSON(needs.v2-prepare.outputs.matrix) }}" in sdk
         and "name: diagnostic-v2-native-runtime-${{ matrix.host }}" in sdk
         and "select-owner-artifacts-v2.py" in sdk
@@ -1139,24 +1147,137 @@ def validate_v2_policy(documents: Documents) -> dict[str, int]:
         "V2 compatibility sources must be seeded, bounded and offline-verified",
     )
     require(
-        "cache cargo fetch" in sources and "cache cargo verify" in sources,
-        "V2 source preparation must populate and verify Cargo caches",
+        "cache cargo fetch" not in sources and "cache cargo verify" not in sources,
+        "V2 source preparation must remain host-independent and must not populate Cargo caches",
     )
     require(
         'tar -C "$cache" -czf "$RUNNER_TEMP/diagnostic-cache.tar.gz" .' in sources
         and 'cache_archive_sha256: ${{ steps.cache.outputs.cache_archive_sha256 }}' in sources
         and 'name: diagnostic-v2-cache\n          path: ${{ runner.temp }}/diagnostic-cache.tar.gz' in sources,
-        "V2 cache transport must preserve the measured tree in an independently digest-bound archive",
+        "V2 source transport must preserve the host-independent tree in a digest-bound archive",
     )
-    documents.read(CACHE_TRANSPORT)
     require(
-        'CACHE_ARCHIVE_SHA256: ${{ needs.v2-sources.outputs.cache_archive_sha256 }}' in qualify
-        and 'python3 -B scripts/toolchain/cache-archive-transport.py' in qualify
-        and '--archive-sha256 "$CACHE_ARCHIVE_SHA256" --output-dir "$RUNNER_TEMP/diagnostic-cache"' in qualify
-        and qualify.index('python3 -B scripts/toolchain/cache-archive-transport.py')
-        < qualify.index('"$runtime/bin/aros" cache cargo verify'),
-        "V2 qualification must safely restore the exact cache archive before native verification",
+        'cache sources fetch --source-lock' in sources
+        and 'cache sources verify --source-lock' in sources
+        and 'cache sources fetch --compatibility-ports-lock' in sources
+        and 'cache sources verify --compatibility-ports-lock' in sources,
+        "V2 source preparation must still verify compiler and compatibility inputs before archiving",
     )
+
+    require(
+        '"$aros" cache cargo fetch --producer-dir "$producer" --tools-dir "$GITHUB_WORKSPACE/dependencies/aros-tools"' in runtimes
+        and '"$aros" cache cargo verify --producer-dir "$producer" --tools-dir "$GITHUB_WORKSPACE/dependencies/aros-tools"' in runtimes
+        and 'SELECTED_CARGO: ${{ steps.rust.outputs.cargo }}' in runtimes
+        and 'tar -C "$cache/cargo" -czf "$RUNNER_TEMP/native-cargo-cache.tar.gz" .' in runtimes
+        and 'name: diagnostic-v2-cargo-cache-${{ matrix.host }}' in runtimes
+        and 'path: ${{ runner.temp }}/native-cargo-cache.tar.gz' in runtimes
+        and 'name: diagnostic-v2-cargo-identity-${{ matrix.host }}' in runtimes
+        and 'path: ${{ runner.temp }}/native-cargo-identity/${{ matrix.host }}.json' in runtimes,
+        "each native host must fetch online and offline, verify, then archive only its Cargo subtree",
+    )
+    cargo_preparation = workflow_step(runtimes, "Prepare and seal this host's exact Cargo generation")
+    online_fetch = '"$aros" cache cargo fetch --producer-dir "$producer" --tools-dir "$GITHUB_WORKSPACE/dependencies/aros-tools"'
+    offline_fetch = '--dir "$cache" --cargo "$SELECTED_CARGO" --offline'
+    verify_cargo = '"$aros" cache cargo verify --producer-dir "$producer" --tools-dir "$GITHUB_WORKSPACE/dependencies/aros-tools"'
+    cargo_tar = 'tar -C "$cache/cargo" -czf "$RUNNER_TEMP/native-cargo-cache.tar.gz" .'
+    require(
+        cargo_preparation.count(online_fetch) == 2
+        and offline_fetch in cargo_preparation
+        and cargo_preparation.index(online_fetch)
+        < cargo_preparation.index(online_fetch, cargo_preparation.index(online_fetch) + len(online_fetch))
+        < cargo_preparation.index(verify_cargo) < cargo_preparation.index(cargo_tar)
+        and cargo_preparation.index(offline_fetch) > cargo_preparation.index(online_fetch, cargo_preparation.index(online_fetch) + len(online_fetch))
+        and 'SELECTED_HOST: ${{ matrix.host }}' in cargo_preparation
+        and 'SELECTED_TOOLS_COMMIT: ${{ needs.v2-prepare.outputs.tools_commit }}' in cargo_preparation,
+        "native Cargo fetch must be host-specific, proven offline, and verified before subtree archiving",
+    )
+    require(
+        cargo_preparation.index(cargo_tar)
+        < runtimes.index("name: diagnostic-v2-cargo-cache-${{ matrix.host }}")
+        < runtimes.index("name: diagnostic-v2-cargo-identity-${{ matrix.host }}"),
+        "native Cargo archive and its identity must be retained only after the exact host generation is verified",
+    )
+    identity_block = re.search(r"(?s)identity\s*=\s*\{(.*?)\n\s*\}", runtimes)
+    require(identity_block is not None, "native Cargo receipt must define one closed host identity object")
+    assert identity_block is not None
+    identity_fields = re.findall(r"(?m)^\s*'([a-z0-9_]+)'\s*:", identity_block.group(1))
+    require(
+        identity_fields == [
+            "schema", "host", "producer_commit", "tools_commit", "run_id", "run_attempt", "archive_sha256",
+        ]
+        and "'schema': 'aros-native-cargo-cache-v1'" in identity_block.group(0)
+        and "'host': host" in identity_block.group(0)
+        and "'producer_commit': os.environ['GITHUB_SHA']" in identity_block.group(0)
+        and "'tools_commit': os.environ['SELECTED_TOOLS_COMMIT']" in identity_block.group(0)
+        and "'run_id': os.environ['GITHUB_RUN_ID']" in identity_block.group(0)
+        and "'run_attempt': os.environ['GITHUB_RUN_ATTEMPT']" in identity_block.group(0)
+        and "'archive_sha256': digest" in identity_block.group(0)
+        and "hashlib.file_digest(handle, 'sha256').hexdigest()" in runtimes
+        and "'native-cargo-cache.tar.gz'" in runtimes,
+        "native Cargo identity must have exactly the required owner, commit, run and archive bindings",
+    )
+    require(
+        "needs: [v2-prepare, v2-runtimes]" in cargo_catalog
+        and "cache_archives: ${{ steps.catalog.outputs.cache_archives }}" in cargo_catalog
+        and "SELECTED_HOST_MATRIX: ${{ needs.v2-prepare.outputs.host_matrix }}" in cargo_catalog
+        and "SELECTED_TOOLS_COMMIT: ${{ needs.v2-prepare.outputs.tools_commit }}" in cargo_catalog
+        and "pattern: diagnostic-v2-cargo-identity-*" in cargo_catalog
+        and "merge-multiple: false" in cargo_catalog
+        and "python3 -B scripts/toolchain/collect-native-cargo-caches-v2.py" in cargo_catalog
+        and '--identity-dir "$RUNNER_TEMP/native-cargo-identities"' in cargo_catalog
+        and '--host-matrix "$SELECTED_HOST_MATRIX" --producer-commit "$GITHUB_SHA"' in cargo_catalog
+        and '--tools-commit "$SELECTED_TOOLS_COMMIT" --run-id "$GITHUB_RUN_ID"' in cargo_catalog
+        and '--run-attempt "$GITHUB_RUN_ATTEMPT" --github-output "$GITHUB_OUTPUT"' in cargo_catalog
+        and "github-token:" not in cargo_catalog
+        and not re.search(r"(?m)^\s*run-id:", cargo_catalog),
+        "the read-only Cargo catalog must strictly bind all same-run per-host identity receipts before emitting a digest map",
+    )
+    documents.read(CARGO_CACHE_CATALOG)
+    documents.read(CACHE_TRANSPORT)
+
+    cargo_consumers = (
+        ("v2-qualify", qualify, "qualify-compiler-sdk-lane-v2.sh"),
+        ("v2-build", builds, "uses: ./.github/actions/build-native-lane-v2"),
+        ("v2-sdk", sdk, "qualify-compiler-sdk-lane-v2.sh"),
+    )
+    for consumer_name, consumer, native_marker in cargo_consumers:
+        source_restore = 'python3 -B scripts/toolchain/cache-archive-transport.py'
+        cargo_digest_binding = (
+            'CARGO_ARCHIVE_SHA256: ${{ fromJSON(needs.v2-cargo-catalog.outputs.cache_archives)[matrix.host] }}'
+        )
+        transport_positions = [
+            match.start() for match in re.finditer(re.escape(source_restore), consumer)
+        ]
+        require(
+            f"needs.v2-cargo-catalog" in consumer
+            and "name: diagnostic-v2-cache" in consumer
+            and "path: ${{ runner.temp }}/diagnostic-cache-input" in consumer
+            and '--archive "$RUNNER_TEMP/diagnostic-cache-input/diagnostic-cache.tar.gz"' in consumer
+            and "name: diagnostic-v2-cargo-cache-${{ matrix.host }}" in consumer
+            and "path: ${{ runner.temp }}/diagnostic-cargo-input" in consumer
+            and 'CACHE_ARCHIVE_SHA256: ${{ needs.v2-sources.outputs.cache_archive_sha256 }}' in consumer
+            and cargo_digest_binding in consumer
+            and len(transport_positions) == 2
+            and '--archive-sha256 "$CACHE_ARCHIVE_SHA256" --output-dir "$RUNNER_TEMP/diagnostic-cache"' in consumer
+            and '--archive-sha256 "$CARGO_ARCHIVE_SHA256" --output-dir "$RUNNER_TEMP/diagnostic-cache/cargo"' in consumer
+            and '--archive "$RUNNER_TEMP/diagnostic-cargo-input/native-cargo-cache.tar.gz"' in consumer
+            and '"$runtime/bin/aros" cache cargo verify --producer-dir "$producer"' in consumer
+            and '--dir "$RUNNER_TEMP/diagnostic-cache"' in consumer,
+            f"{consumer_name} must download both exact archives and bind their independent digests",
+        )
+        require(
+            transport_positions[0] < transport_positions[1]
+            and consumer.index('--output-dir "$RUNNER_TEMP/diagnostic-cache"')
+            < consumer.index('--output-dir "$RUNNER_TEMP/diagnostic-cache/cargo"')
+            < consumer.index('"$runtime/bin/aros" cache cargo verify')
+            < consumer.index(native_marker)
+            and 'cache cargo fetch' not in consumer,
+            f"{consumer_name} must safely restore source then native Cargo, verify, and only then perform native work",
+        )
+        require(
+            not re.search(r"(?m)^\s*(?:tar\s+.*(?:-x|--extract)|unzip\s)", consumer),
+            f"{consumer_name} must not overlay unverified raw cache archives",
+        )
     require(
         'for copy in a b; do' in qualify_script
         and 'build-lane-v2.sh' in qualify_script
@@ -1885,13 +2006,91 @@ class CompilerSdkWorkflowV2Tests(unittest.TestCase):
             ("v2-sources", "path: ${{ runner.temp }}/diagnostic-cache.tar.gz", "path: ${{ runner.temp }}/diagnostic-cache/"),
             ("v2-sources", "cache_archive_sha256: ${{ steps.cache.outputs.cache_archive_sha256 }}", "cache_archive_sha256: unbound"),
             ("v2-qualify", "CACHE_ARCHIVE_SHA256: ${{ needs.v2-sources.outputs.cache_archive_sha256 }}", "CACHE_ARCHIVE_SHA256: unbound"),
+            ("v2-qualify", 'CARGO_ARCHIVE_SHA256: ${{ fromJSON(needs.v2-cargo-catalog.outputs.cache_archives)[matrix.host] }}', "CARGO_ARCHIVE_SHA256: unbound"),
             ("v2-qualify", "python3 -B scripts/toolchain/cache-archive-transport.py", "python3 -B missing.py"),
+            ("v2-qualify", '--archive-sha256 "$CARGO_ARCHIVE_SHA256" --output-dir "$RUNNER_TEMP/diagnostic-cache/cargo"', '--archive-sha256 "$CACHE_ARCHIVE_SHA256" --output-dir "$RUNNER_TEMP/diagnostic-cache/cargo"'),
         ):
             with self.subTest(job=job, original=original):
                 documents = self.new_documents()
                 documents.set_text(WORKFLOW, mutate_job(documents.text(WORKFLOW), job, original, replacement))
                 with self.assertRaises(PolicyViolation):
                     validate_v2_policy(documents)
+
+    def test_rejects_native_cargo_host_catalog_or_metadata_drift(self) -> None:
+        mutations = (
+            ("v2-sources", 'tar -C "$cache" -czf "$RUNNER_TEMP/diagnostic-cache.tar.gz" .',
+             '"$aros" cache cargo fetch --producer-dir "$producer"\n          tar -C "$cache" -czf "$RUNNER_TEMP/diagnostic-cache.tar.gz" .'),
+            ("v2-runtimes", "SELECTED_HOST: ${{ matrix.host }}", "SELECTED_HOST: linux-x86_64"),
+            ("v2-runtimes", "SELECTED_CARGO: ${{ steps.rust.outputs.cargo }}", "SELECTED_CARGO: /usr/bin/cargo"),
+            ("v2-runtimes", 'name: diagnostic-v2-cargo-cache-${{ matrix.host }}', "name: diagnostic-v2-cargo-cache-linux-x86_64"),
+            ("v2-runtimes", 'name: diagnostic-v2-cargo-identity-${{ matrix.host }}', "name: diagnostic-v2-cargo-identity-linux-x86_64"),
+            ("v2-runtimes", 'tar -C "$cache/cargo" -czf "$RUNNER_TEMP/native-cargo-cache.tar.gz" .',
+             'tar -C "$cache" -czf "$RUNNER_TEMP/native-cargo-cache.tar.gz" .'),
+            ("v2-runtimes", '--dir "$cache" --cargo "$SELECTED_CARGO" --offline',
+             '--dir "$cache" --cargo "$SELECTED_CARGO"'),
+            ("v2-runtimes", "'producer_commit': os.environ['GITHUB_SHA']", "'producer_commit': os.environ['GITHUB_RUN_ID']"),
+            ("v2-runtimes", "'tools_commit': os.environ['SELECTED_TOOLS_COMMIT']", "'tools_commit': os.environ['GITHUB_SHA']"),
+            ("v2-runtimes", "'run_id': os.environ['GITHUB_RUN_ID']", "'run_id': os.environ['GITHUB_RUN_ATTEMPT']"),
+            ("v2-runtimes", "'run_attempt': os.environ['GITHUB_RUN_ATTEMPT']", "'run_attempt': os.environ['GITHUB_RUN_ID']"),
+            ("v2-runtimes", "'host': host", "'host': 'linux-x86_64'"),
+            ("v2-runtimes", "'archive_sha256': digest", "'archive_sha256': 'c' * 64"),
+            ("v2-runtimes", "'schema': 'aros-native-cargo-cache-v1'", "'schema': 'aros-native-cargo-cache-v2'"),
+            ("v2-cargo-catalog", "pattern: diagnostic-v2-cargo-identity-*", "pattern: diagnostic-v2-cargo-cache-*"),
+            ("v2-cargo-catalog", "merge-multiple: false", "merge-multiple: true"),
+            ("v2-cargo-catalog", "needs: [v2-prepare, v2-runtimes]", "needs: [v2-prepare]"),
+            ("v2-cargo-catalog", 'SELECTED_HOST_MATRIX: ${{ needs.v2-prepare.outputs.host_matrix }}',
+             'SELECTED_HOST_MATRIX: ${{ needs.v2-prepare.outputs.matrix }}'),
+            ("v2-cargo-catalog", '--producer-commit "$GITHUB_SHA"', '--producer-commit "$GITHUB_RUN_ID"'),
+            ("v2-cargo-catalog", '--run-attempt "$GITHUB_RUN_ATTEMPT"', '--run-attempt "1"'),
+        )
+        for job, original, replacement in mutations:
+            with self.subTest(job=job, original=original):
+                documents = self.new_documents()
+                documents.set_text(
+                    WORKFLOW,
+                    mutate_job(documents.text(WORKFLOW), job, original, replacement),
+                )
+                with self.assertRaises(PolicyViolation):
+                    validate_v2_policy(documents)
+
+    def test_rejects_missing_cargo_catalog_dependencies_or_second_restore(self) -> None:
+        dependency_lines = (
+            ("v2-build", "needs: [v2-prepare, v2-sources, v2-runtimes, v2-cargo-catalog]",
+             "needs: [v2-prepare, v2-sources, v2-runtimes]"),
+            ("v2-qualify", "needs: [v2-prepare, v2-sources, v2-runtimes, v2-cargo-catalog]",
+             "needs: [v2-prepare, v2-sources, v2-runtimes]"),
+            ("v2-sdk", "needs: [v2-prepare, v2-sources, v2-runtimes, v2-cargo-catalog, v2-build]",
+             "needs: [v2-prepare, v2-sources, v2-runtimes, v2-build]"),
+        )
+        for job, original, replacement in dependency_lines:
+            with self.subTest(job=job):
+                documents = self.new_documents()
+                documents.set_text(WORKFLOW, mutate_job(documents.text(WORKFLOW), job, original, replacement))
+                with self.assertRaises(PolicyViolation):
+                    validate_v2_policy(documents)
+
+        cargo_restore = (
+            '          python3 -B scripts/toolchain/cache-archive-transport.py \\\n'
+            '            --archive "$RUNNER_TEMP/diagnostic-cargo-input/native-cargo-cache.tar.gz" \\\n'
+            '            --archive-sha256 "$CARGO_ARCHIVE_SHA256" --output-dir "$RUNNER_TEMP/diagnostic-cache/cargo"\n'
+        )
+        verify = (
+            '          "$runtime/bin/aros" cache cargo verify --producer-dir "$producer" \\\n'
+            '            --tools-dir "$GITHUB_WORKSPACE/dependencies/aros-tools" --dir "$RUNNER_TEMP/diagnostic-cache" \\\n'
+            '            --cargo "${{ steps.rust.outputs.cargo }}"\n'
+        )
+        workflow = Documents().text(WORKFLOW)
+        qualify = workflow_job(workflow, "v2-qualify")
+        self.assertIn(cargo_restore, qualify)
+        self.assertIn(verify, qualify)
+        for mutated in (
+            qualify.replace(cargo_restore, "", 1),
+            qualify.replace(cargo_restore + verify, verify + cargo_restore, 1),
+        ):
+            documents = self.new_documents()
+            documents.set_text(WORKFLOW, replace_job(workflow, "v2-qualify", mutated))
+            with self.assertRaises(PolicyViolation):
+                validate_v2_policy(documents)
 
     def test_rejects_missing_native_failure_diagnostics(self) -> None:
         for entry in (
@@ -1961,7 +2160,10 @@ class CompilerSdkWorkflowV2Tests(unittest.TestCase):
 
     def test_rejects_sdk_without_original_owner_admission(self) -> None:
         for before, after in (
-            ("needs: [v2-prepare, v2-sources, v2-runtimes, v2-build]", "needs: [v2-prepare, v2-sources, v2-runtimes]"),
+            (
+                "needs: [v2-prepare, v2-sources, v2-runtimes, v2-cargo-catalog, v2-build]",
+                "needs: [v2-prepare, v2-sources, v2-runtimes, v2-cargo-catalog]",
+            ),
             ("--owner-a-selection", "--unverified-a-selection"),
             ("--owner-b-selection", "--unverified-b-selection"),
             ("select-owner-artifacts-v2.py", "unverified-owner-selection.py"),

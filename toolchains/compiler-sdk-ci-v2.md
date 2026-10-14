@@ -26,13 +26,20 @@ contracts remain owned by AROS-NX.
    archive request. Child configuration homes are private. Bounded step logs
    and a source-only report survive failures. These checks do not replace
    AROS-NX's required product CI or qualify SDK generation.
-3. Fetch and verify the selected compiler, compatibility, Python and Cargo
-   inputs once. No native build phase is allowed to populate missing inputs.
-   Transfer this cache as one archive whose SHA-256 is retained by the source
-   job. Safe restoration preserves file modes and empty directories before
-   native verification: zipped directory artifacts normalize permissions,
-   which invalidates the mode-bound Cargo vendor receipt. Do not repair the
-   receipt or normalize the downloaded vendor files to bypass that failure.
+3. Fetch and verify compiler, compatibility and Python sources once. Prepare
+   each selected host's Cargo generation with that host's exact native Cargo,
+   repeat its fetch offline, and verify it before fan-out. Cargo executable
+   bytes are part of the generation key; equal version strings do not make
+   generations interchangeable across architectures. Transfer sources and
+   each native Cargo subtree as separate archives. A single catalog requires
+   exactly the selected host set and binds its digest map to this workflow
+   run/attempt and producer/tools commits; it avoids matrix-output races.
+   This catalog is transport metadata, not Cargo provenance. Each consumer
+   safely restores the shared sources, then its host archive into the fresh
+   `cargo` subtree, and runs the unchanged native Cargo verifier. No native
+   build phase may populate missing inputs. Restoration preserves modes and
+   empty directories: zipped directory artifacts invalidate mode-bound vendor
+   receipts. Never repair a receipt or normalize files to bypass verification.
    For each selected GNU source lock, hash/size-check the GCC archive and run
    the source-owned two-root libcody object/library comparison and Classic
    counterprobes before uploading the shared cache. This bounded regression
