@@ -332,12 +332,8 @@ jobs:
             "$aros" cache sources fetch --compatibility-ports-lock "$producer/$lock" --dir "$cache" --offline
             "$aros" cache sources verify --compatibility-ports-lock "$producer/$lock" --dir "$cache"
           done < <(jq -r '.groups[].ports_lock' "$producer/toolchains/compiler-sdk-ci-selection-v2.json" | sort -u)
-          "$aros" cache cargo fetch --producer-dir "$producer" --tools-dir "$GITHUB_WORKSPACE/dependencies/aros-tools" \
-            --dir "$cache" --cargo "${{ steps.rust.outputs.cargo }}"
-          "$aros" cache cargo verify --producer-dir "$producer" --tools-dir "$GITHUB_WORKSPACE/dependencies/aros-tools" \
-            --dir "$cache" --cargo "${{ steps.rust.outputs.cargo }}"
-          # Directory artifacts normalize modes and omit empty directories.
-          # Preserve the vendor receipt's exact tree in one archive instead.
+          # Sources are host-independent; Cargo generations are prepared separately
+          # with each host's exact native Cargo binary, never normalized across hosts.
           tar -C "$cache" -czf "$RUNNER_TEMP/diagnostic-cache.tar.gz" .
           archive_sha=$(sha256sum "$RUNNER_TEMP/diagnostic-cache.tar.gz" | awk '{print $1}')
           printf 'cache_archive_sha256=%s\n' "$archive_sha" >> "$GITHUB_OUTPUT"
@@ -384,7 +380,8 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
           path: dependencies/aros-tools
-      - uses: ./.github/actions/select-native-rust-toolchain
+      - id: rust
+        uses: ./.github/actions/select-native-rust-toolchain
         with:
           producer-dir: ${{ github.workspace }}
       - id: runtime_development
@@ -423,6 +420,64 @@ jobs:
           path: ${{ runner.temp }}/diagnostic-native-runtime-interface-${{ matrix.host }}.json
           if-no-files-found: error
           retention-days: 7
+      - name: Prepare and seal this host's exact Cargo generation
+        env:
+          SELECTED_HOST: ${{ matrix.host }}
+          SELECTED_TOOLS_COMMIT: ${{ needs.v2-prepare.outputs.tools_commit }}
+          SELECTED_CARGO: ${{ steps.rust.outputs.cargo }}
+        run: |
+          set -euo pipefail
+          producer="$RUNNER_TEMP/diagnostic-producer"
+          git worktree add --detach "$producer" "$GITHUB_SHA"
+          cache="$RUNNER_TEMP/native-cargo-cache"
+          mkdir "$cache"
+          aros="${{ steps.runtime.outputs.root }}/bin/aros"
+          "$aros" cache cargo fetch --producer-dir "$producer" --tools-dir "$GITHUB_WORKSPACE/dependencies/aros-tools" \
+            --dir "$cache" --cargo "$SELECTED_CARGO"
+          "$aros" cache cargo fetch --producer-dir "$producer" --tools-dir "$GITHUB_WORKSPACE/dependencies/aros-tools" \
+            --dir "$cache" --cargo "$SELECTED_CARGO" --offline
+          "$aros" cache cargo verify --producer-dir "$producer" --tools-dir "$GITHUB_WORKSPACE/dependencies/aros-tools" \
+            --dir "$cache" --cargo "$SELECTED_CARGO"
+          # Preserve modes and empty directories inside the native generation.
+          COPYFILE_DISABLE=1 tar -C "$cache/cargo" -czf "$RUNNER_TEMP/native-cargo-cache.tar.gz" .
+          mkdir "$RUNNER_TEMP/native-cargo-identity"
+          python3 -B - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          root = Path(os.environ['RUNNER_TEMP'])
+          with (root / 'native-cargo-cache.tar.gz').open('rb') as handle:
+              digest = hashlib.file_digest(handle, 'sha256').hexdigest()
+          host = os.environ['SELECTED_HOST']
+          identity = {
+              'schema': 'aros-native-cargo-cache-v1',
+              'host': host,
+              'producer_commit': os.environ['GITHUB_SHA'],
+              'tools_commit': os.environ['SELECTED_TOOLS_COMMIT'],
+              'run_id': os.environ['GITHUB_RUN_ID'],
+              'run_attempt': os.environ['GITHUB_RUN_ATTEMPT'],
+              'archive_sha256': digest,
+          }
+          with (root / 'native-cargo-identity' / f'{host}.json').open('x') as handle:
+              json.dump(identity, handle, sort_keys=True)
+              handle.write('\n')
+          PY
+      - name: Retain native Cargo archive without permission normalization
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: diagnostic-v2-cargo-cache-${{ matrix.host }}
+          path: ${{ runner.temp }}/native-cargo-cache.tar.gz
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 7
+      - name: Retain native Cargo transport identity
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: diagnostic-v2-cargo-identity-${{ matrix.host }}
+          path: ${{ runner.temp }}/native-cargo-identity/${{ matrix.host }}.json
+          if-no-files-found: error
+          retention-days: 7
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: diagnostic-v2-native-runtime-${{ matrix.host }}
@@ -431,10 +486,41 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  v2-cargo-catalog:
+    name: Bind every selected native Cargo cache
+    needs: [v2-prepare, v2-runtimes]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      cache_archives: ${{ steps.catalog.outputs.cache_archives }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          pattern: diagnostic-v2-cargo-identity-*
+          path: ${{ runner.temp }}/native-cargo-identities
+          merge-multiple: false
+      - id: catalog
+        name: Require exact host, commit and run identity without matrix-output races
+        env:
+          SELECTED_HOST_MATRIX: ${{ needs.v2-prepare.outputs.host_matrix }}
+          SELECTED_TOOLS_COMMIT: ${{ needs.v2-prepare.outputs.tools_commit }}
+        run: |
+          set -euo pipefail
+          python3 -B scripts/toolchain/collect-native-cargo-caches-v2.py \
+            --identity-dir "$RUNNER_TEMP/native-cargo-identities" \
+            --host-matrix "$SELECTED_HOST_MATRIX" --producer-commit "$GITHUB_SHA" \
+            --tools-commit "$SELECTED_TOOLS_COMMIT" --run-id "$GITHUB_RUN_ID" \
+            --run-attempt "$GITHUB_RUN_ATTEMPT" --github-output "$GITHUB_OUTPUT"
+
   v2-build:
     name: Native compiler (${{ matrix.group_id }}, ${{ matrix.host }}, ${{ matrix.profile }}, ${{ matrix.copy }})
     if: needs.v2-prepare.outputs.full_matrix == 'true'
-    needs: [v2-prepare, v2-sources, v2-runtimes]
+    needs: [v2-prepare, v2-sources, v2-runtimes, v2-cargo-catalog]
     strategy:
       fail-fast: false
       max-parallel: 3
@@ -476,6 +562,10 @@ jobs:
         with:
           name: diagnostic-v2-cache
           path: ${{ runner.temp }}/diagnostic-cache-input
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: diagnostic-v2-cargo-cache-${{ matrix.host }}
+          path: ${{ runner.temp }}/diagnostic-cargo-input
       - uses: ./.github/actions/disable-google-chrome-apt-source
         if: runner.os == 'Linux'
       - name: Install native compiler prerequisites
@@ -498,6 +588,7 @@ jobs:
           SELECTED_COPY: ${{ matrix.copy }}
           SELECTED_RELEASE_ID: ${{ needs.v2-prepare.outputs.release_id }}
           CACHE_ARCHIVE_SHA256: ${{ needs.v2-sources.outputs.cache_archive_sha256 }}
+          CARGO_ARCHIVE_SHA256: ${{ fromJSON(needs.v2-cargo-catalog.outputs.cache_archives)[matrix.host] }}
         run: |
           set -euo pipefail
           runtime="$RUNNER_TEMP/diagnostic-runtime"
@@ -506,6 +597,9 @@ jobs:
           python3 -B scripts/toolchain/cache-archive-transport.py \
             --archive "$RUNNER_TEMP/diagnostic-cache-input/diagnostic-cache.tar.gz" \
             --archive-sha256 "$CACHE_ARCHIVE_SHA256" --output-dir "$RUNNER_TEMP/diagnostic-cache"
+          python3 -B scripts/toolchain/cache-archive-transport.py \
+            --archive "$RUNNER_TEMP/diagnostic-cargo-input/native-cargo-cache.tar.gz" \
+            --archive-sha256 "$CARGO_ARCHIVE_SHA256" --output-dir "$RUNNER_TEMP/diagnostic-cache/cargo"
           "$runtime/bin/aros" cache cargo verify --producer-dir "$producer" \
             --tools-dir "$GITHUB_WORKSPACE/dependencies/aros-tools" --dir "$RUNNER_TEMP/diagnostic-cache" \
             --cargo "${{ steps.rust.outputs.cargo }}"
@@ -564,7 +658,7 @@ jobs:
   v2-sdk:
     name: SDK from owned compilers (${{ matrix.group_id }}, ${{ matrix.host }}, ${{ matrix.profile }})
     if: needs.v2-prepare.outputs.full_matrix == 'true'
-    needs: [v2-prepare, v2-sources, v2-runtimes, v2-build]
+    needs: [v2-prepare, v2-sources, v2-runtimes, v2-cargo-catalog, v2-build]
     strategy:
       fail-fast: false
       max-parallel: 3
@@ -612,6 +706,10 @@ jobs:
         with:
           name: diagnostic-v2-cache
           path: ${{ runner.temp }}/diagnostic-cache-input
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: diagnostic-v2-cargo-cache-${{ matrix.host }}
+          path: ${{ runner.temp }}/diagnostic-cargo-input
       - uses: ./.github/actions/disable-google-chrome-apt-source
         if: runner.os == 'Linux'
       - name: Install native SDK consumer prerequisites
@@ -635,6 +733,7 @@ jobs:
           CURRENT_JOB: SDK from owned compilers (${{ matrix.group_id }}, ${{ matrix.host }}, ${{ matrix.profile }})
           SELECTED_RELEASE_ID: ${{ needs.v2-prepare.outputs.release_id }}
           CACHE_ARCHIVE_SHA256: ${{ needs.v2-sources.outputs.cache_archive_sha256 }}
+          CARGO_ARCHIVE_SHA256: ${{ fromJSON(needs.v2-cargo-catalog.outputs.cache_archives)[matrix.host] }}
         run: |
           set -euo pipefail
           runtime="$RUNNER_TEMP/diagnostic-runtime"
@@ -644,6 +743,9 @@ jobs:
           python3 -B scripts/toolchain/cache-archive-transport.py \
             --archive "$RUNNER_TEMP/diagnostic-cache-input/diagnostic-cache.tar.gz" \
             --archive-sha256 "$CACHE_ARCHIVE_SHA256" --output-dir "$RUNNER_TEMP/diagnostic-cache"
+          python3 -B scripts/toolchain/cache-archive-transport.py \
+            --archive "$RUNNER_TEMP/diagnostic-cargo-input/native-cargo-cache.tar.gz" \
+            --archive-sha256 "$CARGO_ARCHIVE_SHA256" --output-dir "$RUNNER_TEMP/diagnostic-cache/cargo"
           "$runtime/bin/aros" cache cargo verify --producer-dir "$producer" \
             --tools-dir "$GITHUB_WORKSPACE/dependencies/aros-tools" --dir "$RUNNER_TEMP/diagnostic-cache" \
             --cargo "${{ steps.rust.outputs.cargo }}"
@@ -1235,7 +1337,7 @@ jobs:
   v2-qualify:
     name: Compiler A/B and SDK (${{ matrix.group_id }}, ${{ matrix.host }}, ${{ matrix.profile }})
     if: inputs.mode == 'qualify-v2'
-    needs: [v2-prepare, v2-sources, v2-runtimes]
+    needs: [v2-prepare, v2-sources, v2-runtimes, v2-cargo-catalog]
     strategy:
       fail-fast: false
       max-parallel: 2
@@ -1283,6 +1385,10 @@ jobs:
         with:
           name: diagnostic-v2-cache
           path: ${{ runner.temp }}/diagnostic-cache-input
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: diagnostic-v2-cargo-cache-${{ matrix.host }}
+          path: ${{ runner.temp }}/diagnostic-cargo-input
       - uses: ./.github/actions/disable-google-chrome-apt-source
         if: runner.os == 'Linux'
       - name: Install compiler and SDK consumer prerequisites
@@ -1303,6 +1409,7 @@ jobs:
           SELECTED_PRESET: ${{ matrix.profile }}
           SELECTED_HOST: ${{ matrix.host }}
           CACHE_ARCHIVE_SHA256: ${{ needs.v2-sources.outputs.cache_archive_sha256 }}
+          CARGO_ARCHIVE_SHA256: ${{ fromJSON(needs.v2-cargo-catalog.outputs.cache_archives)[matrix.host] }}
         run: |
           set -euo pipefail
           runtime="$RUNNER_TEMP/diagnostic-runtime"
@@ -1312,6 +1419,9 @@ jobs:
           python3 -B scripts/toolchain/cache-archive-transport.py \
             --archive "$RUNNER_TEMP/diagnostic-cache-input/diagnostic-cache.tar.gz" \
             --archive-sha256 "$CACHE_ARCHIVE_SHA256" --output-dir "$RUNNER_TEMP/diagnostic-cache"
+          python3 -B scripts/toolchain/cache-archive-transport.py \
+            --archive "$RUNNER_TEMP/diagnostic-cargo-input/native-cargo-cache.tar.gz" \
+            --archive-sha256 "$CARGO_ARCHIVE_SHA256" --output-dir "$RUNNER_TEMP/diagnostic-cache/cargo"
           "$runtime/bin/aros" cache cargo verify --producer-dir "$producer" \
             --tools-dir "$GITHUB_WORKSPACE/dependencies/aros-tools" --dir "$RUNNER_TEMP/diagnostic-cache" \
             --cargo "${{ steps.rust.outputs.cargo }}"
