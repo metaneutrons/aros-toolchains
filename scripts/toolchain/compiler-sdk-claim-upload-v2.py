@@ -73,7 +73,10 @@ def validate_asset(value: object, raw: bytes) -> dict:
             "sha256": hashlib.sha256(raw).hexdigest()}
 
 
-def fixed_metadata(path: str) -> object:
+def fixed_metadata(path: str, *, governance: bool = False) -> object:
+    # Admission pagination forwards its explicit ordinary-read selector.
+    # This private reader has no privileged credential or governance mode.
+    START.require(governance is False, "claim metadata reader accepts only ordinary job-token reads")
     repository = START.ADMISSION.REPOSITORY
     START.require((path == f"repos/{repository}" or path.startswith(f"repos/{repository}/"))
                   and ".." not in path.split("/"), "claim metadata endpoint is outside its fixed repository")
