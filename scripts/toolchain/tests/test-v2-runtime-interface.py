@@ -42,7 +42,8 @@ if config.get("marker"):
     Path(config["marker"]).write_text("called", encoding="utf-8")
 blocked_environment = {
     "GOVERNANCE_TOKEN", "GH_TOKEN", "GITHUB_TOKEN", "GH_AUTH_TOKEN",
-    "GH_ENTERPRISE_TOKEN", "LD_PRELOAD", "LD_LIBRARY_PATH",
+    "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN", "LD_PRELOAD", "LD_LIBRARY_PATH",
+    "ACTIONS_ID_TOKEN_REQUEST_TOKEN", "ACTIONS_ID_TOKEN_REQUEST_URL",
 }
 if any(name in os.environ for name in blocked_environment) \
         or any(name.startswith(("DYLD_", "LD_")) for name in os.environ):
@@ -181,6 +182,9 @@ class RuntimeInterfacePreflightTests(unittest.TestCase):
                 "GITHUB_TOKEN": "GITHUB_TOKEN_SECRET_FIXTURE",
                 "GH_AUTH_TOKEN": "GH_AUTH_TOKEN_SECRET_FIXTURE",
                 "GH_ENTERPRISE_TOKEN": "GH_ENTERPRISE_TOKEN_SECRET_FIXTURE",
+                "GITHUB_ENTERPRISE_TOKEN": "GITHUB_ENTERPRISE_TOKEN_SECRET_FIXTURE",
+                "ACTIONS_ID_TOKEN_REQUEST_TOKEN": "OIDC_BEARER_FIXTURE",
+                "ACTIONS_ID_TOKEN_REQUEST_URL": "https://oidc.invalid/request",
                 "LD_PRELOAD": "DO_NOT_LOAD_THIS_LIBRARY",
                 "LD_LIBRARY_PATH": "DO_NOT_LOAD_FROM_THIS_DIRECTORY",
                 "DYLD_INSERT_LIBRARIES": "DO_NOT_INJECT_THIS_LIBRARY",
@@ -205,6 +209,8 @@ class RuntimeInterfacePreflightTests(unittest.TestCase):
             "DO_NOT_PASS_TO_THE_CHILD", "GH_TOKEN_SECRET_FIXTURE",
             "GITHUB_TOKEN_SECRET_FIXTURE", "GH_AUTH_TOKEN_SECRET_FIXTURE",
             "GH_ENTERPRISE_TOKEN_SECRET_FIXTURE",
+            "GITHUB_ENTERPRISE_TOKEN_SECRET_FIXTURE",
+            "OIDC_BEARER_FIXTURE", "https://oidc.invalid/request",
         ):
             self.assertNotIn(secret_fixture, serialized)
         verify_package = next(

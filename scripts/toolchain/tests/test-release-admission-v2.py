@@ -6,6 +6,7 @@ from __future__ import annotations
 import copy
 from datetime import datetime, timezone
 import json
+import importlib.util
 import os
 from pathlib import Path
 import shutil
@@ -13,6 +14,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 
 SOURCE_ROOT = Path(__file__).resolve().parents[3]
@@ -1375,6 +1377,24 @@ class ReleaseAdmissionTests(unittest.TestCase):
         self._assert_rejected(result)
         self.assertFalse((real_directory / "receipt.json").exists())
         self.assertEqual(github_output.read_bytes(), b"unchanged\n")
+
+
+class SubprocessCredentialBoundaryTests(unittest.TestCase):
+    def test_child_reads_cannot_redeem_parent_runner_oidc(self) -> None:
+        spec = importlib.util.spec_from_file_location("admission_environment_probe", SCRIPT_SOURCE)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        environment = {"GH_TOKEN": JOB_TOKEN,
+                       "ACTIONS_ID_TOKEN_REQUEST_TOKEN": "synthetic-oidc-bearer",
+                       "ACTIONS_ID_TOKEN_REQUEST_URL": "https://oidc.invalid/request"}
+        with mock.patch.dict(os.environ, environment, clear=True):
+            for authenticated in (False, True):
+                child = module._subprocess_environment(require_job_token=authenticated)
+                self.assertNotIn("ACTIONS_ID_TOKEN_REQUEST_TOKEN", child)
+                self.assertNotIn("ACTIONS_ID_TOKEN_REQUEST_URL", child)
+                self.assertEqual(child["GH_TOKEN"], JOB_TOKEN)
+            self.assertIn("ACTIONS_ID_TOKEN_REQUEST_TOKEN", os.environ)
+            self.assertIn("ACTIONS_ID_TOKEN_REQUEST_URL", os.environ)
 
 
 if __name__ == "__main__":

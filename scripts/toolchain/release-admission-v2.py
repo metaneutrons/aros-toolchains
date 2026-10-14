@@ -167,6 +167,10 @@ def _exact_keys(value: Any, expected: set[str], label: str) -> dict[str, Any]:
 def _subprocess_environment(*, require_job_token: bool = False) -> dict[str, str]:
     environment = dict(os.environ)
     environment.pop("GOVERNANCE_TOKEN", None)
+    # Runner OIDC is acquired by the controller itself. Local Git and provider
+    # read/verification children must not redeem its signing credential.
+    environment.pop("ACTIONS_ID_TOKEN_REQUEST_TOKEN", None)
+    environment.pop("ACTIONS_ID_TOKEN_REQUEST_URL", None)
     if require_job_token and not environment.get("GH_TOKEN"):
         fail("authenticated GitHub metadata is unavailable")
     return environment
