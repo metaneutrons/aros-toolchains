@@ -395,6 +395,30 @@ constructor produces no record. This local output is not an attestation or
 release authority. Those genuine
 provider, admission/runtime-authentication and publication gates remain open.
 
+`scripts/toolchain/create-compiler-sdk-candidate-v2.py` exposes two inactive
+protected-controller commands. `create-tag` independently re-runs full admission,
+authenticates and privately materializes the locked published runtime, measures
+its V2 interface, and repeats job, governance, CI, input and runtime checks before
+the tag object and ref mutations. Only two confirmed HTTP 201 results and exact
+readbacks can produce its exclusive canonical tag handoff. Drift after the
+first write stops without another write; drift after tag readback stops without
+authorizing the separate Release Please action. No tag is retried or replaced.
+
+`bind-draft` creates nothing. It requires the separate pinned action's exact
+created/tag/commit/version/numeric-ID outputs, the unchanged annotation and one
+private stable empty draft selected consistently by numeric ID, tag and bounded
+listing. It rechecks pending PR, successful original CI, governance, source
+inputs and existing private runtime without re-running the pre-tag absence gate.
+Its exclusive output remains unsigned metadata, not release authority. An I/O
+failure can leave a partial private output; a nonzero command is never an
+authorized handoff, even when provider writes already succeeded.
+
+The candidate tests exercise real controller/admission/materializer/interface
+paths with isolated provider, OIDC and signature-verifier fixtures, including
+late drift and unknown mutation results. They do not qualify live provider
+mutation, draft creation, signing, native dispatch or publication. No workflow
+invokes these commands until the complete protected path is qualified.
+
 The released V2 runtime, source qualification and complete compiler/SDK matrix
 remain prerequisites. This design neither changes source pins nor waives
 missing source authorization. It creates no environments, grants, tags,
