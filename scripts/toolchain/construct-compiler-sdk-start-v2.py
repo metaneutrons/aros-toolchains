@@ -1,18 +1,23 @@
 #!/usr/bin/env python3
-"""Inactive record constructor for an executing protected start job.
+"""Unsigned record constructor for an executing protected start job.
 
-Creates no files, signatures, tags or drafts. The future protected caller must
-first perform admission, authenticate/materialize the published runtime and
-create its exact candidate. This helper joins those retained inputs to actual
-provider/OIDC job ownership before returning an unsigned closed record.
+The core constructor creates no files, signatures, tags or drafts. The future
+protected caller must first perform admission, authenticate/materialize the
+published runtime and create its exact candidate. This helper joins those
+retained inputs to actual provider/OIDC job ownership before returning an
+unsigned closed record. Its
+optional CLI writes that unsigned record exclusively; the file grants no
+release authority and does not create or dispatch a release.
 """
 
 from __future__ import annotations
 
+import argparse
 import hashlib
 import importlib.util
 import os
 from pathlib import Path
+import sys
 
 
 SPEC = importlib.util.spec_from_file_location(
@@ -22,6 +27,7 @@ SPEC.loader.exec_module(AUTH)
 START = AUTH.START
 ADMISSION = START.ADMISSION
 ORIGIN = START.ORIGIN
+RUNTIME = START.RUNTIME
 
 
 def own_run(context: dict) -> None:
@@ -131,3 +137,61 @@ def construct_start(admission: dict, tag: dict, draft: dict, *, runtime_lock: Pa
     START.require(ADMISSION.read_regular_file(event_path, "start trigger", ADMISSION.MAX_EVENT_BYTES) == event,
                   "start trigger changed during construction")
     return record
+
+
+def _parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
+    parser.add_argument("--admission", type=Path, required=True)
+    parser.add_argument("--tag", type=Path, required=True)
+    parser.add_argument("--draft", type=Path, required=True)
+    parser.add_argument("--runtime-lock", type=Path, required=True)
+    parser.add_argument("--runtime-directory", type=Path, required=True)
+    parser.add_argument("--runtime-interface", type=Path, required=True)
+    parser.add_argument("--output", type=Path, required=True)
+    return parser
+
+
+def _read_cli_inputs(paths: dict[str, Path]) -> tuple[dict[str, bytes], dict[str, dict]]:
+    raw: dict[str, bytes] = {}
+    values: dict[str, dict] = {}
+    for key, path in paths.items():
+        label = f"start {key} input"
+        selected = ADMISSION.read_regular_file(path, label, START.MAX_RECORD)
+        value = ADMISSION.parse_json(selected, label, maximum=START.MAX_RECORD)
+        START.require(type(value) is dict, f"{label} must be a JSON object")
+        raw[key] = selected
+        values[key] = value
+    return raw, values
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = _parser().parse_args(argv)
+    inputs = {"admission": args.admission, "tag": args.tag, "draft": args.draft}
+    try:
+        # Reject occupied destinations and linked path components before any
+        # provider observation performed by construct_start.
+        ADMISSION._check_output_destination(args.output, existing=False)
+        raw_inputs, values = _read_cli_inputs(inputs)
+        record = construct_start(
+            values["admission"], values["tag"], values["draft"],
+            runtime_lock=args.runtime_lock,
+            runtime_directory=args.runtime_directory,
+            runtime_interface=args.runtime_interface,
+        )
+        for key, path in inputs.items():
+            current = ADMISSION.read_regular_file(path, f"start {key} input", START.MAX_RECORD)
+            START.require(current == raw_inputs[key], "constructor input changed during construction")
+        encoded = (ADMISSION.canonical_json(record) + "\n").encode("utf-8")
+        START.require(0 < len(encoded) <= START.MAX_RECORD,
+                      "unsigned start record exceeds its metadata size limit")
+        ADMISSION._write_exclusive(args.output, encoded)
+        print("Wrote unsigned protected-start record; this file is not release authority.")
+        return 0
+    except (START.StartError, ADMISSION.AdmissionError, ORIGIN.OriginError, RUNTIME.RuntimeError,
+            OSError, ValueError, KeyError, TypeError, AttributeError, RecursionError, OverflowError):
+        print("protected start construction rejected; output is not authorized", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

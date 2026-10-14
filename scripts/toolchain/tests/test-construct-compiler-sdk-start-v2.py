@@ -10,12 +10,14 @@ from __future__ import annotations
 
 from collections import Counter
 import copy
-from contextlib import ExitStack
+from contextlib import ExitStack, redirect_stderr, redirect_stdout
 import hashlib
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
+import stat
 import tempfile
 import unittest
 from unittest import mock
@@ -133,6 +135,7 @@ class ConstructorFixture:
         }
         self.counters: Counter[str] = Counter()
         self.blocked_calls: Counter[str] = Counter()
+        self.cli_input_paths: dict[str, Path] | None = None
 
     def close(self) -> None:
         self.temporary.cleanup()
@@ -334,12 +337,34 @@ class ConstructorFixture:
             raise AssertionError(f"constructor crossed forbidden {name} boundary")
         return call
 
-    def invoke(self):
+    def cli_arguments(self, output: Path | None = None) -> list[str]:
+        paths = {
+            "admission": self.root / "admission.json",
+            "tag": self.root / "tag.json",
+            "draft": self.root / "draft.json",
+        }
+        for key, value in (("admission", self.admission), ("tag", self.tag), ("draft", self.draft)):
+            with paths[key].open("xb") as handle:
+                handle.write(json_bytes(value))
+        self.cli_input_paths = paths
+        destination = output or (self.root / "start.json")
+        arguments = []
+        for option, path in (("--admission", paths["admission"]), ("--tag", paths["tag"]),
+                             ("--draft", paths["draft"]), ("--runtime-lock", self.runtime.lock_path),
+                             ("--runtime-directory", self.runtime.directory),
+                             ("--runtime-interface", self.runtime.interface_path), ("--output", destination)):
+            arguments.extend((option, str(path)))
+        return arguments
+
+    def invoke(self, cli_args: list[str] | None = None):
         original_read = ADMISSION.read_regular_file
 
         def tracked_read(path: Path, label: str, maximum: int) -> bytes:
             self.calls["reads"].append((Path(path), label, maximum))
             raw = original_read(path, label, maximum)
+            if (self.probe == "late_cli_input" and label == "start admission input"
+                    and sum(item_label == label for _, item_label, _ in self.calls["reads"]) == 2):
+                return raw + b" "
             if self.probe == "late_event" and label == "start trigger" and \
                     sum(item_label == "start trigger" for _, item_label, _ in self.calls["reads"]) == 2:
                 return raw + b" "
@@ -407,14 +432,19 @@ class ConstructorFixture:
             patches.enter_context(mock.patch.object(Path, "write_text",
                                                      side_effect=self.blocked_boundary("file write_text")))
 
+            if cli_args is not None:
+                stdout = io.StringIO()
+                stderr = io.StringIO()
+                with redirect_stdout(stdout), redirect_stderr(stderr):
+                    result = constructor.main(cli_args)
+                return result, stdout.getvalue(), stderr.getvalue()
             return constructor.construct_start(
-                self.admission,
-                self.tag,
-                self.draft,
-                runtime_lock=self.runtime.lock_path,
-                runtime_directory=self.runtime.directory,
-                runtime_interface=self.runtime.interface_path,
+                self.admission, self.tag, self.draft, runtime_lock=self.runtime.lock_path,
+                runtime_directory=self.runtime.directory, runtime_interface=self.runtime.interface_path,
             )
+
+    def invoke_cli(self, output: Path | None = None):
+        return self.invoke(self.cli_arguments(output))
 
 
 class ConstructStartTests(unittest.TestCase):
@@ -554,6 +584,151 @@ class ConstructStartTests(unittest.TestCase):
         ):
             with self.subTest(probe=label):
                 self.assert_rejected_without_side_effects(self.fixture(probe))
+
+
+class ConstructStartCliTests(unittest.TestCase):
+    def fixture(self, probe: str | None = None) -> ConstructorFixture:
+        value = ConstructorFixture(probe)
+        self.addCleanup(value.close)
+        return value
+
+    def assert_no_provider_calls(self, fixture: ConstructorFixture) -> None:
+        for boundary in ("api", "origin", "oidc", "git"):
+            self.assertEqual(fixture.calls[boundary], [], f"invalid CLI input reached {boundary}")
+
+    def assert_rejected(self, fixture: ConstructorFixture, arguments: list[str], output: Path,
+                        *, no_provider_calls: bool = False, output_should_exist: bool = False) -> None:
+        before = fixture.snapshot()
+        result, stdout, stderr = fixture.invoke(arguments)
+        self.assertEqual(result, 1)
+        self.assertEqual(stdout, "")
+        self.assertEqual(stderr, "protected start construction rejected; output is not authorized\n")
+        self.assertEqual(fixture.snapshot(), before, "failed CLI construction changed or created a file")
+        self.assertEqual(output.exists() or output.is_symlink(), output_should_exist)
+        self.assertTrue(all(count == 0 for count in fixture.blocked_calls.values()))
+        if no_provider_calls:
+            self.assert_no_provider_calls(fixture)
+
+    @staticmethod
+    def replace_argument(arguments: list[str], option: str, value: Path) -> list[str]:
+        selected = list(arguments)
+        index = selected.index(option)
+        selected[index + 1] = str(value)
+        return selected
+
+    def test_cli_writes_a_canonical_unsigned_record_exclusively(self) -> None:
+        fixture = self.fixture()
+        arguments = fixture.cli_arguments()
+        output = fixture.root / "start.json"
+        before = fixture.snapshot()
+
+        result, stdout, stderr = fixture.invoke(arguments)
+
+        self.assertEqual(result, 0)
+        self.assertEqual(stderr, "")
+        self.assertIn("not release authority", stdout)
+        raw = output.read_bytes()
+        parsed = json.loads(raw)
+        self.assertEqual(raw, json_bytes(parsed))
+        self.assertEqual(parsed, fixture.calls["candidate"][0])
+        self.assertEqual(stat.S_IMODE(output.stat().st_mode), 0o600)
+        self.assertNotIn("signature", parsed)
+        self.assertNotIn("bundle", parsed)
+        self.assertEqual({key: value for key, value in fixture.snapshot().items()
+                          if key != "start.json"}, before)
+        self.assertEqual(fixture.calls["oidc"], [(fixture.source, "workflow_run")])
+
+    def test_tampered_oversize_symlink_and_fifo_inputs_are_rejected_without_provider_calls(self) -> None:
+        cases = ("tampered", "oversize", "symlink", "fifo")
+        for case in cases:
+            with self.subTest(case=case):
+                fixture = self.fixture()
+                arguments = fixture.cli_arguments()
+                assert fixture.cli_input_paths is not None
+                output = fixture.root / "start.json"
+                if case == "tampered":
+                    fixture.cli_input_paths["admission"].write_bytes(b'{"receipt":1,"receipt":2}\n')
+                elif case == "oversize":
+                    fixture.cli_input_paths["tag"].write_bytes(b" " * (START.MAX_RECORD + 1))
+                elif case == "symlink":
+                    link = fixture.root / "admission-link.json"
+                    link.symlink_to(fixture.cli_input_paths["admission"])
+                    arguments = self.replace_argument(arguments, "--admission", link)
+                else:
+                    fifo = fixture.root / "draft.fifo"
+                    os.mkfifo(fifo)
+                    arguments = self.replace_argument(arguments, "--draft", fifo)
+                self.assert_rejected(fixture, arguments, output, no_provider_calls=True)
+
+    def test_occupied_symlink_and_nested_symlink_outputs_are_rejected_before_provider_calls(self) -> None:
+        for case in ("occupied", "symlink", "nested-link"):
+            with self.subTest(case=case):
+                fixture = self.fixture()
+                output = fixture.root / "start.json"
+                arguments = fixture.cli_arguments(output)
+                if case == "occupied":
+                    output.write_bytes(b"preserve me\n")
+                elif case == "symlink":
+                    target = fixture.root / "existing-target"
+                    target.write_bytes(b"preserve target\n")
+                    output.symlink_to(target)
+                else:
+                    real_parent = fixture.root / "real-parent"
+                    real_parent.mkdir()
+                    linked_parent = fixture.root / "linked-parent"
+                    linked_parent.symlink_to(real_parent, target_is_directory=True)
+                    output = linked_parent / "start.json"
+                    arguments = self.replace_argument(arguments, "--output", output)
+                self.assert_rejected(fixture, arguments, output, no_provider_calls=True,
+                                     output_should_exist=case in {"occupied", "symlink"})
+                if case == "symlink":
+                    self.assertTrue(output.is_symlink())
+
+    def test_late_input_change_and_construction_failure_write_no_output(self) -> None:
+        fixture = self.fixture("late_cli_input")
+        arguments = fixture.cli_arguments()
+        output = fixture.root / "start.json"
+        self.assert_rejected(fixture, arguments, output)
+
+        failed = self.fixture("main_advanced")
+        failed_arguments = failed.cli_arguments()
+        failed_output = failed.root / "start.json"
+        self.assert_rejected(failed, failed_arguments, failed_output)
+
+    def test_output_sync_failure_is_rejected_without_claiming_output_absence(self) -> None:
+        fixture = self.fixture()
+        arguments = fixture.cli_arguments()
+        output = fixture.root / "start.json"
+        with mock.patch.object(ADMISSION.os, "fsync", side_effect=OSError("synthetic sync failure")):
+            result, stdout, stderr = fixture.invoke(arguments)
+        self.assertEqual(result, 1)
+        self.assertEqual(stdout, "")
+        self.assertEqual(stderr, "protected start construction rejected; output is not authorized\n")
+        self.assertTrue(output.is_file())
+        self.assertEqual(stat.S_IMODE(output.stat().st_mode), 0o600)
+        self.assertTrue(all(count == 0 for count in fixture.blocked_calls.values()))
+
+
+class ConstructStartBoundaryTests(unittest.TestCase):
+    def fixture(self, probe: str | None = None) -> ConstructorFixture:
+        value = ConstructorFixture(probe)
+        self.addCleanup(value.close)
+        return value
+
+    def assert_rejected_without_side_effects(self, fixture: ConstructorFixture) -> Exception:
+        before = fixture.snapshot()
+        selected_inputs = (copy.deepcopy(fixture.admission), copy.deepcopy(fixture.tag),
+                           copy.deepcopy(fixture.draft))
+        with self.assertRaises(ERRORS) as raised:
+            fixture.invoke()
+        self.assertEqual(fixture.snapshot(), before, "constructor changed or created a local file")
+        self.assertEqual((fixture.admission, fixture.tag, fixture.draft), selected_inputs,
+                         "constructor mutated one of its retained inputs")
+        self.assertNotIn("start.json", before)
+        self.assertFalse(any(name.endswith(".sigstore.json") for name in before))
+        self.assertTrue(all(count == 0 for count in fixture.blocked_calls.values()),
+                        f"constructor crossed a forbidden boundary: {fixture.blocked_calls}")
+        return raised.exception
 
     def test_own_run_oidc_selected_job_and_fixed_runner_label_are_required(self) -> None:
         for label, probe in (
