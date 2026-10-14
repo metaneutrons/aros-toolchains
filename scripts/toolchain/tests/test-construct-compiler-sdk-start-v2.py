@@ -699,7 +699,14 @@ class ConstructStartCliTests(unittest.TestCase):
         fixture = self.fixture()
         arguments = fixture.cli_arguments()
         output = fixture.root / "start.json"
-        with mock.patch.object(ADMISSION.os, "fsync", side_effect=OSError("synthetic sync failure")):
+        original_sync = os.fsync
+
+        def fail_only_output_sync(descriptor: int) -> None:
+            if output.exists() and os.fstat(descriptor).st_ino == output.stat().st_ino:
+                raise OSError("synthetic sync failure")
+            original_sync(descriptor)
+
+        with mock.patch.object(ADMISSION.os, "fsync", side_effect=fail_only_output_sync):
             result, stdout, stderr = fixture.invoke(arguments)
         self.assertEqual(result, 1)
         self.assertEqual(stdout, "")
