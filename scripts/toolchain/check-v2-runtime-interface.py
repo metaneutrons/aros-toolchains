@@ -60,6 +60,10 @@ def _interface(command: tuple[str, ...], *options: str) -> tuple[tuple[str, ...]
 # and qualification callers.
 INTERFACES = (
     _interface(
+        ("toolchain", "producer", "host-preflight"),
+        "source-lock", "profiles", "preset", "host", "cache-dir", "python-env-dir",
+    ),
+    _interface(
         ("toolchain", "producer", "recipe"),
         "source-dir", "producer-dir", "tools-dir", "source-lock", "profiles", "output", "format",
     ),

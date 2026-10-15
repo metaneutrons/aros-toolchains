@@ -44,6 +44,15 @@ contracts remain owned by AROS-NX.
    the source-owned two-root libcody object/library comparison and Classic
    counterprobes before uploading the shared cache. This bounded regression
    does not replace the complete native compiler A/B proof.
+   The native runtime job also installs the exact selected source's prerequisite
+   script and explicitly selects Homebrew LLVM on macOS. It safely restores the
+   verified source cache and validates the input collection with `release-plan`.
+   Before compiler fan-out, `host-preflight` checks each selected host/profile
+   lane's native tools and isolated, lock-owned Python imports offline. The
+   profiles come from the validated plan, not a second board list. Only bounded
+   reports and logs are retained; private Python environments are not uploaded.
+   This prerequisite-only observation is not configure, compiler or SDK proof.
+   Every actual build still performs its own checks with independent roots.
 4. Narrow diagnostics build both Family-V2 compiler copies in one job. Full
    qualification builds each copy in its own original job; the SDK job
    authenticates and reads back both owners without rebuilding. Compare their

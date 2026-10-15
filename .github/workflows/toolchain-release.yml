@@ -359,7 +359,7 @@ jobs:
 
   v2-runtimes:
     name: Materialize selected native tools (${{ matrix.host }})
-    needs: v2-prepare
+    needs: [v2-prepare, v2-sources]
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.v2-prepare.outputs.host_matrix) }}
@@ -380,6 +380,29 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
           path: dependencies/aros-tools
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: metaneutrons/AROS-NX
+          ref: ${{ needs.v2-prepare.outputs.source_commit }}
+          persist-credentials: false
+          path: dependencies/native-prerequisites
+          sparse-checkout: scripts/ci/install-build-prerequisites.sh
+          sparse-checkout-cone-mode: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: diagnostic-v2-inputs
+          path: ${{ runner.temp }}/diagnostic-inputs
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: diagnostic-v2-cache
+          path: ${{ runner.temp }}/diagnostic-cache-input
+      - uses: ./.github/actions/disable-google-chrome-apt-source
+        if: runner.os == 'Linux'
+      - name: Install source-owned native host prerequisites before fan-out
+        run: bash dependencies/native-prerequisites/scripts/ci/install-build-prerequisites.sh
+      - name: Select installed macOS LLVM tools before host preflight
+        if: runner.os == 'macOS'
+        run: bash scripts/toolchain/select-macos-native-llvm.sh
       - id: rust
         uses: ./.github/actions/select-native-rust-toolchain
         with:
@@ -418,6 +441,34 @@ jobs:
         with:
           name: diagnostic-v2-runtime-interface-${{ matrix.host }}
           path: ${{ runner.temp }}/diagnostic-native-runtime-interface-${{ matrix.host }}.json
+          if-no-files-found: error
+          retention-days: 7
+      - id: host_preflight
+        name: Check every selected native profile before compiler fan-out
+        env:
+          SELECTED_HOST: ${{ matrix.host }}
+          SELECTED_LANES: ${{ needs.v2-prepare.outputs.matrix }}
+          CACHE_ARCHIVE_SHA256: ${{ needs.v2-sources.outputs.cache_archive_sha256 }}
+        run: |
+          set -euo pipefail
+          python3 -B scripts/toolchain/cache-archive-transport.py \
+            --archive "$RUNNER_TEMP/diagnostic-cache-input/diagnostic-cache.tar.gz" \
+            --archive-sha256 "$CACHE_ARCHIVE_SHA256" --output-dir "$RUNNER_TEMP/host-preflight-cache"
+          python3 -B scripts/toolchain/check-native-host-preflights-v2.py \
+            --aros "${{ steps.runtime.outputs.root }}/bin/aros" \
+            --aros-sha256 "$(jq -er '.runtime.sha256' "$RUNNER_TEMP/diagnostic-native-runtime-interface-$SELECTED_HOST.json")" \
+            --selected-matrix "$SELECTED_LANES" \
+            --inputs-dir "$RUNNER_TEMP/diagnostic-inputs" \
+            --cache-dir "$RUNNER_TEMP/host-preflight-cache" --host "$SELECTED_HOST" \
+            --output-dir "$RUNNER_TEMP/native-host-preflights"
+      - name: Retain bounded native prerequisite observations, never Python environments
+        if: always() && steps.host_preflight.outcome != 'skipped'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: diagnostic-v2-host-preflights-${{ matrix.host }}
+          path: |
+            ${{ runner.temp }}/native-host-preflights/*.json
+            ${{ runner.temp }}/native-host-preflights/*.log
           if-no-files-found: error
           retention-days: 7
       - name: Prepare and seal this host's exact Cargo generation
