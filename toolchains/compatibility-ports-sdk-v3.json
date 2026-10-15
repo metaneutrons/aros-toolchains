@@ -1,6 +1,6 @@
 {
   "schema": "aros-toolchain-compatibility-ports-v3",
-  "upstream_commit": "7510b607d0ae9b219bf9cedf5b3a29dd2fbbef9d",
+  "upstream_commit": "eb4b922c9636f94c29f0034780fa8e282270af1a",
   "inputs": [
     {
       "id": "unicode-data-16-0-0",

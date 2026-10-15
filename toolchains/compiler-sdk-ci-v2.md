@@ -30,11 +30,16 @@ contracts remain owned by AROS-NX.
    object against its selected source lock. Child configuration homes are private. Bounded step logs
    and a source-only report survive failures. These checks do not replace
    AROS-NX's required product CI or qualify SDK generation.
-   Diagnostic source `7510b607d0ae9b219bf9cedf5b3a29dd2fbbef9d` preserves the
+   Diagnostic source `eb4b922c9636f94c29f0034780fa8e282270af1a` preserves the
    earlier `abf4ad848e0bf336eb4e37b223e33b81c3d310da` SDK integration chain,
    replays only the checked Mesa-cache and Darwin GNU-Make fixes, and refreshes
    the derived `configure.in` input seals in all four SDK contracts. It is not a claim that the
    entire source integration chain has passed protected-main product CI.
+   It additionally admits the checked Buildroot HTTPS mirror after the canonical
+   Mesa origin, with identical locked bytes. This addresses the observed
+   intermittent primary transport without claiming to reconstruct the discarded
+   lower-level error from an earlier diagnostic. No new diagnostic run is
+   automatically authorized by updating this pin.
 3. Fetch and verify compiler, compatibility and Python sources once. Prepare
    each selected host's Cargo generation with that host's exact native Cargo,
    repeat its fetch offline, and verify it before fan-out. Cargo executable
