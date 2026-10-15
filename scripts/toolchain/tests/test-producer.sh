@@ -1226,6 +1226,9 @@ for required in (
     if required not in action:
         raise SystemExit(f"released runtime materializer lost required trust boundary: {required}")
 PY
+python3 -B "$source_root/scripts/ci/tests/test-markdown-links.py"
+python3 -B "$source_root/scripts/ci/tests/test-plan-changes.py"
+python3 -B "$source_root/scripts/ci/tests/test-workflow-scope.py"
 python3 -B "$script_dir/test-llvm-patch.py"
 python3 -B "$script_dir/test-compiler-unicode-closure.py"
 python3 -B "$script_dir/test-compiler-python-closure.py"

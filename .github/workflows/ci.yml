@@ -1,4 +1,5 @@
 name: Producer contracts
+run-name: Producer checks / ${{ github.event_name }} / ${{ github.head_ref || github.ref_name }}
 
 on:
   pull_request:
@@ -33,6 +34,74 @@ env:
   PYTHONHASHSEED: '0'
 
 jobs:
+  plan:
+    name: Plan changed inputs
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      scope: ${{ steps.scope.outputs.scope }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Test conservative change classification
+        run: python3 -B scripts/ci/tests/test-plan-changes.py
+      - id: scope
+        name: Select Markdown-only or complete contracts
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          python3 -B scripts/ci/plan-changes.py --event "$EVENT" \
+            --base "$BASE" --head "$HEAD" --repository-dir "$GITHUB_WORKSPACE" \
+            --github-output "$GITHUB_OUTPUT"
+
+  markdown:
+    name: Markdown and links
+    needs: plan
+    if: needs.plan.outputs.scope == 'markdown'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check Markdown structure
+        uses: DavidAnson/markdownlint-cli2-action@21c1be1b93ad9ed58fa840aacc3f279cde2a72ff # v24.2.0
+        with:
+          globs: '**/*.md'
+          config: .markdownlint-cli2.jsonc
+          fix: false
+      - name: Check local anchors and public links
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: bash scripts/ci/check-markdown-links.sh
+
+  contracts:
+    name: contracts
+    if: always()
+    needs: [plan, markdown, producer-contracts]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Require the exact planned checks to succeed
+        env:
+          PLAN_RESULT: ${{ needs.plan.result }}
+          SCOPE: ${{ needs.plan.outputs.scope }}
+          MARKDOWN_RESULT: ${{ needs.markdown.result }}
+          FULL_RESULT: ${{ needs.producer-contracts.result }}
+        run: |
+          set -euo pipefail
+          [[ "$PLAN_RESULT" == success ]]
+          case "$SCOPE" in
+            markdown) [[ "$MARKDOWN_RESULT" == success && "$FULL_RESULT" == skipped ]] ;;
+            full) [[ "$FULL_RESULT" == success && "$MARKDOWN_RESULT" == skipped ]] ;;
+            *) echo 'unknown or absent CI scope' >&2; exit 1 ;;
+          esac
+
   governance-visibility-read:
     name: Governance visibility with contents read
     if: github.event_name == 'workflow_dispatch' && inputs.governance_visibility_probe
@@ -101,8 +170,12 @@ jobs:
           python3 -B scripts/toolchain/release-admission-v2.py probe-governance-visibility \
             --contents-permission write --output "$RUNNER_TEMP/governance-write.json"
 
-  contracts:
+  producer-contracts:
+    name: Full producer contracts
+    needs: plan
+    if: needs.plan.outputs.scope == 'full'
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     steps:
       - name: Checkout producer
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
