@@ -79,6 +79,12 @@ CHECK_FILES = (
 
 PRODUCT_ROLE = "product:chromium-zlib@da752eb2a3660cf1bf8dac620f6380b89dd953a7"
 PRODUCT_FILENAME = "zlib.tar.gz"
+MESA_PRODUCT_ROLE = "product:mesa@26.0.0"
+MESA_PRODUCT_FILENAME = "mesa-26.0.0.tar.xz"
+PRODUCT_SOURCE_SPECS = {
+    PRODUCT_ROLE: (PRODUCT_FILENAME, "canonical-tar-gzip-v1"),
+    MESA_PRODUCT_ROLE: (MESA_PRODUCT_FILENAME, "exact-bytes-v1"),
+}
 
 
 class PreflightError(Exception):
@@ -488,7 +494,7 @@ def _create_child_environment(output: Path) -> tuple[Path, dict[str, str]]:
     return home, environment
 
 
-def _product_source_entry(source: Path) -> tuple[bytes, dict[str, Any]]:
+def _product_source_entries(source: Path) -> tuple[bytes, list[dict[str, Any]]]:
     plan_path = _checked_source_file(source, "scripts/ci/product-sources.plan.json")
     plan_fd = _open_regular(plan_path, "product source plan")
     try:
@@ -506,33 +512,58 @@ def _product_source_entry(source: Path) -> tuple[bytes, dict[str, Any]]:
     if not isinstance(plan, dict) or set(plan) != {"schema", "entries"}:
         raise PreflightError("product-source-seed", "product source plan has an unexpected shape")
     entries = plan.get("entries")
-    if plan.get("schema") != "aros-cache-source-fetch-plan-v1" or not isinstance(entries, list) or len(entries) != 1:
-        raise PreflightError("product-source-seed", "product source plan is not the expected closed zlib selection")
-    entry = entries[0]
-    if not isinstance(entry, dict) or set(entry) != {
-        "role", "filename", "candidates", "representation", "normalization", "integrity"
-    }:
-        raise PreflightError("product-source-seed", "product source entry has an unexpected shape")
-    integrity = entry.get("integrity")
-    candidates = entry.get("candidates")
     if (
-        entry.get("role") != PRODUCT_ROLE
-        or entry.get("filename") != PRODUCT_FILENAME
-        or entry.get("representation") != "archive"
-        or entry.get("normalization") != "canonical-tar-gzip-v1"
-        or not isinstance(candidates, list)
-        or not candidates
-        or any(not isinstance(item, dict) or set(item) != {"url"} or not isinstance(item["url"], str) for item in candidates)
-        or not isinstance(integrity, dict)
-        or set(integrity) != {"kind", "sha256", "size"}
-        or integrity.get("kind") != "locked"
-        or not isinstance(integrity.get("sha256"), str)
-        or not HEX64.fullmatch(integrity["sha256"])
-        or type(integrity.get("size")) is not int
-        or integrity["size"] <= 0
+        plan.get("schema") != "aros-cache-source-fetch-plan-v1"
+        or not isinstance(entries, list)
+        or len(entries) not in (1, 2)
     ):
-        raise PreflightError("product-source-seed", "product source entry is not the locked canonical zlib object")
-    return bytes(raw), entry
+        raise PreflightError("product-source-seed", "product source plan is not a supported closed selection")
+
+    validated: list[dict[str, Any]] = []
+    seen_roles: set[str] = set()
+    seen_filenames: set[str] = set()
+    for entry in entries:
+        if not isinstance(entry, dict) or set(entry) != {
+            "role", "filename", "candidates", "representation", "normalization", "integrity"
+        }:
+            raise PreflightError("product-source-seed", "product source entry has an unexpected shape")
+        role = entry.get("role")
+        if not isinstance(role, str) or role not in PRODUCT_SOURCE_SPECS:
+            raise PreflightError("product-source-seed", "product source plan contains an unsupported role")
+        filename, normalization = PRODUCT_SOURCE_SPECS[role]
+        integrity = entry.get("integrity")
+        candidates = entry.get("candidates")
+        if (
+            role in seen_roles
+            or filename in seen_filenames
+            or entry.get("filename") != filename
+            or entry.get("representation") != "archive"
+            or entry.get("normalization") != normalization
+            or not isinstance(candidates, list)
+            or not candidates
+            or any(
+                not isinstance(item, dict)
+                or set(item) != {"url"}
+                or not isinstance(item["url"], str)
+                for item in candidates
+            )
+            or not isinstance(integrity, dict)
+            or set(integrity) != {"kind", "sha256", "size"}
+            or integrity.get("kind") != "locked"
+            or not isinstance(integrity.get("sha256"), str)
+            or not HEX64.fullmatch(integrity["sha256"])
+            or type(integrity.get("size")) is not int
+            or integrity["size"] <= 0
+            or integrity["size"] > MAX_PRODUCT_SOURCE_BYTES
+        ):
+            raise PreflightError("product-source-seed", "product source entry is not a supported locked object")
+        seen_roles.add(role)
+        seen_filenames.add(filename)
+        validated.append(entry)
+
+    if seen_roles != {PRODUCT_ROLE} and seen_roles != {PRODUCT_ROLE, MESA_PRODUCT_ROLE}:
+        raise PreflightError("product-source-seed", "product source plan is not a supported closed selection")
+    return bytes(raw), validated
 
 
 def _copy_seed_to_cache(seed_fd: int, cache: Path, entry: dict[str, Any]) -> dict[str, Any]:
@@ -761,47 +792,74 @@ def _capture_child(
 class Preflight:
     def __init__(self, args: argparse.Namespace):
         self.args = args
-        self.source = _absolute_directory(args.source_dir, "source directory")
-        self.expected_commit = args.expected_commit
-        if not HEX40.fullmatch(self.expected_commit):
-            raise PreflightError("input-validation", "expected source commit must be a lowercase 40-digit SHA")
-        self.aros_path = _absolute_path(args.aros, "aros executable")
-        try:
-            self.aros = RUNTIME_INTERFACE.HeldExecutable(self.aros_path, args.aros_sha256)
-        except RUNTIME_INTERFACE.PreflightError:
-            raise PreflightError(
-                "input-validation", "aros executable is not the selected bounded SHA-256 file"
-            ) from None
-        _seed_path, self.seed_fd = _absolute_file(
-            args.product_source_seed,
-            "product source seed",
-            maximum_size=MAX_PRODUCT_SOURCE_BYTES,
-        )
-        self.output = _absolute_new_directory(args.output_dir)
-        if _inside(self.output, self.source) or _inside(self.source, self.output):
-            raise PreflightError("input-validation", "private output must be disjoint from the source checkout")
-        if _inside(self.output, self.aros_path.parent):
-            raise PreflightError("input-validation", "private output must be outside the selected runtime")
-        self.environment = _child_environment()
+        self.aros: Any | None = None
+        self.seed_fds: dict[str, int] = {}
         self.report_writer: PrivateReport | None = None
-        self.report: dict[str, Any] = {
-            "schema": SCHEMA,
-            "assurance": ASSURANCE,
-            "status": "running",
-            "source_commit": None,
-            "source_tree": None,
-            "aros_sha256": args.aros_sha256,
-            "steps": [],
-            "limitations": LIMITATIONS,
-        }
+        try:
+            self.source = _absolute_directory(args.source_dir, "source directory")
+            self.expected_commit = args.expected_commit
+            if not HEX40.fullmatch(self.expected_commit):
+                raise PreflightError("input-validation", "expected source commit must be a lowercase 40-digit SHA")
+            self.aros_path = _absolute_path(args.aros, "aros executable")
+            try:
+                self.aros = RUNTIME_INTERFACE.HeldExecutable(self.aros_path, args.aros_sha256)
+            except RUNTIME_INTERFACE.PreflightError:
+                raise PreflightError(
+                    "input-validation", "aros executable is not the selected bounded SHA-256 file"
+                ) from None
+            _seed_path, self.seed_fds[PRODUCT_ROLE] = _absolute_file(
+                args.product_source_seed,
+                "product source seed",
+                maximum_size=MAX_PRODUCT_SOURCE_BYTES,
+            )
+            if args.mesa_source_seed is not None:
+                _mesa_seed_path, self.seed_fds[MESA_PRODUCT_ROLE] = _absolute_file(
+                    args.mesa_source_seed,
+                    "Mesa product source seed",
+                    maximum_size=MAX_PRODUCT_SOURCE_BYTES,
+                )
+            self.output = _absolute_new_directory(args.output_dir)
+            if _inside(self.output, self.source) or _inside(self.source, self.output):
+                raise PreflightError("input-validation", "private output must be disjoint from the source checkout")
+            if _inside(self.output, self.aros_path.parent):
+                raise PreflightError("input-validation", "private output must be outside the selected runtime")
+            self.environment = _child_environment()
+            self.report: dict[str, Any] = {
+                "schema": SCHEMA,
+                "assurance": ASSURANCE,
+                "status": "running",
+                "source_commit": None,
+                "source_tree": None,
+                "aros_sha256": args.aros_sha256,
+                "steps": [],
+                "limitations": LIMITATIONS,
+            }
+        except BaseException:
+            self.close()
+            raise
 
     def close(self) -> None:
-        if self.report_writer is not None:
-            self.report_writer.close()
-        self.aros.close()
-        if self.seed_fd >= 0:
-            os.close(self.seed_fd)
-            self.seed_fd = -1
+        report_writer = getattr(self, "report_writer", None)
+        if report_writer is not None:
+            self.report_writer = None
+            try:
+                report_writer.close()
+            except OSError:
+                pass
+        executable = getattr(self, "aros", None)
+        if executable is not None:
+            self.aros = None
+            try:
+                executable.close()
+            except OSError:
+                pass
+        seed_fds = getattr(self, "seed_fds", {})
+        self.seed_fds = {}
+        for seed_fd in seed_fds.values():
+            try:
+                os.close(seed_fd)
+            except OSError:
+                pass
 
     def _persist(self) -> None:
         if self.report_writer is not None:
@@ -1001,19 +1059,26 @@ class Preflight:
         )
 
     def _run_locked_product_source_cache(self) -> None:
-        plan_bytes, entry = _product_source_entry(self.source)
-        seed_metadata = _copy_seed_to_cache(
-            self.seed_fd,
-            _create_private_child_directory(self.output, "product-source-cache"),
-            entry,
-        )
-        cache = self.output / "product-source-cache"
+        plan_bytes, entries = _product_source_entries(self.source)
+        expected_roles = {entry["role"] for entry in entries}
+        if set(self.seed_fds) != expected_roles:
+            raise PreflightError(
+                "product-source-seed",
+                "provided source seeds do not match the selected locked product sources",
+            )
+        cache = _create_private_child_directory(self.output, "product-source-cache")
+        seed_metadata = [
+            _copy_seed_to_cache(self.seed_fds[entry["role"]], cache, entry)
+            for entry in entries
+        ]
+        zlib_seed_metadata = next(record for record in seed_metadata if record["role"] == PRODUCT_ROLE)
         export = self.output / "product-source-export"
         plan = self.source / "scripts/ci/product-sources.plan.json"
         self.report["product_source"] = {
             "plan_sha256": hashlib.sha256(plan_bytes).hexdigest(),
             "integrity": "locked",
-            "cache_seed": seed_metadata,
+            "cache_seed": zlib_seed_metadata,
+            "cache_seeds": seed_metadata,
             "fetch_mode": "offline-cache-hit",
         }
         self._persist()
@@ -1057,26 +1122,47 @@ class Preflight:
                 str(export),
             ),
         )
-        exported = export / entry["filename"]
-        export_fd = _open_regular(exported, "exported locked product source")
-        try:
-            export_sha, export_size, _metadata = _hash_fd(export_fd, "exported locked product source")
-        finally:
-            os.close(export_fd)
-        if export_sha != entry["integrity"]["sha256"] or export_size != entry["integrity"]["size"]:
-            raise PreflightError("product-source-export", "exported product source differs from its lock")
-        self.report["product_source"]["export_sha256"] = export_sha
-        self.report["product_source"]["export_size"] = export_size
+        exports: list[dict[str, Any]] = []
+        for entry in entries:
+            exported = export / entry["filename"]
+            export_fd = _open_regular(
+                exported,
+                "exported locked product source",
+                maximum_size=MAX_PRODUCT_SOURCE_BYTES,
+            )
+            try:
+                export_sha, export_size, _metadata = _hash_fd(
+                    export_fd,
+                    "exported locked product source",
+                    maximum_size=MAX_PRODUCT_SOURCE_BYTES,
+                )
+            finally:
+                os.close(export_fd)
+            if export_sha != entry["integrity"]["sha256"] or export_size != entry["integrity"]["size"]:
+                raise PreflightError("product-source-export", "exported product source differs from its lock")
+            exports.append(
+                {
+                    "role": entry["role"],
+                    "filename": entry["filename"],
+                    "sha256": export_sha,
+                    "size": export_size,
+                }
+            )
+        zlib_export = next(record for record in exports if record["role"] == PRODUCT_ROLE)
+        self.report["product_source"]["exports"] = exports
+        self.report["product_source"]["export_sha256"] = zlib_export["sha256"]
+        self.report["product_source"]["export_size"] = zlib_export["size"]
         self._persist()
 
     def execute(self) -> dict[str, Any]:
         head, tree = _source_snapshot(self.source, self.expected_commit)
         _verify_aros(self.aros, "aros-executable-initial")
-        seed_sha, seed_size, _seed_stat = _hash_fd(
-            self.seed_fd, "product-source-seed", maximum_size=MAX_PRODUCT_SOURCE_BYTES
-        )
-        if not HEX64.fullmatch(seed_sha) or seed_size <= 0:
-            raise PreflightError("product-source-seed", "product source seed is empty or invalid")
+        for seed_fd in self.seed_fds.values():
+            seed_sha, seed_size, _seed_stat = _hash_fd(
+                seed_fd, "product-source-seed", maximum_size=MAX_PRODUCT_SOURCE_BYTES
+            )
+            if not HEX64.fullmatch(seed_sha) or seed_size <= 0:
+                raise PreflightError("product-source-seed", "product source seed is empty or invalid")
         self.report["source_commit"] = head
         self.report["source_tree"] = tree
         self.report_writer = PrivateReport(self.output, self.report)
@@ -1130,6 +1216,10 @@ def parser() -> argparse.ArgumentParser:
         "--product-source-seed",
         required=True,
         help="explicit canonical locked zlib cache seed from the selected producer checkout",
+    )
+    result.add_argument(
+        "--mesa-source-seed",
+        help="explicit exact-byte locked Mesa cache seed when the selected source plan includes Mesa",
     )
     return result
 

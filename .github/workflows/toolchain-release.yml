@@ -157,6 +157,24 @@ jobs:
           path: ${{ runner.temp }}/diagnostic-runtime-interface.json
           if-no-files-found: error
           retention-days: 7
+      - name: Fetch locked source-preflight seeds before offline admission
+        id: product_source_seeds
+        run: |
+          set -euo pipefail
+          mkdir -m 700 "$RUNNER_TEMP/diagnostic-source-seed-cache" "$RUNNER_TEMP/diagnostic-source-seed-logs"
+          cp "$GITHUB_WORKSPACE/toolchains/source-seeds/chromium-zlib-da752eb2.tar.gz" \
+            "$RUNNER_TEMP/diagnostic-source-seed-cache/zlib.tar.gz"
+          timeout --signal=KILL 180s "${{ steps.runtime.outputs.root }}/bin/aros" cache sources fetch \
+            --source-fetch-plan "$GITHUB_WORKSPACE/dependencies/aros/scripts/ci/product-sources.plan.json" \
+            --dir "$RUNNER_TEMP/diagnostic-source-seed-cache" 2>&1 \
+            | python3 -c '
+          import sys
+          remaining = 1048576
+          for chunk in iter(lambda: sys.stdin.buffer.read(65536), b""):
+              retained = chunk[:remaining]
+              sys.stdout.buffer.write(retained)
+              remaining -= len(retained)
+          ' > "$RUNNER_TEMP/diagnostic-source-seed-logs/fetch.stdout.log"
       - id: source_preflight
         name: Check exact source contracts before compiler and SDK fan-out
         env:
@@ -169,9 +187,10 @@ jobs:
             --expected-commit "$SELECTED_SOURCE_COMMIT" \
             --aros "${{ steps.runtime.outputs.root }}/bin/aros" --aros-sha256 "$aros_sha" \
             --product-source-seed "$GITHUB_WORKSPACE/toolchains/source-seeds/chromium-zlib-da752eb2.tar.gz" \
+            --mesa-source-seed "$RUNNER_TEMP/diagnostic-source-seed-cache/mesa-26.0.0.tar.xz" \
             --output-dir "$RUNNER_TEMP/diagnostic-source-preflight"
       - name: Retain bounded source preflight evidence including failures
-        if: always() && steps.source_preflight.outcome != 'skipped'
+        if: always() && steps.product_source_seeds.outcome != 'skipped'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: diagnostic-v2-source-preflight
@@ -179,6 +198,7 @@ jobs:
             ${{ runner.temp }}/diagnostic-source-preflight/source-preflight-v2.json
             ${{ runner.temp }}/diagnostic-source-preflight/*.stdout.log
             ${{ runner.temp }}/diagnostic-source-preflight/*.stderr.log
+            ${{ runner.temp }}/diagnostic-source-seed-logs/*.stdout.log
           if-no-files-found: error
           retention-days: 7
       - id: matrix

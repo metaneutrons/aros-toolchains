@@ -751,6 +751,28 @@ def validate_v2_policy(documents: Documents) -> dict[str, int]:
                 (sources, cargo_catalog, qualify, builds, sdk, readback)),
         "interface receipts must remain outside runtime roots and outside later qualification/provenance inputs",
     )
+    source_seeds = workflow_step(prepare, "Fetch locked source-preflight seeds before offline admission")
+    require(
+        "id: product_source_seeds" in source_seeds
+        and "set -euo pipefail" in source_seeds
+        and 'timeout --signal=KILL 180s "${{ steps.runtime.outputs.root }}/bin/aros" cache sources fetch' in source_seeds
+        and '--source-fetch-plan "$GITHUB_WORKSPACE/dependencies/aros/scripts/ci/product-sources.plan.json"' in source_seeds
+        and '--dir "$RUNNER_TEMP/diagnostic-source-seed-cache"' in source_seeds
+        and '"$GITHUB_WORKSPACE/toolchains/source-seeds/chromium-zlib-da752eb2.tar.gz"' in source_seeds
+        and '"$RUNNER_TEMP/diagnostic-source-seed-cache/zlib.tar.gz"' in source_seeds
+        and '| python3 -c' in source_seeds
+        and 'remaining = 1048576\n' in source_seeds
+        and 'for chunk in iter(lambda: sys.stdin.buffer.read(65536), b""):' in source_seeds
+        and 'retained = chunk[:remaining]' in source_seeds
+        and 'remaining -= len(retained)' in source_seeds
+        and "head -c" not in source_seeds
+        and '> "$RUNNER_TEMP/diagnostic-source-seed-logs/fetch.stdout.log"' in source_seeds
+        and "continue-on-error:" not in source_seeds and "if:" not in source_seeds
+        and prepare.index("Check the exact V2 interface before recipe preparation")
+        < prepare.index("Fetch locked source-preflight seeds before offline admission")
+        < prepare.index("Check exact source contracts before compiler and SDK fan-out"),
+        "locked source seeds must use the verified runtime and source-owned plan with bounded preparation before offline admission",
+    )
     source_preflight = prepare.split("      - id: source_preflight\n", 1)
     require(
         prepare.count("      - id: source_preflight\n") == 1 and len(source_preflight) == 2,
@@ -771,6 +793,7 @@ def validate_v2_policy(documents: Documents) -> dict[str, int]:
         and '--expected-commit "$SELECTED_SOURCE_COMMIT"' in source_preflight_step
         and '--aros "${{ steps.runtime.outputs.root }}/bin/aros" --aros-sha256 "$aros_sha"' in source_preflight_step
         and '--product-source-seed "$GITHUB_WORKSPACE/toolchains/source-seeds/chromium-zlib-da752eb2.tar.gz"' in source_preflight_step
+        and '--mesa-source-seed "$RUNNER_TEMP/diagnostic-source-seed-cache/mesa-26.0.0.tar.xz"' in source_preflight_step
         and '--output-dir "$RUNNER_TEMP/diagnostic-source-preflight"' in source_preflight_step
         and "if:" not in source_preflight_step
         and "continue-on-error:" not in source_preflight_step
@@ -780,11 +803,12 @@ def validate_v2_policy(documents: Documents) -> dict[str, int]:
         < prepare.index("Check exact source contracts before compiler and SDK fan-out")
         < prepare.index("Retain bounded source preflight evidence including failures")
         < prepare.index("- id: matrix")
-        and "if: always() && steps.source_preflight.outcome != 'skipped'" in source_preflight_retention
+        and "if: always() && steps.product_source_seeds.outcome != 'skipped'" in source_preflight_retention
         and "name: diagnostic-v2-source-preflight" in source_preflight_retention
         and "${{ runner.temp }}/diagnostic-source-preflight/source-preflight-v2.json" in source_preflight_retention
         and "${{ runner.temp }}/diagnostic-source-preflight/*.stdout.log" in source_preflight_retention
         and "${{ runner.temp }}/diagnostic-source-preflight/*.stderr.log" in source_preflight_retention
+        and "${{ runner.temp }}/diagnostic-source-seed-logs/*.stdout.log" in source_preflight_retention
         and "if-no-files-found: error" in source_preflight_retention
         and "retention-days: 7" in source_preflight_retention
         and 'REPORT_NAME = "source-preflight-v2.json"' in source_preflight_script
@@ -1760,7 +1784,7 @@ class CompilerSdkWorkflowV2Tests(unittest.TestCase):
             ),
             (
                 "v2-prepare",
-                'if: always() && steps.source_preflight.outcome != \'skipped\'',
+                'if: always() && steps.product_source_seeds.outcome != \'skipped\'',
                 'if: always()',
             ),
             (
@@ -1774,6 +1798,74 @@ class CompilerSdkWorkflowV2Tests(unittest.TestCase):
                 documents.set_text(WORKFLOW, mutate_job(documents.text(WORKFLOW), job, old, new))
                 validate_v2_policy(documents)
 
+    def test_locked_source_seed_preparation_is_bounded_and_fail_closed(self) -> None:
+        prepare = workflow_job(Documents().text(WORKFLOW), "v2-prepare")
+        step = workflow_step(prepare, "Fetch locked source-preflight seeds before offline admission")
+        script = step.split("        run: |\n", 1)[1]
+        script = "\n".join(line[10:] for line in script.splitlines()) + "\n"
+        for mode in ("success", "failure", "overflow"):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory(prefix="source-seed-shell-") as directory:
+                root = Path(directory)
+                runtime = root / "runtime"
+                (runtime / "bin").mkdir(parents=True)
+                cli = runtime / "bin/aros"
+                cli.write_text(
+                    "#!/usr/bin/env python3\nimport os, pathlib, sys\n"
+                    "assert sys.argv[1:4] == ['cache', 'sources', 'fetch']\n"
+                    "assert len(sys.argv) == 8\n"
+                    "assert sys.argv[4] == '--source-fetch-plan' and sys.argv[6] == '--dir'\n"
+                    "cache = pathlib.Path(sys.argv[7])\n"
+                    "assert (cache / 'zlib.tar.gz').read_bytes() == b'locked-zlib'\n"
+                    "mode = os.environ['SEED_TEST_MODE']\n"
+                    "if mode == 'failure': sys.exit(17)\n"
+                    "if mode == 'overflow':\n"
+                    "    sys.stdout.buffer.write(b'x' * 2097152)\n"
+                    "    sys.stdout.buffer.flush()\n"
+                    "(cache / 'mesa-26.0.0.tar.xz').write_bytes(b'locked-mesa')\n"
+                    "print('locked seeds prepared')\n",
+                    encoding="utf-8",
+                )
+                cli.chmod(0o755)
+                workspace = root / "workspace"
+                seeds = workspace / "toolchains/source-seeds"
+                seeds.mkdir(parents=True)
+                (seeds / "chromium-zlib-da752eb2.tar.gz").write_bytes(b"locked-zlib")
+                temporary = root / "runner"
+                temporary.mkdir()
+                environment = dict(os.environ, RUNNER_TEMP=str(temporary),
+                                   GITHUB_WORKSPACE=str(workspace), SEED_TEST_MODE=mode)
+                result = subprocess.run(
+                    ["bash", "-c", script.replace("${{ steps.runtime.outputs.root }}", str(runtime))],
+                    env=environment, capture_output=True, timeout=10,
+                )
+                self.assertEqual(result.returncode == 0, mode != "failure", result.stderr)
+                log = temporary / "diagnostic-source-seed-logs/fetch.stdout.log"
+                self.assertLessEqual(log.stat().st_size, 1048576)
+                self.assertEqual(
+                    (temporary / "diagnostic-source-seed-cache/mesa-26.0.0.tar.xz").exists(),
+                    mode != "failure",
+                )
+
+    def test_rejects_source_seed_fetch_bypass_or_unbound_selection(self) -> None:
+        for before, after in (
+            ("        id: product_source_seeds\n", "        id: product_source_seeds\n        if: false\n"),
+            ("timeout --signal=KILL 180s", "timeout --signal=KILL 18000s"),
+            ("remaining = 1048576", "remaining = 10485760"),
+            ('for chunk in iter(lambda: sys.stdin.buffer.read(65536), b""):',
+             'for chunk in [sys.stdin.buffer.read(1048576)]:'),
+            ('--dir "$RUNNER_TEMP/diagnostic-source-seed-cache"', '--dir "$RUNNER_TEMP/other-cache"'),
+            ('--mesa-source-seed "$RUNNER_TEMP/diagnostic-source-seed-cache/mesa-26.0.0.tar.xz"',
+             '--mesa-source-seed "$RUNNER_TEMP/unselected-mesa.tar.xz"'),
+            ('--source-fetch-plan "$GITHUB_WORKSPACE/dependencies/aros/scripts/ci/product-sources.plan.json"',
+             '--source-fetch-plan "$GITHUB_WORKSPACE/unselected-plan.json"'),
+        ):
+            with self.subTest(before=before):
+                documents = self.new_documents()
+                documents.set_text(WORKFLOW, mutate_job(documents.text(WORKFLOW), "v2-prepare", before, after))
+                with self.assertRaises(PolicyViolation):
+                    validate_v2_policy(documents)
+
+    def test_rejects_source_preflight_retention_or_matrix_order_drift(self) -> None:
         documents = self.new_documents()
         workflow = documents.text(WORKFLOW)
         prepare = workflow_job(workflow, "v2-prepare")

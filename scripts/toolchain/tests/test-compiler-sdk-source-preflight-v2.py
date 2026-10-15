@@ -18,6 +18,7 @@ import unittest
 ROOT = Path(__file__).resolve().parents[3]
 PREFLIGHT = ROOT / "scripts/toolchain/check-compiler-sdk-source-preflight-v2.py"
 SOURCE_SEED = b"canonical locked zlib test seed\n"
+MESA_SOURCE_SEED = b"exact locked Mesa test seed\n"
 
 
 class SourcePreflightFixture:
@@ -28,6 +29,9 @@ class SourcePreflightFixture:
         fail_release_test: bool = False,
         mutate_aros: bool = False,
         oversize_release_output: bool = False,
+        two_product_sources: bool = False,
+        plan_case: str | None = None,
+        corrupt_export: bool = False,
     ):
         self.root = root
         self.source = root / "source"
@@ -45,6 +49,9 @@ class SourcePreflightFixture:
         self.seed = root / "chromium-zlib-da752eb2.tar.gz"
         self.seed.write_bytes(SOURCE_SEED)
         self.seed_sha256 = hashlib.sha256(SOURCE_SEED).hexdigest()
+        self.mesa_seed = root / "mesa-26.0.0.tar.xz"
+        self.mesa_seed.write_bytes(MESA_SOURCE_SEED)
+        self.mesa_seed_sha256 = hashlib.sha256(MESA_SOURCE_SEED).hexdigest()
         self.aros = root / "runtime" / "bin" / "aros"
         self.aros.parent.mkdir(parents=True)
         self.aros_log = root / "aros-calls.log"
@@ -53,6 +60,9 @@ class SourcePreflightFixture:
             fail_release_test=fail_release_test,
             mutate_aros=mutate_aros,
             oversize_release_output=oversize_release_output,
+            two_product_sources=two_product_sources,
+            plan_case=plan_case,
+            corrupt_export=corrupt_export,
         )
         self._write_aros_fixture()
         self._commit_source()
@@ -71,29 +81,66 @@ class SourcePreflightFixture:
         fail_release_test: bool,
         mutate_aros: bool,
         oversize_release_output: bool,
+        two_product_sources: bool,
+        plan_case: str | None,
+        corrupt_export: bool,
     ) -> None:
+        zlib_entry = {
+            "role": "product:chromium-zlib@da752eb2a3660cf1bf8dac620f6380b89dd953a7",
+            "filename": "zlib.tar.gz",
+            "candidates": [{"url": "https://example.invalid/locked-zlib.tar.gz"}],
+            "representation": "archive",
+            "normalization": "canonical-tar-gzip-v1",
+            "integrity": {"kind": "locked", "sha256": self.seed_sha256, "size": len(SOURCE_SEED)},
+        }
+        mesa_entry = {
+            "role": "product:mesa@26.0.0",
+            "filename": "mesa-26.0.0.tar.xz",
+            "candidates": [{"url": "https://example.invalid/locked-mesa.tar.xz"}],
+            "representation": "archive",
+            "normalization": "exact-bytes-v1",
+            "integrity": {
+                "kind": "locked",
+                "sha256": self.mesa_seed_sha256,
+                "size": len(MESA_SOURCE_SEED),
+            },
+        }
+        entries = [zlib_entry]
+        if two_product_sources:
+            entries.append(mesa_entry)
+        if plan_case == "duplicate-mesa":
+            entries.append(mesa_entry.copy())
+        elif plan_case == "unknown-role":
+            mesa_entry["role"] = "product:unknown@1.0"
+        elif plan_case == "wrong-hash":
+            mesa_entry["integrity"]["sha256"] = "0" * 64
+        elif plan_case == "wrong-size":
+            mesa_entry["integrity"]["size"] = len(MESA_SOURCE_SEED) + 1
+
         plan = {
             "schema": "aros-cache-source-fetch-plan-v1",
-            "entries": [
-                {
-                    "role": "product:chromium-zlib@da752eb2a3660cf1bf8dac620f6380b89dd953a7",
-                    "filename": "zlib.tar.gz",
-                    "candidates": [{"url": "https://example.invalid/locked-zlib.tar.gz"}],
-                    "representation": "archive",
-                    "normalization": "canonical-tar-gzip-v1",
-                    "integrity": {"kind": "locked", "sha256": self.seed_sha256, "size": len(SOURCE_SEED)},
-                }
-            ],
+            "entries": entries,
         }
-        staging = {
-            "schema": "aros-nx-product-source-staging-v1",
-            "entries": [
+        staging_entries = [
+            {
+                "role": "product:chromium-zlib@da752eb2a3660cf1bf8dac620f6380b89dd953a7",
+                "destination": "portssources/zlib.tar.gz",
+                "source_guard": {"path": "scripts/ci/source-guard.txt", "line": "locked-source-fixture"},
+            }
+        ]
+        if two_product_sources:
+            staging_entries.append(
                 {
-                    "role": "product:chromium-zlib@da752eb2a3660cf1bf8dac620f6380b89dd953a7",
-                    "destination": "portssources/zlib.tar.gz",
+                    "role": "product:mesa@26.0.0",
+                    "destination": "portssources/mesa-26.0.0.tar.xz",
                     "source_guard": {"path": "scripts/ci/source-guard.txt", "line": "locked-source-fixture"},
                 }
-            ],
+            )
+        if plan_case == "duplicate-mesa":
+            staging_entries.append(staging_entries[-1].copy())
+        staging = {
+            "schema": "aros-nx-product-source-staging-v1",
+            "entries": staging_entries,
         }
         (self.source / "scripts/ci").mkdir(parents=True)
         (self.source / "scripts/ci/product-sources.plan.json").write_text(
@@ -217,15 +264,23 @@ if args == ["validate"]:
 elif args and args[0] == "export":
     cache = Path(args[args.index("--cache") + 1])
     output = Path(args[args.index("--output") + 1])
-    entry = json.loads(Path("scripts/ci/product-sources.plan.json").read_text())["entries"][0]
-    source = cache / entry["filename"]
-    if hashlib.sha256(source.read_bytes()).hexdigest() != entry["integrity"]["sha256"]:
-        raise SystemExit(43)
+    entries = json.loads(Path("scripts/ci/product-sources.plan.json").read_text())["entries"]
     output.mkdir()
-    shutil.copyfile(source, output / entry["filename"])
+    for entry in entries:
+        source = cache / entry["filename"]
+        if hashlib.sha256(source.read_bytes()).hexdigest() != entry["integrity"]["sha256"]:
+            raise SystemExit(43)
+        shutil.copyfile(source, output / entry["filename"])
+        # EXPORT_CORRUPTION_HOOK
 else:
     raise SystemExit(44)
 '''
+        if corrupt_export:
+            locked_sources = locked_sources.replace(
+                "        # EXPORT_CORRUPTION_HOOK\n",
+                "        if entry['role'] == 'product:mesa@26.0.0':\n"
+                "            (output / entry['filename']).write_bytes(b'corrupted export')\n",
+            )
         self._write("scripts/ci/locked_product_sources.py", locked_sources)
 
         for name in ("test-header-closure.sh", "test-release-layout.sh", "test-zstd-closure.sh"):
@@ -315,6 +370,9 @@ done
 if [ "$plan" = "" ] || [ "$cache" = "" ]; then exit 53; fi
 if [ "$operation" = fetch ] && [ "$offline" != yes ]; then exit 54; fi
 cmp "$cache/zlib.tar.gz" {shlex.quote(str(self.seed))}
+if [ -e "$cache/mesa-26.0.0.tar.xz" ]; then
+  cmp "$cache/mesa-26.0.0.tar.xz" {shlex.quote(str(self.mesa_seed))}
+fi
 if [ "$operation" != fetch ] && [ "$operation" != verify ]; then exit 55; fi
 '''
         self.aros.write_text(body, encoding="utf-8")
@@ -335,6 +393,7 @@ if [ "$operation" != fetch ] && [ "$operation" != verify ]; then exit 55; fi
         *,
         expected_commit: str | None = None,
         product_source_seed: Path | None = None,
+        mesa_source_seed: Path | None = None,
         aros_path: Path | None = None,
     ):
         command = [
@@ -354,6 +413,8 @@ if [ "$operation" != fetch ] && [ "$operation" != verify ]; then exit 55; fi
             "--product-source-seed",
             str(product_source_seed or self.seed),
         ]
+        if mesa_source_seed is not None:
+            command.extend(["--mesa-source-seed", str(mesa_source_seed)])
         environment = os.environ.copy()
         environment.update(
             {
@@ -506,6 +567,58 @@ class SourcePreflightTests(unittest.TestCase):
         self.assertNotIn("fixture-secret-aws-key", result.stdout)
         self.assertIn("does not replace AROS-NX protected CI", " ".join(report["limitations"]))
 
+    def test_positive_orchestration_seeds_and_exports_the_closed_zlib_mesa_plan(self) -> None:
+        fixture = self.make_fixture(two_product_sources=True)
+        result = fixture.invoke(mesa_source_seed=fixture.mesa_seed)
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        report = fixture.report()
+        self.assertEqual(report["status"], "passed")
+        product_source = report["product_source"]
+        self.assertEqual(product_source["fetch_mode"], "offline-cache-hit")
+        self.assertEqual(
+            product_source["cache_seed"]["role"],
+            "product:chromium-zlib@da752eb2a3660cf1bf8dac620f6380b89dd953a7",
+        )
+        self.assertEqual(
+            {item["role"]: (item["sha256"], item["size"]) for item in product_source["cache_seeds"]},
+            {
+                "product:chromium-zlib@da752eb2a3660cf1bf8dac620f6380b89dd953a7": (
+                    fixture.seed_sha256,
+                    len(SOURCE_SEED),
+                ),
+                "product:mesa@26.0.0": (fixture.mesa_seed_sha256, len(MESA_SOURCE_SEED)),
+            },
+        )
+        self.assertEqual(
+            {item["role"]: (item["sha256"], item["size"]) for item in product_source["exports"]},
+            {
+                "product:chromium-zlib@da752eb2a3660cf1bf8dac620f6380b89dd953a7": (
+                    fixture.seed_sha256,
+                    len(SOURCE_SEED),
+                ),
+                "product:mesa@26.0.0": (fixture.mesa_seed_sha256, len(MESA_SOURCE_SEED)),
+            },
+        )
+        self.assertEqual(product_source["export_sha256"], fixture.seed_sha256)
+        self.assertEqual(product_source["export_size"], len(SOURCE_SEED))
+        self.assertEqual(
+            (fixture.output / "product-source-cache/zlib.tar.gz").read_bytes(),
+            SOURCE_SEED,
+        )
+        self.assertEqual(
+            (fixture.output / "product-source-cache/mesa-26.0.0.tar.xz").read_bytes(),
+            MESA_SOURCE_SEED,
+        )
+        self.assertEqual(
+            (fixture.output / "product-source-export/mesa-26.0.0.tar.xz").read_bytes(),
+            MESA_SOURCE_SEED,
+        )
+        calls = fixture.aros_log.read_text(encoding="utf-8").splitlines()
+        self.assertEqual(len(calls), 2)
+        self.assertIn("--offline", calls[0])
+        self.assertIn("verify", calls[1])
+
     def test_wrong_commit_fails_before_private_output_is_created(self) -> None:
         fixture = self.make_fixture()
         result = fixture.invoke(expected_commit="0" * 40)
@@ -562,6 +675,96 @@ class SourcePreflightTests(unittest.TestCase):
         report = fixture.report()
         self.assertEqual(report["failed_step"], "product-source-seed")
         self.assertFalse(fixture.aros_log.exists())
+
+    def test_mesa_seed_presence_must_match_the_closed_plan(self) -> None:
+        missing_root = self.root / "missing-mesa-seed"
+        missing_root.mkdir()
+        missing = SourcePreflightFixture(missing_root, two_product_sources=True)
+        result = missing.invoke()
+        self.assert_failed_without_success(missing, result)
+        self.assertEqual(missing.report()["failed_step"], "product-source-seed")
+        self.assertFalse(missing.aros_log.exists())
+
+        unexpected_root = self.root / "unexpected-mesa-seed"
+        unexpected_root.mkdir()
+        unexpected = SourcePreflightFixture(unexpected_root)
+        result = unexpected.invoke(mesa_source_seed=unexpected.mesa_seed)
+        self.assert_failed_without_success(unexpected, result)
+        self.assertEqual(unexpected.report()["failed_step"], "product-source-seed")
+        self.assertFalse(unexpected.aros_log.exists())
+
+    def test_product_source_plan_rejects_duplicate_mesa_and_unknown_roles(self) -> None:
+        duplicate_root = self.root / "duplicate-mesa"
+        duplicate_root.mkdir()
+        duplicate = SourcePreflightFixture(
+            duplicate_root,
+            two_product_sources=True,
+            plan_case="duplicate-mesa",
+        )
+        result = duplicate.invoke(mesa_source_seed=duplicate.mesa_seed)
+        self.assert_failed_without_success(duplicate, result)
+        self.assertEqual(duplicate.report()["failed_step"], "product-source-seed")
+        self.assertFalse(duplicate.aros_log.exists())
+
+        unknown_root = self.root / "unknown-role"
+        unknown_root.mkdir()
+        unknown = SourcePreflightFixture(
+            unknown_root,
+            two_product_sources=True,
+            plan_case="unknown-role",
+        )
+        result = unknown.invoke(mesa_source_seed=unknown.mesa_seed)
+        self.assert_failed_without_success(unknown, result)
+        self.assertEqual(unknown.report()["failed_step"], "product-source-seed")
+        self.assertFalse(unknown.aros_log.exists())
+
+    def test_mesa_seed_must_match_its_locked_sha_and_size(self) -> None:
+        for plan_case in ("wrong-hash", "wrong-size"):
+            with self.subTest(plan_case=plan_case):
+                fixture_root = self.root / plan_case
+                fixture_root.mkdir()
+                fixture = SourcePreflightFixture(
+                    fixture_root,
+                    two_product_sources=True,
+                    plan_case=plan_case,
+                )
+                result = fixture.invoke(mesa_source_seed=fixture.mesa_seed)
+
+                self.assert_failed_without_success(fixture, result)
+                self.assertEqual(fixture.report()["failed_step"], "product-source-seed")
+                self.assertFalse(fixture.aros_log.exists())
+
+    def test_mesa_seed_symlink_and_fifo_are_rejected_before_checks(self) -> None:
+        symlink_root = self.root / "mesa-symlink"
+        symlink_root.mkdir()
+        symlink_fixture = SourcePreflightFixture(symlink_root, two_product_sources=True)
+        mesa_symlink = symlink_root / "mesa-seed-link"
+        mesa_symlink.symlink_to(symlink_fixture.mesa_seed)
+        result = symlink_fixture.invoke(mesa_source_seed=mesa_symlink)
+        self.assert_failed_without_success(symlink_fixture, result)
+        self.assertFalse(symlink_fixture.output.exists())
+        self.assertFalse(symlink_fixture.aros_log.exists())
+
+        fifo_root = self.root / "mesa-fifo"
+        fifo_root.mkdir()
+        fifo_fixture = SourcePreflightFixture(fifo_root, two_product_sources=True)
+        mesa_fifo = fifo_root / "mesa-seed.fifo"
+        os.mkfifo(mesa_fifo)
+        result = fifo_fixture.invoke(mesa_source_seed=mesa_fifo)
+        self.assert_failed_without_success(fifo_fixture, result)
+        self.assertFalse(fifo_fixture.output.exists())
+        self.assertFalse(fifo_fixture.aros_log.exists())
+
+    def test_exported_mesa_is_independently_checked_against_its_lock(self) -> None:
+        fixture = self.make_fixture(two_product_sources=True, corrupt_export=True)
+        result = fixture.invoke(mesa_source_seed=fixture.mesa_seed)
+
+        self.assert_failed_without_success(fixture, result)
+        report = fixture.report()
+        self.assertEqual(report["failed_step"], "product-source-export")
+        self.assertEqual(report["steps"][-5]["name"], "product-source-fetch-offline")
+        self.assertEqual(report["steps"][-4]["name"], "product-source-verify")
+        self.assertEqual(report["steps"][-3]["name"], "product-source-export")
 
     def test_fifo_seed_and_runtime_inputs_are_rejected_without_blocking(self) -> None:
         fixture = self.make_fixture()
