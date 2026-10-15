@@ -22,10 +22,19 @@ contracts remain owned by AROS-NX.
    retained selection is metadata only, not package or release qualification.
    Before this preparation, run the selected source's CI contract, GNU recipe,
    hygiene and SDK exporter checks. Locked product-source transport uses the
-   measured repository Zlib seed offline; it never repeats the fragile upstream
-   archive request. Child configuration homes are private. Bounded step logs
+   measured repository Zlib seed and a separately fetched, locked Mesa seed
+   offline. The verified selected CLI fetches the complete source-owned plan
+   into a fresh preparation cache before this offline admission; it does not
+   repeat the fragile upstream Zlib request. Mesa remains an exact-byte input,
+   not a vendored producer asset. The preflight admits every seed and exported
+   object against its selected source lock. Child configuration homes are private. Bounded step logs
    and a source-only report survive failures. These checks do not replace
    AROS-NX's required product CI or qualify SDK generation.
+   Diagnostic source `7510b607d0ae9b219bf9cedf5b3a29dd2fbbef9d` preserves the
+   earlier `abf4ad848e0bf336eb4e37b223e33b81c3d310da` SDK integration chain,
+   replays only the checked Mesa-cache and Darwin GNU-Make fixes, and refreshes
+   the derived `configure.in` input seals in all four SDK contracts. It is not a claim that the
+   entire source integration chain has passed protected-main product CI.
 3. Fetch and verify compiler, compatibility and Python sources once. Prepare
    each selected host's Cargo generation with that host's exact native Cargo,
    repeat its fetch offline, and verify it before fan-out. Cargo executable
