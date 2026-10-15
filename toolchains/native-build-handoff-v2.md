@@ -13,6 +13,15 @@ prepared cache from the validated collection. Select the CLI digest from the
 independently verified runtime inventory. The adapter accepts those explicit
 paths and selectors; it does not reconstruct compiler semantics in shell.
 
+On macOS the source-owned prerequisite installer installs Homebrew LLVM without
+putting its keg-only binaries on PATH. The V2 build, SDK and qualification jobs
+therefore run `select-macos-native-llvm.sh` after installation. It resolves the
+installed formula, checks both `llvm-ar` and `llvm-ranlib` before exporting its
+binary directory through `GITHUB_PATH`, and fails without exporting a directory
+if either tool is unavailable. The native producer still performs its own strict
+host-tool discovery and records the actual selected executables. This selection
+neither installs a fallback compiler nor changes source or runtime pins.
+
 Each group/host/profile/copy owns one absent canonical operation root:
 
 ```text
