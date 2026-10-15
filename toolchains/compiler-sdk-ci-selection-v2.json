@@ -1,7 +1,7 @@
 {
   "schema": "aros-compiler-sdk-ci-selection-v2",
   "source_commit": "abf4ad848e0bf336eb4e37b223e33b81c3d310da",
-  "tools_commit": "db2e9b82ac2cf39e8f32df281adafe6fcd00e4e3",
+  "tools_commit": "07562dbbb59523fccfa61308f0054d0b75cfb074",
   "groups": [
     {
       "id": "gnu-rv32",

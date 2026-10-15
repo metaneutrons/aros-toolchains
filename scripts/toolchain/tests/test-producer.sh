@@ -1228,6 +1228,7 @@ for required in (
 PY
 python3 -B "$script_dir/test-llvm-patch.py"
 python3 -B "$script_dir/test-compiler-unicode-closure.py"
+python3 -B "$script_dir/test-compiler-python-closure.py"
 python3 -B "$script_dir/test-crosstools-release.py"
 python3 -B "$script_dir/test-gnu-rv32-inputs.py"
 python3 -B "$script_dir/test-aros-tools-runtime.py"
