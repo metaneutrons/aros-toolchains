@@ -439,6 +439,7 @@ python3 -B "$source_root/scripts/toolchain/tests/test-compiler-required-payload-
 python3 -B "$source_root/scripts/toolchain/tests/test-prepare-compiler-sdk-inputs-v2.py"
 python3 -B "$source_root/scripts/toolchain/tests/test-compiler-sdk-workflow-v2.py"
 python3 -B "$source_root/scripts/toolchain/tests/test-select-macos-native-llvm.py"
+python3 -B "$source_root/scripts/toolchain/tests/test-native-host-preflights-v2.py"
 bash -n "$source_root/scripts/toolchain/select-macos-native-llvm.sh"
 shellcheck "$source_root/scripts/toolchain/select-macos-native-llvm.sh"
 python3 -B "$source_root/scripts/toolchain/tests/test-compiler-sdk-route-v2.py"

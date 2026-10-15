@@ -511,6 +511,50 @@ def validate_v2_policy(documents: Documents) -> dict[str, int]:
     builds = workflow_job(workflow, "v2-build")
     sdk = workflow_job(workflow, "v2-sdk")
     readback = workflow_job(workflow, "v2-readback")
+    require(
+        "needs: [v2-prepare, v2-sources]" in runtimes,
+        "native host preflights must wait for the verified shared source cache",
+    )
+    native_probe = runtimes.find("python3 -B scripts/toolchain/check-native-host-preflights-v2.py")
+    prerequisite = runtimes.find("run: bash dependencies/native-prerequisites/scripts/ci/install-build-prerequisites.sh")
+    llvm_selection = runtimes.find("run: bash scripts/toolchain/select-macos-native-llvm.sh")
+    runtime_verification = runtimes.find("uses: ./.github/actions/verify-aros-tools-runtime-transport")
+    source_restore = runtimes.find("python3 -B scripts/toolchain/cache-archive-transport.py")
+    cargo_preparation = runtimes.find("name: Prepare and seal this host's exact Cargo generation")
+    probe_step = runtimes.split("      - id: host_preflight\n", 1)[-1].split("      - ", 1)[0]
+    require(
+        0 < prerequisite < llvm_selection < runtime_verification < source_restore < native_probe < cargo_preparation
+        and "ref: ${{ needs.v2-prepare.outputs.source_commit }}" in runtimes
+        and "sparse-checkout: scripts/ci/install-build-prerequisites.sh" in runtimes
+        and 'CACHE_ARCHIVE_SHA256: ${{ needs.v2-sources.outputs.cache_archive_sha256 }}' in runtimes
+        and '--archive-sha256 "$CACHE_ARCHIVE_SHA256"' in runtimes
+        and '--host "$SELECTED_HOST"' in runtimes
+        and "SELECTED_LANES: ${{ needs.v2-prepare.outputs.matrix }}" in runtimes
+        and '--selected-matrix "$SELECTED_LANES"' in runtimes
+        and "jq -er '.runtime.sha256'" in probe_step
+        and '--aros-sha256 ' in probe_step
+        and 'diagnostic-native-runtime-interface-$SELECTED_HOST.json' in probe_step
+        and runtimes.count("SELECTED_HOST: ${{ matrix.host }}") == 2
+        and '--inputs-dir "$RUNNER_TEMP/diagnostic-inputs"' in runtimes,
+        "native host preflights require exact source prerequisites, verified runtime/cache and selected inputs before fan-out",
+    )
+    require(
+        "      - id: host_preflight\n" in runtimes
+        and "        if:" not in probe_step
+        and "continue-on-error:" not in probe_step,
+        "native host preflights must not be conditional or error-suppressed",
+    )
+    retention_step = runtimes.split("      - name: Retain bounded native prerequisite observations, never Python environments\n", 1)[-1].split("      - ", 1)[0]
+    require(
+        "if: always() && steps.host_preflight.outcome != 'skipped'" in retention_step
+        and "name: diagnostic-v2-host-preflights-${{ matrix.host }}" in retention_step
+        and "${{ runner.temp }}/native-host-preflights/*.json" in retention_step
+        and "${{ runner.temp }}/native-host-preflights/*.log" in retention_step
+        and "${{ runner.temp }}/native-host-preflights/\n" not in retention_step
+        and "if-no-files-found: error" in retention_step
+        and "retention-days: 7" in retention_step,
+        "native prerequisite diagnostics must retain bounded reports, never whole environments",
+    )
     for name, job in (("v2-prepare", prepare), ("v2-sources", sources),
                       ("v2-runtimes", runtimes), ("v2-cargo-catalog", cargo_catalog),
                       ("v2-qualify", qualify),
@@ -1656,6 +1700,31 @@ class CompilerSdkWorkflowV2Tests(unittest.TestCase):
         selection = Documents().json(SELECTION)
         self.assertEqual(result["group_count"], len(selection["groups"]))
         self.assertEqual(result["sdk_count"], len(selection["sdks"]))
+
+    def test_rejects_native_host_preflight_skips_misbindings_and_wide_uploads(self) -> None:
+        for before, after in (
+            ("      - id: host_preflight\n", "      - id: host_preflight\n        if: false\n"),
+            ("needs: [v2-prepare, v2-sources]", "needs: v2-prepare"),
+            ("scripts/toolchain/check-native-host-preflights-v2.py", "scripts/toolchain/not-a-preflight.py"),
+            ("sparse-checkout: scripts/ci/install-build-prerequisites.sh", "sparse-checkout: README.md"),
+            ("ref: ${{ needs.v2-prepare.outputs.source_commit }}", "ref: main"),
+            ('--host "$SELECTED_HOST"', '--host linux-x86_64'),
+            ('--selected-matrix "$SELECTED_LANES"', '--selected-matrix unselected'),
+            ("jq -er '.runtime.sha256'", "jq -er '.unverified.sha256'"),
+            ('--archive-sha256 "$CACHE_ARCHIVE_SHA256"', '--archive-sha256 unverified'),
+            ('--inputs-dir "$RUNNER_TEMP/diagnostic-inputs"', '--inputs-dir "$RUNNER_TEMP/other-inputs"'),
+            ("if: always() && steps.host_preflight.outcome != 'skipped'", "if: success()"),
+            ("${{ runner.temp }}/native-host-preflights/*.json", "${{ runner.temp }}/native-host-preflights/"),
+            ("${{ runner.temp }}/native-host-preflights/*.log\n          if-no-files-found: error\n          retention-days: 7",
+             "${{ runner.temp }}/native-host-preflights/*.log\n          if-no-files-found: error\n          retention-days: 30"),
+            ("${{ runner.temp }}/native-host-preflights/*.log\n          if-no-files-found: error",
+             "${{ runner.temp }}/native-host-preflights/*.log\n          if-no-files-found: ignore"),
+        ):
+            with self.subTest(before=before):
+                documents = self.new_documents()
+                documents.set_text(WORKFLOW, mutate_job(documents.text(WORKFLOW), "v2-runtimes", before, after))
+                with self.assertRaises(PolicyViolation):
+                    validate_v2_policy(documents)
 
     def test_rejects_source_preflight_skip_misbinding_order_or_unbounded_evidence(self) -> None:
         for job, old, new in (
