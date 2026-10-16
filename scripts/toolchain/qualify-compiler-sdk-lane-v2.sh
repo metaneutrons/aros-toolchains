@@ -168,7 +168,22 @@ host_tools=()
 "$aros" toolchain producer compatibility-host-tools --host "$host" > "$root/host-tool-roles.txt"
 while IFS= read -r role; do
     [[ -n "$role" ]] || continue
-    case "$role" in make) program=$(type -P gmake || type -P make || true);; *) program=$(type -P "$role" || true);; esac
+    case "$role" in
+        make) program=$(type -P gmake || type -P make || true);;
+        llvm-arcc|llvm-ranlibcc)
+            # These are closure roles, not programs installed in PATH. Resolve
+            # the real Xcode executable, as in the original compatibility lane;
+            # the tools-owned closure restores its argv[0] before invocation.
+            [[ "$host" == macos-aarch64 ]] || fail "Darwin host role on non-Darwin host: $role"
+            xcrun_program=$(type -P xcrun || true)
+            program=''
+            if [[ "$xcrun_program" == /* && -f "$xcrun_program" && -x "$xcrun_program" ]]; then
+                xcode_role=${role#llvm-}
+                program=$("$xcrun_program" --find "${xcode_role%cc}" 2>/dev/null || true)
+            fi
+            ;;
+        *) program=$(type -P "$role" || true);;
+    esac
     [[ "$program" == /* && -f "$program" && -x "$program" ]] || fail "missing host role $role"
     host_tools+=(--host-tool "$role=$program")
 done < "$root/host-tool-roles.txt"
