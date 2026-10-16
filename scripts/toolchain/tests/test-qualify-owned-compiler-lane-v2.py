@@ -61,6 +61,12 @@ elif args[:3] == ["toolchain", "producer", "compare"]:
     record("compare", args)
     sys.stdout.write('{"fixture":"comparison reached"}\n')
     raise SystemExit(int(os.environ.get("FAKE_COMPARE_EXIT", "77")))
+elif args[:3] == ["toolchain", "producer", "materialize-engine-free-source"]:
+    record("source-projection", args)
+    sys.stdout.write('{}\n')
+elif args[:3] == ["toolchain", "producer", "compatibility-host-tools"]:
+    record("host-tools", args)
+    sys.stdout.write(os.environ["FAKE_HOST_ROLES"])
 else:
     record("unexpected-aros", args)
     raise SystemExit("fixture CLI received an unexpected invocation")
@@ -315,6 +321,57 @@ class QualifyOwnedCompilerLaneTests(unittest.TestCase):
         compare = events[-1]["args"]
         self.assertEqual(compare[compare.index("--left") + 1], str(self.root / "compiler-a/payload/package"))
         self.assertEqual(compare[compare.index("--right") + 1], str(self.root / "compiler-b/payload/package"))
+
+    def _probe_host_roles(self, roles: str, xcrun: str, host: str = "macos-aarch64") -> subprocess.CompletedProcess[str]:
+        self.env["FAKE_COMPARE_EXIT"] = "0"
+        self.env["FAKE_HOST_ROLES"] = roles
+        self._write_executable(self.fake_bin / "xcrun", xcrun)
+        plan = json.loads(self.plan_file.read_text())
+        plan["lanes"][0]["host"] = host
+        self.plan_file.write_text(json.dumps(plan))
+        args = self._base_args() + self._owner_args()
+        args[args.index("--host") + 1] = host
+        return subprocess.run(["/bin/bash", str(self.script), *args], capture_output=True,
+                              text=True, check=False, env=self.env)
+
+    def test_darwin_aliases_resolve_real_xcode_roles_before_sdk_selection(self) -> None:
+        xcrun = '#!/bin/bash\n[[ "$1" == --find ]] || exit 8\ncase "$2" in ar|ranlib) printf "/usr/bin/%s\\n" "$2";; *) exit 9;; esac\n'
+        result = self._probe_host_roles("llvm-arcc\nllvm-ranlibcc\n", xcrun)
+        # jq -e stops on the fixture's deliberately empty SDK selection,
+        # after both aliases have resolved; no SDK/compiler build is invoked.
+        self.assertEqual(result.returncode, 4, result.stderr)
+        self.assertEqual(self._events()[-1]["stage"], "host-tools")
+        self.assertNotIn("missing host role", result.stderr)
+        self.assertNotIn("build", [event["stage"] for event in self._events()])
+
+    @unittest.skipUnless(shutil.which("xcrun"), "real Xcode discovery requires macOS")
+    def test_real_xcode_alias_discovery_without_compiler_build(self) -> None:
+        xcrun = shutil.which("xcrun")
+        result = self._probe_host_roles("llvm-arcc\nllvm-ranlibcc\n",
+                                       f'#!/bin/bash\nexec "{xcrun}" "$@"\n')
+        self.assertEqual(result.returncode, 4, result.stderr)
+        self.assertNotIn("missing host role", result.stderr)
+
+    def test_darwin_alias_resolution_failure_stops_before_sdk_selection(self) -> None:
+        result = self._probe_host_roles("llvm-arcc\n", "#!/bin/sh\nexit 9\n")
+        self.assertIn("missing host role llvm-arcc", result.stderr)
+        self.assertNotIn("compiler lane has no selected SDK", result.stderr)
+
+    def test_darwin_alias_rejects_relative_xcode_result(self) -> None:
+        result = self._probe_host_roles("llvm-arcc\n", "#!/bin/sh\nprintf 'ar\\n'\n")
+        self.assertIn("missing host role llvm-arcc", result.stderr)
+
+    def test_darwin_alias_rejects_multiline_xcode_result(self) -> None:
+        result = self._probe_host_roles("llvm-arcc\n", "#!/bin/sh\nprintf '/usr/bin/ar\\n/usr/bin/ranlib\\n'\n")
+        self.assertIn("missing host role llvm-arcc", result.stderr)
+
+    def test_darwin_alias_rejects_non_executable_xcode_result(self) -> None:
+        result = self._probe_host_roles("llvm-arcc\n", f"#!/bin/sh\nprintf '%s\\n' '{self.plan_file}'\n")
+        self.assertIn("missing host role llvm-arcc", result.stderr)
+
+    def test_darwin_aliases_are_rejected_on_linux(self) -> None:
+        result = self._probe_host_roles("llvm-arcc\n", "#!/bin/sh\nprintf '/usr/bin/ar\\n'\n", HOST)
+        self.assertIn("Darwin host role on non-Darwin host", result.stderr)
 
     def test_tag_release_id_reaches_both_original_owner_reads(self) -> None:
         args = self._owner_args()
