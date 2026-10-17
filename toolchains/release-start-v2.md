@@ -493,6 +493,30 @@ entry. Actual job-token custody and the trusted runner event remain caller
 premises. No installed workflow invokes the selector, and mocked-provider tests
 do not establish genuine provider qualification, START-A5/A7 or publication.
 
+### Inactive post-dispatch run binding
+
+`scripts/toolchain/compiler-sdk-dispatch-binding-v2.py` is a pure payload codec,
+not an installed dispatcher or native-entry authority. It accepts only one
+bounded HTTP 200 run-details response with a strict numeric ID and matching
+fixed-repository API/HTML URLs. An empty HTTP 204, unknown result or invalid
+response supplies no run selector and must never cause a mutation retry or a
+search for a convenient recent run. The caller must request run details and
+independently read back that exact numeric run before using the signing subject.
+
+The canonical subject joins that native original-attempt context to the exact
+sole claim asset and signature digest, original start, dispatcher and candidate.
+The consumer codec requires the native caller's independently observed actual
+event and context; it must not select those from the subject being checked.
+A copied subject for another native run fails that join. Both signatures,
+successful original owners, live candidate/runtime/provider observations and
+successful dispatcher completion remain separate mandatory gates. The future
+trusted dispatcher must sign and retain these exact post-dispatch bytes.
+
+This codec does not send requests, perform readbacks, write files, sign, wait
+for completion, dispatch or activate workflows. Supplied metadata is not its
+own authentication. Offline payload controls do not establish exclusive native
+consumption, genuine provider behavior, START-A5/A7 or publication readiness.
+
 `scripts/toolchain/construct-compiler-sdk-start-v2.py` is an inactive unsigned
 record constructor. Its current supported start host is the fixed hosted
 `ubuntu-24.04` Linux x64 job. It derives the original context from runner
