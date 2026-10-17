@@ -262,7 +262,15 @@ protected controller and a genuine provider observation.
 configuration from the committed `release-please-config.json`. It preserves the
 reviewed version strategy and sole root package, changes only the three draft
 settings above, and rejects conflicting package overrides or occupied output
-paths. This offline adapter is not admission or release authority. No workflow
+paths. It also requires the committed
+`toolchains/release-please-draft-config-v2.json` to match that derivation exactly;
+missing, stale or changed derived settings fail before output creation. The
+pinned action reads `config-file` from the repository through its GitHub client,
+not from a locally generated runner file. A future protected invocation must
+select that fixed repository path, not the adapter's private output path, and
+independently establish the actual consumed Git identity. The existing PR-only
+workflow still uses the original configuration. This offline adapter is not
+admission or release authority. No workflow
 invokes it for publication; the action's two explicit switches and all protected
 start gates still require integration and qualification.
 

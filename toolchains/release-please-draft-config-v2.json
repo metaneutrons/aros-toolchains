@@ -1,0 +1,18 @@
+{
+  "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
+  "release-type": "simple",
+  "include-component-in-tag": false,
+  "include-v-in-tag": true,
+  "initial-version": "0.1.0",
+  "skip-github-release": false,
+  "bump-minor-pre-major": true,
+  "bump-patch-for-minor-pre-major": false,
+  "draft": true,
+  "force-tag-creation": false,
+  "packages": {
+    ".": {
+      "package-name": "aros-toolchains",
+      "changelog-path": "CHANGELOG.md"
+    }
+  }
+}

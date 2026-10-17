@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 from pathlib import Path
 import selectors
@@ -22,7 +23,9 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[2]
 CONFIG_PATH = "release-please-config.json"
+DRAFT_CONFIG_PATH = "toolchains/release-please-draft-config-v2.json"
 MAX_CONFIG_BYTES = 256 * 1024
+MAX_JSON_DEPTH = 64
 GIT_TIMEOUT_SECONDS = 15
 
 
@@ -51,6 +54,24 @@ def _reject_constant(_: str) -> None:
     raise ValueError
 
 
+def _parse_finite_float(value: str) -> float:
+    number = float(value)
+    if not math.isfinite(number):
+        raise ValueError
+    return number
+
+
+def _validate_json_depth(value: Any, depth: int = 0) -> None:
+    if depth > MAX_JSON_DEPTH:
+        raise ValueError
+    if isinstance(value, dict):
+        for nested in value.values():
+            _validate_json_depth(nested, depth + 1)
+    elif isinstance(value, list):
+        for nested in value:
+            _validate_json_depth(nested, depth + 1)
+
+
 def _contains_package_override(value: Any, keys: set[str]) -> bool:
     if isinstance(value, dict):
         return bool(keys.intersection(value)) or any(
@@ -61,8 +82,8 @@ def _contains_package_override(value: Any, keys: set[str]) -> bool:
     return False
 
 
-def _read_committed_config() -> bytes:
-    command = ["git", "show", f"HEAD:{CONFIG_PATH}"]
+def _read_committed_blob(path: str) -> bytes:
+    command = ["git", "show", f"HEAD:{path}"]
     try:
         process = subprocess.Popen(
             command,
@@ -125,7 +146,9 @@ def _parse_config(raw: bytes) -> dict[str, Any]:
             raw.decode("utf-8"),
             object_pairs_hook=_pairs_without_duplicates,
             parse_constant=_reject_constant,
+            parse_float=_parse_finite_float,
         )
+        _validate_json_depth(value)
     except (
         UnicodeDecodeError,
         json.JSONDecodeError,
@@ -161,6 +184,36 @@ def _parse_config(raw: bytes) -> dict[str, Any]:
     result["draft"] = True
     result["force-tag-creation"] = False
     return result
+
+
+def _read_committed_config() -> bytes:
+    return _read_committed_blob(CONFIG_PATH)
+
+
+def _read_committed_draft_config() -> bytes:
+    return _read_committed_blob(DRAFT_CONFIG_PATH)
+
+
+def _parse_committed_draft_config(raw: bytes) -> dict[str, Any]:
+    try:
+        value = json.loads(
+            raw.decode("utf-8"),
+            object_pairs_hook=_pairs_without_duplicates,
+            parse_constant=_reject_constant,
+            parse_float=_parse_finite_float,
+        )
+        _validate_json_depth(value)
+    except (
+        UnicodeDecodeError,
+        json.JSONDecodeError,
+        DuplicateKeyError,
+        RecursionError,
+        ValueError,
+    ):
+        fail("committed draft Release Please configuration is invalid JSON")
+    if not isinstance(value, dict):
+        fail("committed draft Release Please configuration must have an object root")
+    return value
 
 
 def _open_parent_directory(path: Path) -> tuple[int, str]:
@@ -239,7 +292,16 @@ def _write_exclusive(path: Path, content: bytes) -> None:
 
 
 def canonical_json(value: Any) -> str:
-    return json.dumps(value, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+    try:
+        return json.dumps(
+            value,
+            ensure_ascii=True,
+            allow_nan=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+    except (RecursionError, TypeError, ValueError):
+        fail("committed Release Please configuration is invalid JSON")
 
 
 def main() -> None:
@@ -249,6 +311,9 @@ def main() -> None:
     try:
         _check_output_destination(args.output)
         candidate = _parse_config(_read_committed_config())
+        committed_draft = _parse_committed_draft_config(_read_committed_draft_config())
+        if canonical_json(committed_draft) != canonical_json(candidate):
+            fail("committed draft Release Please configuration is stale")
         _write_exclusive(args.output, (canonical_json(candidate) + "\n").encode("utf-8"))
     except PreparationError as error:
         print(f"release draft config preparation failed: {error}", file=sys.stderr)
