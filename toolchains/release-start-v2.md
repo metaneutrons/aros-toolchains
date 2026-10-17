@@ -427,9 +427,71 @@ A partial
 pin selection, semantically identical but different raw bytes, changed identity
 or failed evidence gate rejects before upload. The caller must independently
 materialize the authentic published runtime in private, quiescent staging;
-this composition does not replace that publication-authentication gate. It has
-no CLI/workflow entry point, dispatches nothing and reports only authenticated
-claim-upload assurance, not native qualification or publication authority.
+this composition does not replace that publication-authentication gate. It
+reports only authenticated claim-upload assurance, not native qualification or
+publication authority.
+
+Its inactive CLI accepts separately selected source-context and record/bundle
+byte pins plus the authenticated runtime paths. It preflights two distinct,
+absent outputs in owned private, quiescent parent directories before provider
+work. Only a confirmed upload and numeric asset readback permit retention of
+the exact canonical uploaded claim, under its fixed subject basename, and a
+separate receipt. Input-byte checks and local output readbacks must also pass.
+This retained subject can be supplied to a future signer; retaining it is not
+a signature or proof of native authorization. The existing callable keeps its
+original receipt-only interface.
+
+The source-context selector must come from independently observed provider
+identity, not from the claim's own fields. Private parent checks are not an OS
+sandbox or an atomic defense against a concurrent same-user or privileged
+writer. A failure after upload can leave an uploaded asset or partial private
+outputs, including a complete canonical upload receipt. Callers must require
+exit status zero and ordinary successful-step gating: every output from a
+nonzero invocation is unusable, regardless of whether it is complete JSON.
+File presence is never retention-success evidence. Outputs are not automatically
+removed and must not trigger a mutation retry. The trusted caller must supply
+the actual job token; a nonempty `GH_TOKEN` alone does not establish its origin.
+Runtime evidence is verified after dispatcher identity and before upload, so
+an invalid runtime selector can cause provider reads but cannot permit upload.
+No installed workflow invokes this CLI,
+signs a dispatcher claim or dispatches native work through it. Offline fake
+provider/upload tests do not satisfy START-A5/A7 or genuine provider qualification.
+
+### Closed start-archive byte reader
+
+`scripts/toolchain/compiler-sdk-start-artifact-v2.py` is an inactive local
+reader for the sealed two-file ZIP transport. Its caller must supply the
+independently selected archive SHA-256 and byte size. It captures one owned,
+nonlinked regular archive, checks those pins, and reads only the fixed start
+record and signature-bundle filenames, bounded respectively to 128 KiB and
+8 MiB. It does not extract files or accept arbitrary archive members.
+
+These byte and archive-shape checks do not authenticate a signature, provider,
+owning job or independently selected artifact. The future cross-run selector,
+authenticated start reader and successful dispatcher/native-entry gates remain
+required. Staging must be caller-owned and quiescent; this reader is not an
+atomic concurrent-writer, ACL or sandbox boundary. No installed workflow calls
+it, and offline ZIP counterprobes are not START-A5/A7 or native qualification.
+
+### Independent start-transport selection
+
+`scripts/toolchain/select-compiler-sdk-start-v2.py` stages an inactive read-only
+composition for the future dispatcher. It derives the original start context
+from the actual completion event, not the downloaded record. Before selecting
+an artifact it invokes the existing dispatcher identity and successful-start
+checks. It requires a complete bounded provider inventory with exactly one
+run-and-attempt-named transport, then independently binds its numeric artifact
+ID, provider digest, byte size and source identity. Downloads use only that
+numeric ID and a bounded fixed-host job-token transport. The closed ZIP reader
+returns captured record and bundle bytes; late event, provider and dispatcher
+readbacks must still agree before the callable returns.
+
+This selects byte transport, not an authenticated signed start. The caller must
+still run the strict signature, runtime, owning-job and candidate checks before
+claim upload, and later establish successful dispatcher completion and native
+entry. Actual job-token custody and the trusted runner event remain caller
+premises. No installed workflow invokes the selector, and mocked-provider tests
+do not establish genuine provider qualification, START-A5/A7 or publication.
 
 `scripts/toolchain/construct-compiler-sdk-start-v2.py` is an inactive unsigned
 record constructor. Its current supported start host is the fixed hosted
