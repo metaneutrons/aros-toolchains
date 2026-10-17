@@ -457,6 +457,32 @@ No installed workflow invokes this CLI,
 signs a dispatcher claim or dispatches native work through it. Offline fake
 provider/upload tests do not satisfy START-A5/A7 or genuine provider qualification.
 
+### Inactive signed-start verification after claim upload
+
+The public `compiler-sdk-release-start-v2.py::verify_start` interface remains
+pre-claim only: both candidate observations require an empty private draft.
+Construction and claim upload must continue using that interface; callers
+cannot choose a looser candidate mode through it.
+
+`verify-claimed-compiler-sdk-start-v2.py::verify_claimed_start` is a separate
+inactive, read-only wrapper for the future native entry. It requires independent
+record, signature and claim byte pins, original source/dispatcher selections,
+and a numeric claim asset ID. The claim must structurally join those exact
+bytes and contexts. The shared private signature/runtime core still checks
+the successful original start, owning job, frozen inputs and runtime twice.
+Its two closed post-claim observations require the exact private stable draft,
+annotated tag and exactly the selected uploaded claim asset. Each bounded
+fixed-host numeric GET must return the captured bytes, followed by fresh
+metadata checks. Mutable download counters do not replace the frozen selection.
+Local inputs and claim joins must remain unchanged before return.
+
+This authenticates the signed start in the selected-claim phase, not the claim
+signature, dispatcher completion, native run or exclusive consumption. Those
+gates remain mandatory before native fan-out. It performs no upload, dispatch,
+publication or workflow activation. Actual token custody, independent selectors
+and quiescent staging remain caller premises, not an ACL or sandbox guarantee.
+Mocked signature/provider controls do not satisfy genuine START-A5/A7 evidence.
+
 ### Closed start-archive byte reader
 
 `scripts/toolchain/compiler-sdk-start-artifact-v2.py` is an inactive local
