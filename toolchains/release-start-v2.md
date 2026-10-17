@@ -457,6 +457,22 @@ No installed workflow invokes this CLI,
 signs a dispatcher claim or dispatches native work through it. Offline fake
 provider/upload tests do not satisfy START-A5/A7 or genuine provider qualification.
 
+### Closed start-archive byte reader
+
+`scripts/toolchain/compiler-sdk-start-artifact-v2.py` is an inactive local
+reader for the sealed two-file ZIP transport. Its caller must supply the
+independently selected archive SHA-256 and byte size. It captures one owned,
+nonlinked regular archive, checks those pins, and reads only the fixed start
+record and signature-bundle filenames, bounded respectively to 128 KiB and
+8 MiB. It does not extract files or accept arbitrary archive members.
+
+These byte and archive-shape checks do not authenticate a signature, provider,
+owning job or independently selected artifact. The future cross-run selector,
+authenticated start reader and successful dispatcher/native-entry gates remain
+required. Staging must be caller-owned and quiescent; this reader is not an
+atomic concurrent-writer, ACL or sandbox boundary. No installed workflow calls
+it, and offline ZIP counterprobes are not START-A5/A7 or native qualification.
+
 `scripts/toolchain/construct-compiler-sdk-start-v2.py` is an inactive unsigned
 record constructor. Its current supported start host is the fixed hosted
 `ubuntu-24.04` Linux x64 job. It derives the original context from runner
