@@ -10,6 +10,7 @@ and durable exclusive consumption remain separate requirements.
 from __future__ import annotations
 
 import argparse
+from collections.abc import Callable
 from datetime import datetime, timezone
 import hashlib
 import importlib.util
@@ -256,10 +257,12 @@ def verify_runtime_evidence(record: dict, *, lock_path: Path, directory: Path,
         held.close()
 
 
-def verify_start(record_path: Path, bundle_path: Path, source_context: dict, *,
-                 runtime_lock: Path, runtime_directory: Path, runtime_interface: Path,
-                 runtime_host: str, expected_record_sha256: str | None = None,
-                 expected_bundle_sha256: str | None = None) -> dict:
+def _verify_start(record_path: Path, bundle_path: Path, source_context: dict, *,
+                  runtime_lock: Path, runtime_directory: Path, runtime_interface: Path,
+                  runtime_host: str, candidate_observer: Callable[[dict], None],
+                  expected_record_sha256: str | None = None,
+                  expected_bundle_sha256: str | None = None) -> dict:
+    """Internal shared signature/runtime core; closed wrappers own the phase."""
     require((expected_record_sha256 is None) == (expected_bundle_sha256 is None),
             "start byte selection requires both record and bundle digests")
     require(record_path.absolute() != bundle_path.absolute(),
@@ -318,16 +321,33 @@ def verify_start(record_path: Path, bundle_path: Path, source_context: dict, *,
     runtime_selection = {"lock_path": runtime_lock, "directory": runtime_directory,
                          "interface_path": runtime_interface, "host": runtime_host}
     verify_runtime_evidence(record, **runtime_selection)
-    observe_candidate(record)
+    candidate_observer(record)
     observe_start_run(context)
     require(source_job() == expected,
             "provider start job changed during authentication")
-    observe_candidate(record)
+    candidate_observer(record)
     verify_runtime_evidence(record, **runtime_selection)
     require(ADMISSION.read_regular_file(record_path, "signed start record", MAX_RECORD) == raw
             and ADMISSION.read_regular_file(bundle_path, "start signature bundle", MAX_BUNDLE) == bundle,
             "start record or signature changed during authentication")
     return record
+
+
+def verify_start(record_path: Path, bundle_path: Path, source_context: dict, *,
+                 runtime_lock: Path, runtime_directory: Path, runtime_interface: Path,
+                 runtime_host: str, expected_record_sha256: str | None = None,
+                 expected_bundle_sha256: str | None = None) -> dict:
+    """Authenticate the pre-claim start; its candidate must remain empty.
+
+    This public interface deliberately has no caller-selected candidate mode.
+    Construction and claim upload must keep using this empty-draft boundary.
+    """
+    return _verify_start(
+        record_path, bundle_path, source_context, runtime_lock=runtime_lock,
+        runtime_directory=runtime_directory, runtime_interface=runtime_interface,
+        runtime_host=runtime_host, candidate_observer=lambda record: observe_candidate(record),
+        expected_record_sha256=expected_record_sha256,
+        expected_bundle_sha256=expected_bundle_sha256)
 
 
 def main() -> int:
