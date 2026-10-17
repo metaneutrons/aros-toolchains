@@ -427,9 +427,35 @@ A partial
 pin selection, semantically identical but different raw bytes, changed identity
 or failed evidence gate rejects before upload. The caller must independently
 materialize the authentic published runtime in private, quiescent staging;
-this composition does not replace that publication-authentication gate. It has
-no CLI/workflow entry point, dispatches nothing and reports only authenticated
-claim-upload assurance, not native qualification or publication authority.
+this composition does not replace that publication-authentication gate. It
+reports only authenticated claim-upload assurance, not native qualification or
+publication authority.
+
+Its inactive CLI accepts separately selected source-context and record/bundle
+byte pins plus the authenticated runtime paths. It preflights two distinct,
+absent outputs in owned private, quiescent parent directories before provider
+work. Only a confirmed upload and numeric asset readback permit retention of
+the exact canonical uploaded claim, under its fixed subject basename, and a
+separate receipt. Input-byte checks and local output readbacks must also pass.
+This retained subject can be supplied to a future signer; retaining it is not
+a signature or proof of native authorization. The existing callable keeps its
+original receipt-only interface.
+
+The source-context selector must come from independently observed provider
+identity, not from the claim's own fields. Private parent checks are not an OS
+sandbox or an atomic defense against a concurrent same-user or privileged
+writer. A failure after upload can leave an uploaded asset or partial private
+outputs, including a complete canonical upload receipt. Callers must require
+exit status zero and ordinary successful-step gating: every output from a
+nonzero invocation is unusable, regardless of whether it is complete JSON.
+File presence is never retention-success evidence. Outputs are not automatically
+removed and must not trigger a mutation retry. The trusted caller must supply
+the actual job token; a nonempty `GH_TOKEN` alone does not establish its origin.
+Runtime evidence is verified after dispatcher identity and before upload, so
+an invalid runtime selector can cause provider reads but cannot permit upload.
+No installed workflow invokes this CLI,
+signs a dispatcher claim or dispatches native work through it. Offline fake
+provider/upload tests do not satisfy START-A5/A7 or genuine provider qualification.
 
 `scripts/toolchain/construct-compiler-sdk-start-v2.py` is an inactive unsigned
 record constructor. Its current supported start host is the fixed hosted
