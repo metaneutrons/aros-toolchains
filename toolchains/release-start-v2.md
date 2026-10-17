@@ -508,6 +508,32 @@ Those gates and genuine provider/signature qualification remain required.
 Independent caller selections, actual token custody and quiescent local
 staging remain premises, not an atomic snapshot or sandbox guarantee.
 
+### Inactive native execution identity
+
+`compiler-sdk-native-identity-v2.py::authenticate_native_execution` independently
+observes the actual executing native runner context, bounded dispatch event,
+OIDC-owned check and exact original in-progress provider job. Its caller must
+first authenticate the original claim and candidate; closed result dictionaries
+and their matching byte-digest joins do not themselves establish authenticity.
+The current four-limitation candidate projection is required without dropping
+its explicit missing-signed-binding boundary.
+
+The original native run must be distinct from the start and dispatcher and must
+execute the exact candidate commit at its selected tag ref. Prior candidate
+authentication checks the annotated tag; tag immutability still depends on
+separately authenticated governance, not this identity-only gate. Event metadata is
+not substituted for the OIDC workflow path/commit or provider event/attempt.
+The gate repeats attempt, latest-run, job, event bytes and runner-selection
+checks before returning an identity-only projection. The existing runner
+issuer/TLS boundary is not a standalone JWT signature verifier. Actual job-token
+custody, independent prior authentication and quiescent event staging remain
+trusted caller premises.
+
+No workflow calls this gate. It neither authenticates a signed dispatch-run
+binding nor establishes durable exclusive consumption, authorizes fan-out or
+qualifies a release. Fixture issuer/provider responses do not establish genuine
+native execution, START-A5/A7 or publication readiness.
+
 ### Closed start-archive byte reader
 
 `scripts/toolchain/compiler-sdk-start-artifact-v2.py` is an inactive local
