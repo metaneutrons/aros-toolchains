@@ -473,6 +473,26 @@ required. Staging must be caller-owned and quiescent; this reader is not an
 atomic concurrent-writer, ACL or sandbox boundary. No installed workflow calls
 it, and offline ZIP counterprobes are not START-A5/A7 or native qualification.
 
+### Independent start-transport selection
+
+`scripts/toolchain/select-compiler-sdk-start-v2.py` stages an inactive read-only
+composition for the future dispatcher. It derives the original start context
+from the actual completion event, not the downloaded record. Before selecting
+an artifact it invokes the existing dispatcher identity and successful-start
+checks. It requires a complete bounded provider inventory with exactly one
+run-and-attempt-named transport, then independently binds its numeric artifact
+ID, provider digest, byte size and source identity. Downloads use only that
+numeric ID and a bounded fixed-host job-token transport. The closed ZIP reader
+returns captured record and bundle bytes; late event, provider and dispatcher
+readbacks must still agree before the callable returns.
+
+This selects byte transport, not an authenticated signed start. The caller must
+still run the strict signature, runtime, owning-job and candidate checks before
+claim upload, and later establish successful dispatcher completion and native
+entry. Actual job-token custody and the trusted runner event remain caller
+premises. No installed workflow invokes the selector, and mocked-provider tests
+do not establish genuine provider qualification, START-A5/A7 or publication.
+
 `scripts/toolchain/construct-compiler-sdk-start-v2.py` is an inactive unsigned
 record constructor. Its current supported start host is the fixed hosted
 `ubuntu-24.04` Linux x64 job. It derives the original context from runner
