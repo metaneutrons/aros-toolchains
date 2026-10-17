@@ -167,6 +167,30 @@ existing candidates and ambiguous observations. Fixture tests establish adapter
 behavior only. Before production activation, require a real nonpublishing
 start/dispatch observation with authentic provider/signature evidence.
 
+### Inactive start transport retention
+
+`scripts/toolchain/seal-compiler-sdk-start-v2.py` copies selected record and
+signature-bundle bytes into a fresh private directory. It requires the fixed
+subject basename `compiler-sdk-release-start-v2.json` and an independently
+selected record SHA-256. It preserves that basename, retains the bundle as
+`compiler-sdk-release-start-v2.sigstore.json`, and enforces the reader's 128 KiB
+record and 8 MiB bundle limits. Owned, singly linked regular input files and
+nonlinked path components are checked before output creation; source identity
+and bytes and exclusive private output files are checked again afterward.
+
+This primitive neither signs nor verifies a signature. It does not authenticate
+the start, provider or published runtime, select cross-run artifact pins, upload
+an artifact or authorize a dispatch. No workflow calls it. The future caller
+must keep its owned private output parent quiescent, supply the independently
+captured digest and authenticate all original
+provider and signature boundaries. A late failure may leave partial private
+output: that output is unusable, must not be retried, and is not automatically
+removed. The first directory identity is observed after exclusive creation;
+these point-in-time checks do not atomically prove that identity against a
+concurrent same-user or privileged writer. They are not an OS sandbox and do
+not inspect ACLs. Local fixtures prove copying and rejection
+behavior only; START-A5 and START-A7 remain open.
+
 ## Integration dependencies and unresolved checks
 
 ### Pinned library observations
