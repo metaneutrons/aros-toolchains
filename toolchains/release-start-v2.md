@@ -180,8 +180,8 @@ and bytes and exclusive private output files are checked again afterward.
 
 This primitive neither signs nor verifies a signature. It does not authenticate
 the start, provider or published runtime, select cross-run artifact pins, upload
-an artifact or authorize a dispatch. No workflow calls it. The future caller
-must keep its owned private output parent quiescent, supply the independently
+an artifact or authorize a dispatch. No installed workflow calls it. The future
+caller must keep its owned private output parent quiescent, supply the independently
 captured digest and authenticate all original
 provider and signature boundaries. A late failure may leave partial private
 output: that output is unusable, must not be retried, and is not automatically
@@ -230,6 +230,27 @@ behavior or production qualification:
   binding check requires the admitted PR to remain pending. Label transition
   is not an alternative admission route.
 
+### Inactive protected-start template
+
+`toolchains/workflow-templates/compiler-sdk-release-start.yml` stages the future
+single-job caller outside `.github/workflows`; GitHub does not install it as a
+workflow there. It composes admission, committed draft-config validation,
+authenticated runtime/candidate creation, the pinned Release Please draft
+invocation, exact output binding, record construction, attestation and bounded
+transport retention. Its proposed artifact name is
+`compiler-sdk-release-start-v2-<run-id>-<attempt>` with a 90-day retention and
+only the sealed record/bundle directory as payload. Its concurrency group
+serializes invocations; it does not prove durable exclusive consumption.
+
+This is not an activated start or a provider observation. The template's static
+positive/counterprobes and syntax checks do not execute the action, establish
+environment protection or token scope, verify a published runtime, authenticate
+a start, upload evidence or dispatch native qualification. Installation at the
+reader's fixed workflow path requires separate authorization and genuine
+nonpublishing provider/signature qualification. The independently authenticated
+successful-start dispatcher, exclusive claim consumption and native entry
+integration remain separate requirements; START-A5 and START-A7 remain open.
+
 ### Remaining integration proof
 
 `scripts/toolchain/compiler-sdk-release-start-v2.py` is an inactive reader for
@@ -262,7 +283,15 @@ protected controller and a genuine provider observation.
 configuration from the committed `release-please-config.json`. It preserves the
 reviewed version strategy and sole root package, changes only the three draft
 settings above, and rejects conflicting package overrides or occupied output
-paths. This offline adapter is not admission or release authority. No workflow
+paths. It also requires the committed
+`toolchains/release-please-draft-config-v2.json` to match that derivation exactly;
+missing, stale or changed derived settings fail before output creation. The
+pinned action reads `config-file` from the repository through its GitHub client,
+not from a locally generated runner file. A future protected invocation must
+select that fixed repository path, not the adapter's private output path, and
+independently establish the actual consumed Git identity. The existing PR-only
+workflow still uses the original configuration. This offline adapter is not
+admission or release authority. No workflow
 invokes it for publication; the action's two explicit switches and all protected
 start gates still require integration and qualification.
 
