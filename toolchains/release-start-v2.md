@@ -594,6 +594,30 @@ for completion, dispatch or activate workflows. Supplied metadata is not its
 own authentication. Offline payload controls do not establish exclusive native
 consumption, genuine provider behavior, START-A5/A7 or publication readiness.
 
+### Inactive dispatch-binding signature reader
+
+`verify-compiler-sdk-dispatch-binding-v2.py::verify_binding_signature` captures
+independently pinned binding and signature bytes, validates the canonical codec
+joins and authenticates the original successful dispatcher and owning job.
+The fixed binding subject, exact dispatcher workflow/commit/main ref, original
+run invocation and byte digest must all match the verified signature. Private
+copies preserve the captured signing subject and bundle during verification.
+The original owner, local bytes and independently selected joins are checked
+again before a signature-only projection is returned.
+
+Its private codec instance shares the existing closed job-token/provider module
+graph. It does not loosen the claim verifier or reinterpret a claim signature
+as a signature over the distinct binding subject. The actual native context
+and event must already have been independently observed, never selected from
+the binding being checked. Original start, claim and candidate authenticity
+remain separate prerequisites, not claims established by structural joins.
+
+This reader does not select cross-run transport, wait for dispatcher completion,
+dispatch, establish durable single consumption, authorize fan-out or publish.
+No workflow calls it. Actual token custody and quiescent staging remain caller
+premises, not an atomic provider snapshot or OS sandbox. Fixture signature and
+provider responses do not establish genuine START-A5/A7 or native qualification.
+
 `scripts/toolchain/construct-compiler-sdk-start-v2.py` is an inactive unsigned
 record constructor. Its current supported start host is the fixed hosted
 `ubuntu-24.04` Linux x64 job. It derives the original context from runner
