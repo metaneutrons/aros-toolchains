@@ -470,6 +470,7 @@ python3 -B "$source_root/scripts/toolchain/tests/test-seal-compiler-sdk-start-v2
 python3 -B "$source_root/scripts/toolchain/tests/test-create-compiler-sdk-candidate-v2.py"
 python3 -B "$source_root/scripts/toolchain/tests/test-compiler-sdk-source-preflight-v2.py"
 python3 -B "$source_root/scripts/toolchain/tests/test-release-draft-config-v2.py"
+python3 -B "$source_root/scripts/toolchain/tests/test-protected-start-template-v2.py"
 python3 -B "$source_root/scripts/toolchain/tests/test-v2-runtime-interface.py"
 python3 -B "$source_root/scripts/toolchain/tests/test-prepare-recovery-request-v2.py"
 python3 -B "$source_root/scripts/toolchain/tests/test-audit-isolated-release-v2.py"

@@ -180,8 +180,8 @@ and bytes and exclusive private output files are checked again afterward.
 
 This primitive neither signs nor verifies a signature. It does not authenticate
 the start, provider or published runtime, select cross-run artifact pins, upload
-an artifact or authorize a dispatch. No workflow calls it. The future caller
-must keep its owned private output parent quiescent, supply the independently
+an artifact or authorize a dispatch. No installed workflow calls it. The future
+caller must keep its owned private output parent quiescent, supply the independently
 captured digest and authenticate all original
 provider and signature boundaries. A late failure may leave partial private
 output: that output is unusable, must not be retried, and is not automatically
@@ -229,6 +229,27 @@ behavior or production qualification:
   The protected invocation must set `skip-labeling: true`; its subsequent
   binding check requires the admitted PR to remain pending. Label transition
   is not an alternative admission route.
+
+### Inactive protected-start template
+
+`toolchains/workflow-templates/compiler-sdk-release-start.yml` stages the future
+single-job caller outside `.github/workflows`; GitHub does not install it as a
+workflow there. It composes admission, committed draft-config validation,
+authenticated runtime/candidate creation, the pinned Release Please draft
+invocation, exact output binding, record construction, attestation and bounded
+transport retention. Its proposed artifact name is
+`compiler-sdk-release-start-v2-<run-id>-<attempt>` with a 90-day retention and
+only the sealed record/bundle directory as payload. Its concurrency group
+serializes invocations; it does not prove durable exclusive consumption.
+
+This is not an activated start or a provider observation. The template's static
+positive/counterprobes and syntax checks do not execute the action, establish
+environment protection or token scope, verify a published runtime, authenticate
+a start, upload evidence or dispatch native qualification. Installation at the
+reader's fixed workflow path requires separate authorization and genuine
+nonpublishing provider/signature qualification. The independently authenticated
+successful-start dispatcher, exclusive claim consumption and native entry
+integration remain separate requirements; START-A5 and START-A7 remain open.
 
 ### Remaining integration proof
 
