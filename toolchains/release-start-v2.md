@@ -483,6 +483,31 @@ publication or workflow activation. Actual token custody, independent selectors
 and quiescent staging remain caller premises, not an ACL or sandbox guarantee.
 Mocked signature/provider controls do not satisfy genuine START-A5/A7 evidence.
 
+### Inactive two-signature candidate authentication
+
+`authenticate-compiler-sdk-native-candidate-v2.py::authenticate_candidate`
+composes the original dispatcher claim-signature verifier with the closed
+post-claim signed-start reader above. It independently selects and pins all
+four bounded inputs: start record, start signature, claim and claim signature.
+Those paths and the runtime evidence paths must be separate. The start must
+retain its canonical encoding, and the claim must join the independently
+selected source/dispatcher contexts, owning job and exact start bytes.
+
+Both existing verifiers execute; a structurally valid claim or a supplied
+result dictionary cannot replace them. The original successful dispatcher and
+claim signature are checked again after the start/runtime/provider pass.
+All four local inputs and their claim joins must remain unchanged before the
+closed candidate-only projection is returned. Numeric claim-byte readbacks
+remain the responsibility of the post-claim reader, not a second
+metadata-only observer.
+
+No workflow invokes this component. The result does not authenticate the
+actual native event/OIDC identity or signed native-run binding, establish
+exclusive consumption, authorize fan-out or publication, or qualify a release.
+Those gates and genuine provider/signature qualification remain required.
+Independent caller selections, actual token custody and quiescent local
+staging remain premises, not an atomic snapshot or sandbox guarantee.
+
 ### Closed start-archive byte reader
 
 `scripts/toolchain/compiler-sdk-start-artifact-v2.py` is an inactive local

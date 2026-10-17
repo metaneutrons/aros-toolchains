@@ -468,6 +468,7 @@ python3 -B "$source_root/scripts/toolchain/tests/test-compiler-sdk-claim-upload-
 python3 -B "$source_root/scripts/toolchain/tests/test-compiler-sdk-dispatcher-auth-v2.py"
 python3 -B "$source_root/scripts/toolchain/tests/test-compiler-sdk-authenticated-claim-v2.py"
 python3 -B "$source_root/scripts/toolchain/tests/test-verify-claimed-compiler-sdk-start-v2.py"
+python3 -B "$source_root/scripts/toolchain/tests/test-authenticate-compiler-sdk-native-candidate-v2.py"
 python3 -B "$source_root/scripts/toolchain/tests/test-authenticated-claim-cli-v2.py"
 python3 -B "$source_root/scripts/toolchain/tests/test-construct-compiler-sdk-start-v2.py"
 python3 -B "$source_root/scripts/toolchain/tests/test-seal-compiler-sdk-start-v2.py"
