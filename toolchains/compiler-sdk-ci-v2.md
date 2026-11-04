@@ -38,7 +38,8 @@ contracts remain owned by AROS-NX.
    required compiler runtime paths use `lib/clang/23.1.0`. The tools commit is
    the `aros-tools` 0.6.11 release commit; the producer contract digest is
    unchanged from the earlier pin. The source selects Chromium Zlib `2b1b62fe`
-   and Mesa 26.2.5, whose seeds this preflight does not yet admit. No new
+   (repository seed `chromium-zlib-2b1b62fe.tar.gz`), Mesa 26.2.5 and libpng
+   1.6.59; the SDK ports lock and the preflight roles follow. No new
    diagnostic run is automatically authorized by updating this pin.
 3. Fetch and verify compiler, compatibility and Python sources once. Prepare
    each selected host's Cargo generation with that host's exact native Cargo,
