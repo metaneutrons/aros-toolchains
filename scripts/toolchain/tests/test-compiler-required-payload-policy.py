@@ -64,8 +64,8 @@ def check_contract(policy):
         if ("bin/collect-aros32" in paths) != (name == "pc-x86_64"):
             raise ValueError("LLVM multilib collector policy differs")
     pc = set(groups["llvm"]["profiles"]["pc-x86_64"])
-    if not {"lib/clang/11.0.0/lib/aros/libclang_rt.builtins-i386.a",
-            "lib/clang/11.0.0/lib/aros/libclang_rt.builtins-x86_64.a"} <= pc:
+    if not {"lib/clang/23.1.0/lib/aros/libclang_rt.builtins-i386.a",
+            "lib/clang/23.1.0/lib/aros/libclang_rt.builtins-x86_64.a"} <= pc:
         raise ValueError("PC multilib runtime policy is incomplete")
 
 

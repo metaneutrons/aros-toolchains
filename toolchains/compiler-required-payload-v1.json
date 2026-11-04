@@ -4,7 +4,7 @@
     {
       "group_id": "gnu-rv32",
       "source_lock_sha256": "ced11b5c510c89a05fe3863be812f211362c08d550a8acdd46b6942b92c38c0b",
-      "profiles_sha256": "3472a45544fed12f1d4733460ac05b4a4464cea56c102939fad21ae06b3cf2b6",
+      "profiles_sha256": "75bc2c0dfcbe52177bd681dd3183c8a285b9af2e2c7516fc0c43540ca79c32f9",
       "profiles": {
         "rv32-esp32p4": [
           "aros-collector-tools.json",
@@ -39,8 +39,8 @@
     },
     {
       "group_id": "llvm",
-      "source_lock_sha256": "0c2582ca9933d3c5b153aea2ab146d379a377fe9afffa8586b86985797a8a2cc",
-      "profiles_sha256": "1e4fc4e05890b5a0351ba2ce4f0f8af24cdbd917d7537633123c71619fc89722",
+      "source_lock_sha256": "d55dbdff4b0d45bfa7704cd0710272665cf21a9b3f873d13779bef98ebbb133d",
+      "profiles_sha256": "4e484f480ad03d5b3f719ab02e511730f028a97eced991bf2b82dc0fb88697cd",
       "profiles": {
         "pc-x86_64": [
           "bin/aros-collect",
@@ -65,8 +65,8 @@
           "include/c++/v1/string",
           "include/c++/v1/system_error",
           "include/c++/v1/vector",
-          "lib/clang/11.0.0/lib/aros/libclang_rt.builtins-i386.a",
-          "lib/clang/11.0.0/lib/aros/libclang_rt.builtins-x86_64.a",
+          "lib/clang/23.1.0/lib/aros/libclang_rt.builtins-i386.a",
+          "lib/clang/23.1.0/lib/aros/libclang_rt.builtins-x86_64.a",
           "lib/libc++.a",
           "lib/libc++abi.a",
           "lib/libunwind.a",
@@ -94,7 +94,7 @@
           "include/c++/v1/string",
           "include/c++/v1/system_error",
           "include/c++/v1/vector",
-          "lib/clang/11.0.0/lib/aros/libclang_rt.builtins-armhf.a",
+          "lib/clang/23.1.0/lib/aros/libclang_rt.builtins-armhf.a",
           "lib/libc++.a",
           "lib/libc++abi.a",
           "lib/libunwind.a",
@@ -122,7 +122,7 @@
           "include/c++/v1/string",
           "include/c++/v1/system_error",
           "include/c++/v1/vector",
-          "lib/clang/11.0.0/lib/aros/libclang_rt.builtins-aarch64.a",
+          "lib/clang/23.1.0/lib/aros/libclang_rt.builtins-aarch64.a",
           "lib/libc++.a",
           "lib/libc++abi.a",
           "lib/libunwind.a",

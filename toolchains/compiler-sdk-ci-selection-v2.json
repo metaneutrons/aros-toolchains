@@ -1,7 +1,7 @@
 {
   "schema": "aros-compiler-sdk-ci-selection-v2",
-  "source_commit": "eb4b922c9636f94c29f0034780fa8e282270af1a",
-  "tools_commit": "8fe5dfc9e5689d7165f71c2b55a17abd0e2f04a0",
+  "source_commit": "60ecfd21b444632597b32ae9b9dde5efce54db10",
+  "tools_commit": "a5bffa8d38db7c9bb2759dd79ec770ec375565f0",
   "groups": [
     {
       "id": "gnu-rv32",
@@ -11,7 +11,7 @@
     },
     {
       "id": "llvm",
-      "source_lock": "toolchains/llvm-11.0.0.sources.json",
+      "source_lock": "toolchains/llvm-23.1.0.sources.json",
       "profiles": "toolchains/profiles-sdk-llvm-v2.json",
       "ports_lock": "toolchains/compatibility-ports-sdk-v3.json"
     }
@@ -20,7 +20,7 @@
     {
       "id": "arm-raspi",
       "version": "0.1.0",
-      "source_date_epoch": 1791810157,
+      "source_date_epoch": 1793833756,
       "source_preset": "arm-raspi",
       "compiler_profiles": [
         {
@@ -32,7 +32,7 @@
     {
       "id": "pc-x86_64",
       "version": "0.1.0",
-      "source_date_epoch": 1791810157,
+      "source_date_epoch": 1793833756,
       "source_preset": "pc-x86_64",
       "compiler_profiles": [
         {
@@ -44,7 +44,7 @@
     {
       "id": "rpi-aarch64",
       "version": "0.1.0",
-      "source_date_epoch": 1791810157,
+      "source_date_epoch": 1793833756,
       "source_preset": "rpi-aarch64",
       "compiler_profiles": [
         {
@@ -56,7 +56,7 @@
     {
       "id": "rv32-esp32p4",
       "version": "0.1.0",
-      "source_date_epoch": 1791810157,
+      "source_date_epoch": 1793833756,
       "source_preset": "esp32p4-riscv-gnu",
       "compiler_profiles": [
         {

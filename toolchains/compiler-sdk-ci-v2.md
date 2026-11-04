@@ -30,16 +30,16 @@ contracts remain owned by AROS-NX.
    object against its selected source lock. Child configuration homes are private. Bounded step logs
    and a source-only report survive failures. These checks do not replace
    AROS-NX's required product CI or qualify SDK generation.
-   Diagnostic source `eb4b922c9636f94c29f0034780fa8e282270af1a` preserves the
-   earlier `abf4ad848e0bf336eb4e37b223e33b81c3d310da` SDK integration chain,
-   replays only the checked Mesa-cache and Darwin GNU-Make fixes, and refreshes
-   the derived `configure.in` input seals in all four SDK contracts. It is not a claim that the
-   entire source integration chain has passed protected-main product CI.
-   It additionally admits the checked Buildroot HTTPS mirror after the canonical
-   Mesa origin, with identical locked bytes. This addresses the observed
-   intermittent primary transport without claiming to reconstruct the discarded
-   lower-level error from an earlier diagnostic. No new diagnostic run is
-   automatically authorized by updating this pin.
+   Diagnostic source `60ecfd21b444632597b32ae9b9dde5efce54db10` is the head of
+   AROS-NX pull request 120, which selects LLVM 23.1.0 for the native SDKs,
+   seals the ESP32-P4 contracts for it and pins `aros-tools` 0.6.11. It is not a
+   claim that this head has passed protected-main product CI. The `llvm` group
+   now locks the LLVM 23.1.0 monorepo archive with its six AROS patches, so its
+   required compiler runtime paths use `lib/clang/23.1.0`. The tools commit is
+   the `aros-tools` 0.6.11 release commit; the producer contract digest is
+   unchanged from the earlier pin. The source selects Chromium Zlib `2b1b62fe`
+   and Mesa 26.2.5, whose seeds this preflight does not yet admit. No new
+   diagnostic run is automatically authorized by updating this pin.
 3. Fetch and verify compiler, compatibility and Python sources once. Prepare
    each selected host's Cargo generation with that host's exact native Cargo,
    repeat its fetch offline, and verify it before fan-out. Cargo executable
