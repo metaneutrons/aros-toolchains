@@ -30,7 +30,8 @@ contracts remain owned by AROS-NX.
    object against its selected source lock. Child configuration homes are private. Bounded step logs
    and a source-only report survive failures. These checks do not replace
    AROS-NX's required product CI or qualify SDK generation.
-   Diagnostic source `28c8f0b09ffcbbce94278fabf4d3ecbe14ccfe44` is the head of
+   Diagnostic source `79fe4d8fc8ebf067110bb9993574356a8157d24a` contains the
+   SDK admission fixes found by the Linux qualification of
    AROS-NX pull request 120, which selects LLVM 23.1.0 for the native SDKs,
    seals the ESP32-P4 contracts for it and pins `aros-tools` 0.6.11. It is not a
    claim that this head has passed protected-main product CI. The `llvm` group
