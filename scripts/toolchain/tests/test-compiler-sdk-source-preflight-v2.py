@@ -46,10 +46,10 @@ class SourcePreflightFixture:
             "machine github.com login fixture password fixture-secret-netrc\n", encoding="utf-8"
         )
         (self.host_home / ".credentials").write_text("fixture-secret-credential-store\n", encoding="utf-8")
-        self.seed = root / "chromium-zlib-da752eb2.tar.gz"
+        self.seed = root / "chromium-zlib-2b1b62fe.tar.gz"
         self.seed.write_bytes(SOURCE_SEED)
         self.seed_sha256 = hashlib.sha256(SOURCE_SEED).hexdigest()
-        self.mesa_seed = root / "mesa-26.0.0.tar.xz"
+        self.mesa_seed = root / "mesa-26.2.5.tar.xz"
         self.mesa_seed.write_bytes(MESA_SOURCE_SEED)
         self.mesa_seed_sha256 = hashlib.sha256(MESA_SOURCE_SEED).hexdigest()
         self.aros = root / "runtime" / "bin" / "aros"
@@ -86,7 +86,7 @@ class SourcePreflightFixture:
         corrupt_export: bool,
     ) -> None:
         zlib_entry = {
-            "role": "product:chromium-zlib@da752eb2a3660cf1bf8dac620f6380b89dd953a7",
+            "role": "product:chromium-zlib@2b1b62fed03e8b8a64ea39a96d5cc74cd10e2429",
             "filename": "zlib.tar.gz",
             "candidates": [{"url": "https://example.invalid/locked-zlib.tar.gz"}],
             "representation": "archive",
@@ -94,8 +94,8 @@ class SourcePreflightFixture:
             "integrity": {"kind": "locked", "sha256": self.seed_sha256, "size": len(SOURCE_SEED)},
         }
         mesa_entry = {
-            "role": "product:mesa@26.0.0",
-            "filename": "mesa-26.0.0.tar.xz",
+            "role": "product:mesa@26.2.5",
+            "filename": "mesa-26.2.5.tar.xz",
             "candidates": [{"url": "https://example.invalid/locked-mesa.tar.xz"}],
             "representation": "archive",
             "normalization": "exact-bytes-v1",
@@ -123,7 +123,7 @@ class SourcePreflightFixture:
         }
         staging_entries = [
             {
-                "role": "product:chromium-zlib@da752eb2a3660cf1bf8dac620f6380b89dd953a7",
+                "role": "product:chromium-zlib@2b1b62fed03e8b8a64ea39a96d5cc74cd10e2429",
                 "destination": "portssources/zlib.tar.gz",
                 "source_guard": {"path": "scripts/ci/source-guard.txt", "line": "locked-source-fixture"},
             }
@@ -131,8 +131,8 @@ class SourcePreflightFixture:
         if two_product_sources:
             staging_entries.append(
                 {
-                    "role": "product:mesa@26.0.0",
-                    "destination": "portssources/mesa-26.0.0.tar.xz",
+                    "role": "product:mesa@26.2.5",
+                    "destination": "portssources/mesa-26.2.5.tar.xz",
                     "source_guard": {"path": "scripts/ci/source-guard.txt", "line": "locked-source-fixture"},
                 }
             )
@@ -278,7 +278,7 @@ else:
         if corrupt_export:
             locked_sources = locked_sources.replace(
                 "        # EXPORT_CORRUPTION_HOOK\n",
-                "        if entry['role'] == 'product:mesa@26.0.0':\n"
+                "        if entry['role'] == 'product:mesa@26.2.5':\n"
                 "            (output / entry['filename']).write_bytes(b'corrupted export')\n",
             )
         self._write("scripts/ci/locked_product_sources.py", locked_sources)
@@ -370,8 +370,8 @@ done
 if [ "$plan" = "" ] || [ "$cache" = "" ]; then exit 53; fi
 if [ "$operation" = fetch ] && [ "$offline" != yes ]; then exit 54; fi
 cmp "$cache/zlib.tar.gz" {shlex.quote(str(self.seed))}
-if [ -e "$cache/mesa-26.0.0.tar.xz" ]; then
-  cmp "$cache/mesa-26.0.0.tar.xz" {shlex.quote(str(self.mesa_seed))}
+if [ -e "$cache/mesa-26.2.5.tar.xz" ]; then
+  cmp "$cache/mesa-26.2.5.tar.xz" {shlex.quote(str(self.mesa_seed))}
 fi
 if [ "$operation" != fetch ] && [ "$operation" != verify ]; then exit 55; fi
 '''
@@ -578,26 +578,26 @@ class SourcePreflightTests(unittest.TestCase):
         self.assertEqual(product_source["fetch_mode"], "offline-cache-hit")
         self.assertEqual(
             product_source["cache_seed"]["role"],
-            "product:chromium-zlib@da752eb2a3660cf1bf8dac620f6380b89dd953a7",
+            "product:chromium-zlib@2b1b62fed03e8b8a64ea39a96d5cc74cd10e2429",
         )
         self.assertEqual(
             {item["role"]: (item["sha256"], item["size"]) for item in product_source["cache_seeds"]},
             {
-                "product:chromium-zlib@da752eb2a3660cf1bf8dac620f6380b89dd953a7": (
+                "product:chromium-zlib@2b1b62fed03e8b8a64ea39a96d5cc74cd10e2429": (
                     fixture.seed_sha256,
                     len(SOURCE_SEED),
                 ),
-                "product:mesa@26.0.0": (fixture.mesa_seed_sha256, len(MESA_SOURCE_SEED)),
+                "product:mesa@26.2.5": (fixture.mesa_seed_sha256, len(MESA_SOURCE_SEED)),
             },
         )
         self.assertEqual(
             {item["role"]: (item["sha256"], item["size"]) for item in product_source["exports"]},
             {
-                "product:chromium-zlib@da752eb2a3660cf1bf8dac620f6380b89dd953a7": (
+                "product:chromium-zlib@2b1b62fed03e8b8a64ea39a96d5cc74cd10e2429": (
                     fixture.seed_sha256,
                     len(SOURCE_SEED),
                 ),
-                "product:mesa@26.0.0": (fixture.mesa_seed_sha256, len(MESA_SOURCE_SEED)),
+                "product:mesa@26.2.5": (fixture.mesa_seed_sha256, len(MESA_SOURCE_SEED)),
             },
         )
         self.assertEqual(product_source["export_sha256"], fixture.seed_sha256)
@@ -607,11 +607,11 @@ class SourcePreflightTests(unittest.TestCase):
             SOURCE_SEED,
         )
         self.assertEqual(
-            (fixture.output / "product-source-cache/mesa-26.0.0.tar.xz").read_bytes(),
+            (fixture.output / "product-source-cache/mesa-26.2.5.tar.xz").read_bytes(),
             MESA_SOURCE_SEED,
         )
         self.assertEqual(
-            (fixture.output / "product-source-export/mesa-26.0.0.tar.xz").read_bytes(),
+            (fixture.output / "product-source-export/mesa-26.2.5.tar.xz").read_bytes(),
             MESA_SOURCE_SEED,
         )
         calls = fixture.aros_log.read_text(encoding="utf-8").splitlines()

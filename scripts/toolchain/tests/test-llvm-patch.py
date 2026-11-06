@@ -16,7 +16,7 @@ if "AROS_TEST_SOURCE_ROOT" not in os.environ:
     raise SystemExit("AROS_TEST_SOURCE_ROOT must name the AROS source checkout")
 SOURCE_ROOT = Path(os.environ["AROS_TEST_SOURCE_ROOT"]).resolve()
 PATCH = SOURCE_ROOT / "tools" / "crosstools" / "llvm" / "llvm-11.0.0.src-aros.diff"
-EXPECTED_PATCH_SHA256 = "cc7876734c45eea469056ea4cb7fdf61a62316f677d94f25aab8b9cd9d6b595e"
+EXPECTED_PATCH_SHA256 = "2ac61ac5878f00c5c8b4a178d306c0e514b6ffb9e90f28e9d82cb5059e8168a8"
 FIXTURE_PATHS = frozenset(
     {
         "include/llvm/ADT/Triple.h",

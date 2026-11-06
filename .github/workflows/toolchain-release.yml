@@ -57,7 +57,7 @@ env:
   LLVM_VERSION: 11.0.0
   PYTHONHASHSEED: "0"
   AROS_SOURCE_REPOSITORY: metaneutrons/AROS-NX
-  AROS_SOURCE_COMMIT: 15230bef9d23e12cd9d4cca62253c4b62276e8ff
+  AROS_SOURCE_COMMIT: 79fe4d8fc8ebf067110bb9993574356a8157d24a
   TOOLS_RUNTIME_LOCK: toolchains/aros-tools-runtime-v1.json
 
 jobs:
@@ -162,7 +162,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -m 700 "$RUNNER_TEMP/diagnostic-source-seed-cache" "$RUNNER_TEMP/diagnostic-source-seed-logs"
-          cp "$GITHUB_WORKSPACE/toolchains/source-seeds/chromium-zlib-da752eb2.tar.gz" \
+          cp "$GITHUB_WORKSPACE/toolchains/source-seeds/chromium-zlib-2b1b62fe.tar.gz" \
             "$RUNNER_TEMP/diagnostic-source-seed-cache/zlib.tar.gz"
           timeout --signal=KILL 180s "${{ steps.runtime.outputs.root }}/bin/aros" cache sources fetch \
             --source-fetch-plan "$GITHUB_WORKSPACE/dependencies/aros/scripts/ci/product-sources.plan.json" \
@@ -186,8 +186,8 @@ jobs:
             --source-dir "$GITHUB_WORKSPACE/dependencies/aros" \
             --expected-commit "$SELECTED_SOURCE_COMMIT" \
             --aros "${{ steps.runtime.outputs.root }}/bin/aros" --aros-sha256 "$aros_sha" \
-            --product-source-seed "$GITHUB_WORKSPACE/toolchains/source-seeds/chromium-zlib-da752eb2.tar.gz" \
-            --mesa-source-seed "$RUNNER_TEMP/diagnostic-source-seed-cache/mesa-26.0.0.tar.xz" \
+            --product-source-seed "$GITHUB_WORKSPACE/toolchains/source-seeds/chromium-zlib-2b1b62fe.tar.gz" \
+            --mesa-source-seed "$RUNNER_TEMP/diagnostic-source-seed-cache/mesa-26.2.5.tar.xz" \
             --output-dir "$RUNNER_TEMP/diagnostic-source-preflight"
       - name: Retain bounded source preflight evidence including failures
         if: always() && steps.product_source_seeds.outcome != 'skipped'
@@ -343,7 +343,7 @@ jobs:
           done < <(jq -r '.groups[].source_lock' "$producer/toolchains/compiler-sdk-ci-selection-v2.json")
           while IFS= read -r lock; do
             bash scripts/toolchain/seed-compatibility-zlib.sh "$producer/$lock" "$cache" \
-              "$producer/toolchains/source-seeds/chromium-zlib-da752eb2.tar.gz"
+              "$producer/toolchains/source-seeds/chromium-zlib-2b1b62fe.tar.gz"
             for attempt in 1 2 3; do
               if "$aros" cache sources fetch --compatibility-ports-lock "$producer/$lock" --dir "$cache"; then break; fi
               [[ "$attempt" != 3 ]] || exit 1

@@ -221,16 +221,26 @@ def _read_catalog(root: Path, hosts: dict[str, str], producer_commit: str,
             f"diagnostic-v2-cargo-identity-{host}" for host in hosts
         }
         root_names_before = set(os.listdir(root_fd))
-        _require(root_names_before == expected_directories,
+        # actions/download-artifact extracts a lone matching artifact directly
+        # into the destination instead of a per-artifact directory. Exactly one
+        # selected host therefore arrives as `<host>.json`; several hosts always
+        # arrive as one directory each. Either shape is closed, never a mixture.
+        flat_single_host = (
+            len(hosts) == 1 and root_names_before == {f"{next(iter(hosts))}.json"}
+        )
+        _require(flat_single_host or root_names_before == expected_directories,
                  "identity root contains missing or unexpected host artifacts")
 
         catalog: dict[str, str] = {}
         directory_fingerprints: dict[str, tuple[int, ...]] = {}
         for host in sorted(hosts):
             directory_name = f"diagnostic-v2-cargo-identity-{host}"
-            host_fd, directory_fingerprints[directory_name] = _directory_at(
-                root_fd, directory_name, f"{host} identity artifact directory"
-            )
+            if flat_single_host:
+                host_fd = os.dup(root_fd)
+            else:
+                host_fd, directory_fingerprints[directory_name] = _directory_at(
+                    root_fd, directory_name, f"{host} identity artifact directory"
+                )
             try:
                 expected_file = f"{host}.json"
                 _require(set(os.listdir(host_fd)) == {expected_file},

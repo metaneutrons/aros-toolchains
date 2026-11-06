@@ -9,7 +9,7 @@ fi
 lock=$1
 cache_dir=$2
 seed=$3
-entry=$(jq -ce '[.inputs[] | select(.id == "chromium-zlib-da752eb2")] | if length == 1 then .[0] else error("expected exactly one Chromium zlib input") end' "$lock")
+entry=$(jq -ce '[.inputs[] | select(.id | startswith("chromium-zlib-"))] | if length == 1 then .[0] else error("expected exactly one Chromium zlib input") end' "$lock")
 filename=$(jq -er '.cache_filename' <<< "$entry")
 expected_sha=$(jq -er '.sha256' <<< "$entry")
 expected_size=$(jq -er '.size' <<< "$entry")
