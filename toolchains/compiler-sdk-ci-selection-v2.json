@@ -1,6 +1,6 @@
 {
   "schema": "aros-compiler-sdk-ci-selection-v2",
-  "source_commit": "79fe4d8fc8ebf067110bb9993574356a8157d24a",
+  "source_commit": "3f135a25cadfef52644fd51b85b30fc2ec42a823",
   "tools_commit": "684617258f32334aaf65475498afa782bb7c60c7",
   "groups": [
     {
@@ -20,7 +20,7 @@
     {
       "id": "arm-raspi",
       "version": "0.1.0",
-      "source_date_epoch": 1793962233,
+      "source_date_epoch": 1794065212,
       "source_preset": "arm-raspi",
       "compiler_profiles": [
         {
@@ -32,7 +32,7 @@
     {
       "id": "pc-x86_64",
       "version": "0.1.0",
-      "source_date_epoch": 1793962233,
+      "source_date_epoch": 1794065212,
       "source_preset": "pc-x86_64",
       "compiler_profiles": [
         {
@@ -44,7 +44,7 @@
     {
       "id": "rpi-aarch64",
       "version": "0.1.0",
-      "source_date_epoch": 1793962233,
+      "source_date_epoch": 1794065212,
       "source_preset": "rpi-aarch64",
       "compiler_profiles": [
         {
@@ -56,7 +56,7 @@
     {
       "id": "rv32-esp32p4",
       "version": "0.1.0",
-      "source_date_epoch": 1793962233,
+      "source_date_epoch": 1794065212,
       "source_preset": "esp32p4-riscv-gnu",
       "compiler_profiles": [
         {
