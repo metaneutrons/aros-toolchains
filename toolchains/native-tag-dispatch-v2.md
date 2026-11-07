@@ -17,8 +17,10 @@ Observed in `.github/workflows/toolchain-release.yml` and
 - `authenticate_tag` proves that the tag is annotated, named like the committed
   Release Please version, peels to the event commit, matches the remote tag
   object, lies in protected `main` history and, as the last gate, that
-  `releases/tags/<tag>` answers HTTP 404. A private draft created by the start
-  would answer 200 and fail this gate.
+  `releases/tags/<tag>` answers HTTP 404. GitHub's lookup by tag does not return
+  draft releases, so this gate proves only that no public release exists and a
+  private draft created by the start does not trip it (documented provider
+  behavior, not yet observed on this repository). It cannot prove the draft.
 - Four steps (complete qualification record, its signature and two follow-ups)
   and the legacy jobs `plan` and `draft-release` key on `github.event_name ==
   'push'`.
@@ -40,13 +42,15 @@ Observed in `.github/workflows/toolchain-release.yml` and
   `release-v2` on a branch ref.
 
 **Selector.** A third branch in `select()` for `workflow_dispatch` with
-`ref_type == tag` and `mode == release-v2`. It runs the existing tag checks and
-returns the same outputs as the `push` route (`runtime_kind=released`,
-`full_matrix=true`, `tag_object`, `tag_epoch`, `release_id`) plus an explicit
-`route=tag`. Only the absence gate changes: instead of "no release for this tag"
-it requires exactly one release for the tag, `draft: true`, private, with the
-numeric ID the signed start recorded and with only the uploaded claim asset.
-Anything else, including an HTTP error or a public release, fails closed.
+`ref_type == tag` and `mode == release-v2`. It runs the existing tag checks,
+including the public-release absence gate, unchanged, and returns the same
+outputs as the `push` route (`runtime_kind=released`, `full_matrix=true`,
+`tag_object`, `tag_epoch`, `release_id`) plus an explicit `route=tag` (and
+`route=diagnostic` for branch dispatches). The selector does not look at the
+draft: it needs no new provider access and cannot see a draft with a read-scoped
+token anyway. The private draft, its numeric ID from the signed start and its
+sole claim asset are established by the candidate authentication below, which
+already observes them with the job token.
 
 **Authentication before fan-out.** Before any source checkout or runtime
 materialization, `v2-prepare` authenticates the dispatch in this order:
@@ -85,8 +89,9 @@ build runs:
 | tag ref with `mode` `produce`, `recover`, a diagnostic mode or empty | rejected |
 | `scope` other than `full`, or a non-empty `diagnostic_group` | rejected |
 | lightweight tag, tag outside `main`, tag differing from the committed version | rejected (existing gates) |
-| no release, public release, or draft with a different numeric ID | rejected |
-| draft with assets besides the claim, or two claim assets | rejected |
+| public release for the tag | rejected by the selector (existing gate) |
+| draft with a different numeric ID than the signed start | rejected by candidate authentication |
+| draft with assets besides the claim, or two claim assets | rejected by candidate authentication |
 | run attempt greater than 1 | rejected |
 | binding for another native run, claim for another start, swapped signature | rejected by the binding and candidate gates |
 | dispatch from an actor or workflow other than the authenticated dispatcher | rejected |
