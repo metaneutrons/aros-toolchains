@@ -585,12 +585,23 @@ def validate_v2_policy(documents: Documents) -> dict[str, int]:
         "V2 must authenticate one closed route before source checkout or runtime materialization",
     )
     documents.read(ROUTE)
-    push_route = route_script.split('if args.event == "push":', 1)[1].split("\n    else:", 1)[0]
-    manual_route = route_script.split("\n    else:", 1)[1].split("\n    return outputs", 1)[0]
+    selection_text = route_script.split("def select(args):", 1)[1]
+    push_route = selection_text.split('if args.event == "push":', 1)[1].split("\n    elif ", 1)[0]
+    dispatch_route = selection_text.split("\n    elif ", 1)[1].split("\n    else:", 1)[0]
+    manual_route = selection_text.split("\n    else:", 1)[1].split("\n    return outputs", 1)[0]
     require(
         "authenticate_tag(args, selection[\"tools_commit\"])" in push_route
         and 'runtime_kind="released"' in push_route
         and 'full_matrix="true"' in push_route
+        and 'route="tag"' in push_route
+        and 'args.event == "workflow_dispatch" and args.ref_type == "tag"' in dispatch_route
+        and "authenticate_tag(args, selection[\"tools_commit\"])" in dispatch_route
+        and 'runtime_kind="released"' in dispatch_route
+        and 'full_matrix="true"' in dispatch_route
+        and 'route="tag"' in dispatch_route
+        and 'TAG_DISPATCH_MODE = "release-v2"' in route_script
+        and 'args.mode == TAG_DISPATCH_MODE and args.scope == "full" and args.group == ""' in route_script
+        and 'route="diagnostic"' in manual_route
         and 'runtime_kind="development"' in manual_route
         and 'full_matrix=str(full).lower()' in manual_route
         and 'release_id=f"toolchain-dev-{args.producer_commit[:12]}"' in manual_route
