@@ -264,6 +264,7 @@ class CompilerSdkRouteTests(unittest.TestCase):
         expected_keys = {
             "source_commit", "tools_commit", "release_id", "prerelease", "tag_object",
             "tag_epoch", "event", "scope", "full_qualification", "runtime_kind", "full_matrix",
+            "route",
         }
         self.assertEqual(self.fixture.run().returncode, 0)
         stable = self.fixture.outputs()
@@ -280,6 +281,7 @@ class CompilerSdkRouteTests(unittest.TestCase):
             "full_qualification": "false",
             "runtime_kind": "released",
             "full_matrix": "true",
+            "route": "tag",
         })
         self.assertEqual(len(self.fixture.gh_calls()), 5)
         self.assertTrue(self.fixture.gh_calls()[2][-1].endswith("/branches/main"))
@@ -302,6 +304,7 @@ class CompilerSdkRouteTests(unittest.TestCase):
                 "full_qualification": "false",
                 "runtime_kind": "released",
                 "full_matrix": "true",
+                "route": "tag",
             })
             self.assertEqual(len(rc.gh_calls()), 5)
         finally:
@@ -318,6 +321,7 @@ class CompilerSdkRouteTests(unittest.TestCase):
         self.assertEqual(small_result.returncode, 0, small_result.stderr)
         small = self.fixture.outputs()
         self.assertEqual(small["runtime_kind"], "development")
+        self.assertEqual(small["route"], "diagnostic")
         self.assertEqual(small["full_qualification"], "false")
         self.assertEqual(small["full_matrix"], "false")
         self.assertEqual(small["scope"], "linux-x86_64")
@@ -332,11 +336,70 @@ class CompilerSdkRouteTests(unittest.TestCase):
         self.assertEqual(full_result.returncode, 0, full_result.stderr)
         full = self.fixture.outputs()
         self.assertEqual(full["runtime_kind"], "development")
+        self.assertEqual(full["route"], "diagnostic")
         self.assertEqual(full["full_qualification"], "true")
         self.assertEqual(full["full_matrix"], "true")
         self.assertEqual(full["scope"], "full")
         self.assertEqual(full["release_id"], small["release_id"])
         self.assertEqual(self.fixture.gh_calls(), [])
+
+    def dispatch_tag(self, **overrides: str) -> subprocess.CompletedProcess[str]:
+        """Run the selector as the dispatcher's native dispatch at the tag ref."""
+        arguments = {"event": "workflow_dispatch", "mode": "release-v2", "scope": "full", "group": ""}
+        arguments.update(overrides)
+        return self.fixture.run(**arguments)
+
+    def test_tag_dispatch_selects_the_same_released_full_route_as_the_tag_push(self) -> None:
+        self.assertEqual(self.fixture.run().returncode, 0)
+        pushed = self.fixture.outputs()
+        self.fixture.output.write_bytes(SENTINEL)
+        self.fixture.gh_log.write_bytes(b"")
+        result = self.dispatch_tag()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        dispatched = self.fixture.outputs()
+        self.assertEqual(dispatched["event"], "workflow_dispatch")
+        self.assertEqual({k: v for k, v in dispatched.items() if k != "event"},
+                         {k: v for k, v in pushed.items() if k != "event"})
+        self.assertEqual(dispatched["route"], "tag")
+        self.assertEqual(dispatched["runtime_kind"], "released")
+        self.assertEqual(dispatched["full_matrix"], "true")
+        self.assertEqual(len(self.fixture.gh_calls()), 5)
+
+    def test_tag_dispatch_rejects_every_other_selector_before_gh(self) -> None:
+        for mode, scope, group in (
+            ("", "full", ""), ("produce", "full", ""), ("recover", "full", ""),
+            ("qualify-v2", "full", ""), ("qualify-v2-full", "full", ""),
+            ("release-v2", "linux-x86_64", ""), ("release-v2", "", ""),
+            ("release-v2", "full", "i686-aros"), ("Release-V2", "full", ""),
+        ):
+            with self.subTest(mode=mode, scope=scope, group=group):
+                self.fixture.output.write_bytes(SENTINEL)
+                self.assert_rejected(self.dispatch_tag(mode=mode, scope=scope, group=group),
+                                     gh_calls=0)
+
+    def test_release_v2_is_not_a_branch_diagnostic_mode(self) -> None:
+        self.assert_rejected(
+            self.dispatch_tag(ref_type="branch", source_ref="refs/heads/feature/diagnostic"),
+            gh_calls=0)
+
+    def test_tag_dispatch_keeps_attempt_and_public_release_gates(self) -> None:
+        self.assert_rejected(self.dispatch_tag(run_attempt="2"), gh_calls=0)
+        self.assert_rejected(self.dispatch_tag(env_overrides={"GH_ROUTE_RELEASE": "200"}),
+                             gh_calls=5)
+
+    def test_tag_dispatch_requires_an_annotated_tag(self) -> None:
+        lightweight = RouteFixture(annotated=False)
+        try:
+            lightweight.event = "workflow_dispatch"
+            self.assert_rejected_for(lightweight, lightweight.run(
+                mode="release-v2", scope="full"))
+        finally:
+            lightweight.close()
+
+    def assert_rejected_for(self, fixture: RouteFixture, result: subprocess.CompletedProcess[str]) -> None:
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertEqual(fixture.output.read_bytes(), SENTINEL)
+        self.assertEqual(len(fixture.gh_calls()), 0)
 
     def test_runtime_tools_mismatch_is_rejected_before_gh(self) -> None:
         self.fixture.runtime_value["source_commit"] = "f" * 40
