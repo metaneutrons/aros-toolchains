@@ -12,6 +12,7 @@ on:
           - produce
           - recover
           - qualify-v2
+          - qualify-v2-split
           - qualify-v2-full
       scope:
         description: Host tier; full requires non-publishing qualify-v2-full mode
@@ -27,7 +28,7 @@ on:
         required: false
         type: string
       diagnostic_group:
-        description: qualify-v2 only - exact plan group ID; omit for all compiler groups
+        description: qualify-v2 and qualify-v2-split only - exact plan group ID; omit for all compiler groups
         required: false
         type: string
       source_tag:
@@ -63,7 +64,7 @@ env:
 jobs:
   v2-prepare:
     name: Prepare compiler and SDK qualification
-    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && (inputs.mode == 'qualify-v2' || inputs.mode == 'qualify-v2-full'))
+    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && (inputs.mode == 'qualify-v2' || inputs.mode == 'qualify-v2-split' || inputs.mode == 'qualify-v2-full'))
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     permissions:
