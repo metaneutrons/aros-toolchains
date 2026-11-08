@@ -138,6 +138,19 @@ is not the App all reject. Residual risk: the job token cannot detect a swap of
 the single bypass actor for another actor; a changed ruleset is caught only by
 the operator's configuration check and by the count.
 
+### Environment `release-please` review (2026-11-08)
+
+Read back through the API: deployment branches restricted to `main`, no required
+reviewer (the workflow runs unattended on every push to `main`), variable
+`RELEASE_PLEASE_CLIENT_ID` and secret `RELEASE_PLEASE_APP_PRIVATE_KEY`. The job
+issues a repository-scoped installation token (contents write, pull requests
+write), checks the App slug and that the installation covers exactly this
+repository, and runs Release Please with `skip-github-release: true`. This App is
+not a bypass actor of the `v*` tag ruleset, so it cannot create a tag or release.
+Assessment: adequate for a PR-only preparer. A required reviewer would block the
+unattended version PR without adding a gate that matters, because publication
+needs the `release` environment and the release tag App.
+
 ## Event sequence
 
 1. The existing PR-only Release Please workflow prepares the version PR.
