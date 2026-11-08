@@ -101,6 +101,30 @@ use the job token; no separate governance secret is required by this reader.
 These observations establish the governance transport, not runtime admission,
 candidate creation, signed-start authenticity or exclusive native dispatch.
 
+### Tag creator and bypass identity (2026-11-08)
+
+Version tags are created only by the repository-scoped GitHub App
+`metaneutrons-release-tag` (App ID 5668097, `contents: write`, installed on this
+repository alone). The active tag ruleset "Immutable version tags" restricts
+creation, update and deletion of `refs/tags/v*`, and its bypass list contains
+exactly this App with mode `always`. Its private key is a secret of the protected
+environment `release`, whose required reviewer is the repository owner; the
+client ID is the environment variable `RELEASE_TAG_CLIENT_ID`. The controller
+obtains a short-lived installation token from it for the single tag creation and
+for no other step. No PAT is used.
+
+Admission therefore no longer requires an empty bypass list. It requires the
+`creation` rule and exactly one bypass actor, the App with the numeric ID above
+and mode `always`, in both transports: the REST list when visible and always the
+GraphQL connection (`bypassMode`, actor `__typename`, `databaseId`, count one, no
+next page). A second actor, another App, a user or team, another mode or an
+unreadable connection rejects admission and the pre-mutation recheck.
+
+Still unqualified: the GraphQL actor fields (`bypassMode`, `actor`) have been read
+with the operator's token only. Whether the ordinary job token sees them, as it
+sees the count, has to be shown by a workflow run before the release start is
+activated.
+
 ## Event sequence
 
 1. The existing PR-only Release Please workflow prepares the version PR.

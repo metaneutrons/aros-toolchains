@@ -456,8 +456,8 @@ class CandidateFixture:
                     "__typename": "RepositoryRuleset",
                     "id": admission_tests.RULESET_NODE_ID,
                     "databaseId": admission_tests.RULESET_ID,
-                    "bypassActors": {"totalCount": 0, "nodes": [],
-                                     "pageInfo": {"hasNextPage": False}},
+                    "bypassActors": admission_tests.graphql_bypass(
+                        [copy.deepcopy(admission_tests.APP_GRAPHQL_BYPASS)]),
                 }}
             }
             return subprocess.CompletedProcess(command, 0, json.dumps(result).encode(), b"")
