@@ -120,10 +120,22 @@ GraphQL connection (`bypassMode`, actor `__typename`, `databaseId`, count one, n
 next page). A second actor, another App, a user or team, another mode or an
 unreadable connection rejects admission and the pre-mutation recheck.
 
-Still unqualified: the GraphQL actor fields (`bypassMode`, `actor`) have been read
-with the operator's token only. Whether the ordinary job token sees them, as it
-sees the count, has to be shown by a workflow run before the release start is
-activated.
+Measured 2026-11-08 (CI run 42528028396, dispatch on main with the visibility
+probe): with the ordinary job token (contents read and contents write) the REST
+ruleset response omits the bypass actors, and GraphQL returns the connection
+count (one, no next page) but not an actor object. The closed reader therefore
+fails with "GitHub GraphQL bypass actor must be an object". The job token proves
+the count only, not the identity or mode of the bypass actor.
+
+Consequence: the controller cannot verify "the release tag App is the sole bypass
+actor" with the job token alone. Options for the maintainer to decide before the
+release start is activated: (a) read the identity with a credential that can read
+rulesets (the App installation token would need the Administration read
+permission, which widens the App and is not granted today), or (b) accept the
+count-only job-token check and keep the identity under operator verification at
+configuration time (current state: read back by the operator on 2026-11-08).
+Neither is implemented; admission still requires the full identity and stays
+unusable from an ordinary job token until one option is chosen.
 
 ## Event sequence
 
