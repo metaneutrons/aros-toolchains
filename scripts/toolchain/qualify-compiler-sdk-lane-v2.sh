@@ -6,6 +6,10 @@ set -euo pipefail
 set -C
 fail() { printf 'Compiler/SDK diagnostic: %s\n' "$*" >&2; exit 1; }
 digest() { shasum -a 256 "$1" | awk '{print $1}'; }
+lane_started=$(date +%s)
+# Timing goes to stderr only, so the step log shows where the hours go while
+# the job runs. It never enters a digest or a decision.
+phase_mark() { printf 'Compiler/SDK phase %s at +%ss\n' "$1" "$(( $(date +%s) - lane_started ))" >&2; }
 observe_gcc_inputs() {
     local compiler_root=$1 makefile='' makefiles='' matches=()
     makefiles=$(find "$compiler_root/work/native-lifecycle/build" -type f \
@@ -133,6 +137,7 @@ ports_relative=$(jq -er --arg group "$group" '.groups | map(select(.id == $group
 [[ "$ports_relative" =~ ^toolchains/[a-z0-9._-]+\.json$ ]] || fail 'unsafe ports selection'
 ports="$producer/$ports_relative"
 for copy in a b; do
+    phase_mark "compiler-$copy start"
     if [[ "$owner_mode" == true ]]; then
         owner_selection=$owner_a_selection
         if [[ "$copy" == b ]]; then owner_selection=$owner_b_selection; fi
@@ -160,6 +165,7 @@ for copy in a b; do
         fi
     fi
 done
+phase_mark 'compiler comparison start'
 "$aros" toolchain producer compare --left "$root/compiler-a/payload/package" \
     --right "$root/compiler-b/payload/package" --output "$root/comparison.json" --format json > "$root/comparison-result.json"
 "$aros" toolchain producer materialize-engine-free-source --source-dir "$source" \
@@ -233,7 +239,9 @@ while IFS= read -r sdk; do
     source_preset=$(jq -er '.source_preset' <<< "$sdk")
     operation="$root/sdk-$id"
     mkdir "$operation" "$operation/engine-work"
+    phase_mark "sdk-$id start"
     build_sdk_with_diagnostics
+    phase_mark "sdk-$id end"
 done < "$root/sdk-selections.jsonl"
 [[ "$(digest "$aros")" == "$runtime_sha" ]] || fail 'runtime changed during qualification'
 printf 'Compiler A/B and SDK local generation completed. No release admission or publication.\n'
