@@ -4,7 +4,7 @@
     {
       "group_id": "gnu-rv32",
       "source_lock_sha256": "ced11b5c510c89a05fe3863be812f211362c08d550a8acdd46b6942b92c38c0b",
-      "profiles_sha256": "9f58bd7b18e32a51149aa31b98c5b20767e43d13dff3c246e2bb4c2fc29e720c",
+      "profiles_sha256": "b7278231188adba0bc64278e86f45cd9af126ead8c015f6ce02e6957691ec4c6",
       "profiles": {
         "rv32-esp32p4": [
           "aros-collector-tools.json",
@@ -40,7 +40,7 @@
     {
       "group_id": "llvm",
       "source_lock_sha256": "d55dbdff4b0d45bfa7704cd0710272665cf21a9b3f873d13779bef98ebbb133d",
-      "profiles_sha256": "df77e895986dba3cba40a985080e59019b7ce9cf6be9e34015f3466fb4ae0782",
+      "profiles_sha256": "1855280c68b8471b7614134a72059bce44eb0fcd334d5c4eab110153c0bd1de6",
       "profiles": {
         "pc-x86_64": [
           "bin/aros-collect",
