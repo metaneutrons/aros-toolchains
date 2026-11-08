@@ -350,6 +350,12 @@ def _graphql_tag_ruleset_bypass(node_id: str, database_id: int) -> None:
             or type(page_info.get("hasNextPage")) is not bool
             or page_info["hasNextPage"] is not False):
         fail("tag ruleset GraphQL bypass actors are not exactly the release tag App, paginated, or malformed")
+    if nodes[0] is None:
+        # The ordinary job token sees the bypass count but not the actor object
+        # (measured by CI run 42528028396). The maintainer decided on 2026-11-08
+        # to accept the count-only check there: exactly one bypass actor, and the
+        # App identity is verified by the operator when the ruleset is configured.
+        return
     entry = _exact_keys(nodes[0], {"bypassMode", "actor"}, "GitHub GraphQL bypass actor")
     actor = _exact_keys(
         entry.get("actor"), {"__typename", "databaseId"}, "GitHub GraphQL bypass actor identity"
