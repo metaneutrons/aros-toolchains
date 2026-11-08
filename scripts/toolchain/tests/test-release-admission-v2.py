@@ -1045,6 +1045,18 @@ class ReleaseAdmissionTests(unittest.TestCase):
         self.assertFalse(output.exists())
         self.assertEqual(github_output.read_bytes(), b"")
 
+    def test_job_token_count_only_bypass_view_is_accepted(self) -> None:
+        # CI run 42528028396: the ordinary job token sees the GraphQL count but
+        # only a null actor node, and REST omits the bypass actors.
+        ruleset = dict(self.responses[RULESET_PATH])
+        ruleset.pop("bypass_actors")
+        self._api_route(RULESET_PATH, ruleset)
+        graph = copy.deepcopy(self.responses[GRAPHQL_RULESET_PATH])
+        graph["data"]["node"]["bypassActors"] = graphql_bypass([None])
+        self._api_route(GRAPHQL_RULESET_PATH, graph)
+        result, output, github_output = self._run_admit()
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_graphql_bypass_counter_rejects_hidden_nonempty_rest_bypass(self) -> None:
         ruleset = dict(self.responses[RULESET_PATH])
         ruleset.pop("bypass_actors")
@@ -1086,6 +1098,13 @@ class ReleaseAdmissionTests(unittest.TestCase):
             ("second actor", changed(bypassActors=graphql_bypass([
                 copy.deepcopy(APP_GRAPHQL_BYPASS), copy.deepcopy(APP_GRAPHQL_BYPASS),
             ]))),
+            ("two hidden actors", changed(bypassActors=graphql_bypass([None, None]))),
+            ("hidden actor with next page", changed(bypassActors=graphql_bypass(
+                [None], has_next=True))),
+            ("hidden actor with larger total", changed(bypassActors=graphql_bypass(
+                [None], total=2))),
+            ("hidden actor with string total", changed(bypassActors=graphql_bypass(
+                [None], total="1"))),
             ("other app id", changed(bypassActors=graphql_bypass([{
                 "bypassMode": "ALWAYS",
                 "actor": {"__typename": "App", "databaseId": RELEASE_TAG_APP_ID + 1},

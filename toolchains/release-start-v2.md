@@ -127,15 +127,16 @@ count (one, no next page) but not an actor object. The closed reader therefore
 fails with "GitHub GraphQL bypass actor must be an object". The job token proves
 the count only, not the identity or mode of the bypass actor.
 
-Consequence: the controller cannot verify "the release tag App is the sole bypass
-actor" with the job token alone. Options for the maintainer to decide before the
-release start is activated: (a) read the identity with a credential that can read
-rulesets (the App installation token would need the Administration read
-permission, which widens the App and is not granted today), or (b) accept the
-count-only job-token check and keep the identity under operator verification at
-configuration time (current state: read back by the operator on 2026-11-08).
-Neither is implemented; admission still requires the full identity and stays
-unusable from an ordinary job token until one option is chosen.
+Decision (maintainer, 2026-11-08): option (b). The job-token reader accepts the
+count-only view, exactly one bypass actor with a hidden actor node, and the App
+identity (ID 5668097, mode always) is verified by the operator when the ruleset is
+configured (read back on 2026-11-08). When the actor object is visible, as with an
+operator token, admission still requires the exact App identity and mode. The App
+is not granted Administration read. Counter-probes: zero or two bypass actors, a
+count that differs from the node list, a further page, and a visible actor that
+is not the App all reject. Residual risk: the job token cannot detect a swap of
+the single bypass actor for another actor; a changed ruleset is caught only by
+the operator's configuration check and by the count.
 
 ## Event sequence
 
