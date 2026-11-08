@@ -1,6 +1,6 @@
 {
   "schema": "aros-toolchain-profiles-v1",
-  "upstream_commit": "eb4b922c9636f94c29f0034780fa8e282270af1a",
+  "upstream_commit": "6b6da00f26e97b5eadbbe69c32390f955938f4c2",
   "profiles": [
     {
       "name": "pc-x86_64",

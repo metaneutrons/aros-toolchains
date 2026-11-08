@@ -72,11 +72,14 @@ RUN_PATH = f"repos/{REPOSITORY}/actions/runs/{RUN_ID}"
 ATTEMPT_PATH = f"{RUN_PATH}/attempts/{RUN_ATTEMPT}"
 JOBS_PATH = f"{ATTEMPT_PATH}/jobs"
 RELEASES_PATH = f"repos/{REPOSITORY}/releases"
-RUNTIME_RELEASE_PATH = f"repos/{RUNTIME_REPOSITORY}/releases/397412413"
-RUNTIME_TAG = "v0.3.12"
+# The runtime identity is read from the committed lock so that a runtime pin
+# update does not leave a second copy of the release identity behind.
+_RUNTIME_LOCK = json.loads(LOCK_SOURCE.read_text(encoding="utf-8"))
+RUNTIME_RELEASE_PATH = f"repos/{RUNTIME_REPOSITORY}/releases/{_RUNTIME_LOCK['release_id']}"
+RUNTIME_TAG = _RUNTIME_LOCK["tag"]
 RUNTIME_REF_PATH = f"repos/{RUNTIME_REPOSITORY}/git/ref/tags/{RUNTIME_TAG}"
-RUNTIME_TAG_OBJECT_PATH = f"repos/{RUNTIME_REPOSITORY}/git/tags/c3899780df174b644305cf00e17181514a1fc31b"
-RUNTIME_COMMIT_PATH = f"repos/{RUNTIME_REPOSITORY}/git/commits/ff08ff9df3556113a1eafc9733c3eb0f9445007c"
+RUNTIME_TAG_OBJECT_PATH = f"repos/{RUNTIME_REPOSITORY}/git/tags/{_RUNTIME_LOCK['tag_object']}"
+RUNTIME_COMMIT_PATH = f"repos/{RUNTIME_REPOSITORY}/git/commits/{_RUNTIME_LOCK['source_commit']}"
 
 
 FAKE_GH = r'''#!/usr/bin/env python3
@@ -288,7 +291,7 @@ class ReleaseAdmissionTests(unittest.TestCase):
         for index in range(28):
             asset_list.append({
                 "id": 5000 + index,
-                "name": f"aros-tools-v0.3.12-platform-asset-{index + 1}.tar.gz",
+                "name": f"aros-tools-{RUNTIME_TAG}-platform-asset-{index + 1}.tar.gz",
                 "size": 1024 + index,
                 "digest": "sha256:" + f"{index + 1:064x}",
             })

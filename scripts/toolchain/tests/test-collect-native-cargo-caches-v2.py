@@ -133,6 +133,45 @@ class CollectNativeCargoCachesCLITests(unittest.TestCase):
             "macos-aarch64": "d" * 64,
         })
 
+    def _flatten_single_host(self) -> Path:
+        """Reproduce actions/download-artifact for exactly one matching artifact."""
+        directory = self._host_directory("linux-x86_64")
+        flat = self.identity_dir / "linux-x86_64.json"
+        flat.write_bytes((directory / "linux-x86_64.json").read_bytes())
+        (directory / "linux-x86_64.json").unlink()
+        directory.rmdir()
+        return flat
+
+    def test_single_host_artifact_extracted_without_directory_is_accepted(self) -> None:
+        self._flatten_single_host()
+        result = self._run()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        lines = self.github_output.read_text(encoding="ascii").splitlines()
+        self.assertEqual(lines[1], f'cache_archives={{"linux-x86_64":"{"c" * 64}"}}')
+
+    def test_flat_single_host_layout_stays_closed(self) -> None:
+        self._flatten_single_host()
+        (self.identity_dir / "unexpected").write_bytes(b"not an artifact")
+        self._assert_rejected_without_output_change()
+
+    def test_flat_layout_is_rejected_for_several_hosts(self) -> None:
+        flat = self._flatten_single_host()
+        (self.identity_dir / "linux-aarch64.json").write_bytes(
+            canonical(self._record("linux-aarch64"))
+        )
+        self.assertTrue(flat.is_file())
+        self._assert_rejected_without_output_change(
+            matrix=self._matrix(["linux-x86_64", "linux-aarch64"]),
+        )
+
+    def test_flat_single_host_identity_must_not_be_linked(self) -> None:
+        flat = self._flatten_single_host()
+        flat.unlink()
+        target = self.base / "outside.json"
+        target.write_bytes(canonical(self._record("linux-x86_64")))
+        flat.symlink_to(target)
+        self._assert_rejected_without_output_change()
+
     def test_missing_selected_host_artifact_is_rejected(self) -> None:
         self._assert_rejected_without_output_change(
             matrix=self._matrix(["linux-x86_64", "linux-aarch64"]),

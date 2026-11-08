@@ -758,7 +758,7 @@ def validate_v2_policy(documents: Documents) -> dict[str, int]:
         and 'timeout --signal=KILL 180s "${{ steps.runtime.outputs.root }}/bin/aros" cache sources fetch' in source_seeds
         and '--source-fetch-plan "$GITHUB_WORKSPACE/dependencies/aros/scripts/ci/product-sources.plan.json"' in source_seeds
         and '--dir "$RUNNER_TEMP/diagnostic-source-seed-cache"' in source_seeds
-        and '"$GITHUB_WORKSPACE/toolchains/source-seeds/chromium-zlib-da752eb2.tar.gz"' in source_seeds
+        and '"$GITHUB_WORKSPACE/toolchains/source-seeds/chromium-zlib-2b1b62fe.tar.gz"' in source_seeds
         and '"$RUNNER_TEMP/diagnostic-source-seed-cache/zlib.tar.gz"' in source_seeds
         and '| python3 -c' in source_seeds
         and 'remaining = 1048576\n' in source_seeds
@@ -792,8 +792,8 @@ def validate_v2_policy(documents: Documents) -> dict[str, int]:
         and '--source-dir "$GITHUB_WORKSPACE/dependencies/aros"' in source_preflight_step
         and '--expected-commit "$SELECTED_SOURCE_COMMIT"' in source_preflight_step
         and '--aros "${{ steps.runtime.outputs.root }}/bin/aros" --aros-sha256 "$aros_sha"' in source_preflight_step
-        and '--product-source-seed "$GITHUB_WORKSPACE/toolchains/source-seeds/chromium-zlib-da752eb2.tar.gz"' in source_preflight_step
-        and '--mesa-source-seed "$RUNNER_TEMP/diagnostic-source-seed-cache/mesa-26.0.0.tar.xz"' in source_preflight_step
+        and '--product-source-seed "$GITHUB_WORKSPACE/toolchains/source-seeds/chromium-zlib-2b1b62fe.tar.gz"' in source_preflight_step
+        and '--mesa-source-seed "$RUNNER_TEMP/diagnostic-source-seed-cache/mesa-26.2.5.tar.xz"' in source_preflight_step
         and '--output-dir "$RUNNER_TEMP/diagnostic-source-preflight"' in source_preflight_step
         and "if:" not in source_preflight_step
         and "continue-on-error:" not in source_preflight_step
@@ -1821,7 +1821,7 @@ class CompilerSdkWorkflowV2Tests(unittest.TestCase):
                     "if mode == 'overflow':\n"
                     "    sys.stdout.buffer.write(b'x' * 2097152)\n"
                     "    sys.stdout.buffer.flush()\n"
-                    "(cache / 'mesa-26.0.0.tar.xz').write_bytes(b'locked-mesa')\n"
+                    "(cache / 'mesa-26.2.5.tar.xz').write_bytes(b'locked-mesa')\n"
                     "print('locked seeds prepared')\n",
                     encoding="utf-8",
                 )
@@ -1829,7 +1829,7 @@ class CompilerSdkWorkflowV2Tests(unittest.TestCase):
                 workspace = root / "workspace"
                 seeds = workspace / "toolchains/source-seeds"
                 seeds.mkdir(parents=True)
-                (seeds / "chromium-zlib-da752eb2.tar.gz").write_bytes(b"locked-zlib")
+                (seeds / "chromium-zlib-2b1b62fe.tar.gz").write_bytes(b"locked-zlib")
                 temporary = root / "runner"
                 temporary.mkdir()
                 environment = dict(os.environ, RUNNER_TEMP=str(temporary),
@@ -1842,7 +1842,7 @@ class CompilerSdkWorkflowV2Tests(unittest.TestCase):
                 log = temporary / "diagnostic-source-seed-logs/fetch.stdout.log"
                 self.assertLessEqual(log.stat().st_size, 1048576)
                 self.assertEqual(
-                    (temporary / "diagnostic-source-seed-cache/mesa-26.0.0.tar.xz").exists(),
+                    (temporary / "diagnostic-source-seed-cache/mesa-26.2.5.tar.xz").exists(),
                     mode != "failure",
                 )
 
@@ -1854,7 +1854,7 @@ class CompilerSdkWorkflowV2Tests(unittest.TestCase):
             ('for chunk in iter(lambda: sys.stdin.buffer.read(65536), b""):',
              'for chunk in [sys.stdin.buffer.read(1048576)]:'),
             ('--dir "$RUNNER_TEMP/diagnostic-source-seed-cache"', '--dir "$RUNNER_TEMP/other-cache"'),
-            ('--mesa-source-seed "$RUNNER_TEMP/diagnostic-source-seed-cache/mesa-26.0.0.tar.xz"',
+            ('--mesa-source-seed "$RUNNER_TEMP/diagnostic-source-seed-cache/mesa-26.2.5.tar.xz"',
              '--mesa-source-seed "$RUNNER_TEMP/unselected-mesa.tar.xz"'),
             ('--source-fetch-plan "$GITHUB_WORKSPACE/dependencies/aros/scripts/ci/product-sources.plan.json"',
              '--source-fetch-plan "$GITHUB_WORKSPACE/unselected-plan.json"'),

@@ -31,7 +31,7 @@ env:
   SOURCE_LOCK: toolchains/llvm-11.0.0.sources.json
   COMPATIBILITY_PORTS_LOCK: toolchains/compatibility-ports-v3.json
   AROS_SOURCE_REPOSITORY: metaneutrons/AROS-NX
-  AROS_SOURCE_COMMIT: 15230bef9d23e12cd9d4cca62253c4b62276e8ff
+  AROS_SOURCE_COMMIT: 6b6da00f26e97b5eadbbe69c32390f955938f4c2
   TOOLS_RUNTIME_LOCK: toolchains/aros-tools-runtime-v1.json
 
 jobs:
