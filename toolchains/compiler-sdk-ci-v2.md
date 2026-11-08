@@ -1,8 +1,8 @@
 # Compiler and SDK diagnostic qualification
 
-The `toolchain-release.yml` workflow has a narrowed `qualify-v2` mode and a
-complete `qualify-v2-full` mode; both are nonpublishing. The narrowed tier is
-Linux x86-64 only. Its compiler groups,
+The `toolchain-release.yml` workflow has a narrowed `qualify-v2` mode, a
+`qualify-v2-split` mode and a complete `qualify-v2-full` mode; all are
+nonpublishing. The narrowed tier is Linux x86-64 only. Its compiler groups,
 SDK product versions and source selections are declared in
 `compiler-sdk-ci-selection-v2.json`; source profiles and sealed consumer
 contracts remain owned by AROS-NX.
@@ -207,6 +207,14 @@ add `-f diagnostic_group=<exact-group-id-from-plan>`. The complete native plan
 is still validated before projection. A narrowed diagnostic is explicitly
 incomplete and cannot be used for a tag-triggered or full release selection.
 Omitting the selector keeps every group in the diagnostic host scope.
+
+`qualify-v2` runs both compiler copies and the SDK in one job per lane, which a
+hosted runner limits to six hours; the LLVM lanes exceed that (aros-toolchains
+issue 119). `mode=qualify-v2-split` with `scope=linux-x86_64` runs the same
+selection in the production job layout instead: one native compiler job per
+copy, then the SDK job from the owned compilers, each with its own six-hour
+limit. It accepts the same optional `diagnostic_group`, stays on the branch
+event and the development runtime, and remains nonpublishing and incomplete.
 
 For the complete native non-publishing matrix, explicitly select
 `mode=qualify-v2-full` and `scope=full` on a reviewed branch. The workflow rejects

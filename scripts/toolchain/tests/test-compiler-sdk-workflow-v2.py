@@ -564,8 +564,8 @@ def validate_v2_policy(documents: Documents) -> dict[str, int]:
                 f"{name} must have a bounded job timeout")
 
     require(
-        "if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && (inputs.mode == 'qualify-v2' || inputs.mode == 'qualify-v2-full'))" in prepare,
-        "V2 preparation must admit only pushes and the two explicit manual qualification modes",
+        "if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && (inputs.mode == 'qualify-v2' || inputs.mode == 'qualify-v2-split' || inputs.mode == 'qualify-v2-full'))" in prepare,
+        "V2 preparation must admit only pushes and the three explicit manual qualification modes",
     )
     selection_step = prepare.split("      - id: selection\n", 1)[1].split("      - ", 1)[0]
     require(
@@ -592,12 +592,14 @@ def validate_v2_policy(documents: Documents) -> dict[str, int]:
         and 'runtime_kind="released"' in push_route
         and 'full_matrix="true"' in push_route
         and 'runtime_kind="development"' in manual_route
-        and 'full_matrix=str(full).lower()' in manual_route
+        and 'full_matrix=str(split).lower()' in manual_route
+        and 'split = full or args.mode == "qualify-v2-split"' in manual_route
         and 'release_id=f"toolchain-dev-{args.producer_commit[:12]}"' in manual_route
         and 'args.event == "workflow_dispatch"' in manual_route
         and 'args.run_attempt == "1"' in route_script
         and 'args.mode == args.scope == args.group == ""' in route_script
         and '("qualify-v2", "linux-x86_64")' in route_script
+        and '("qualify-v2-split", "linux-x86_64")' in route_script
         and '("qualify-v2-full", "full")' in route_script
         and 'not full or args.group == ""' in route_script
         and 'runtime.get("source_commit") == tools_commit' in route_script
@@ -971,7 +973,7 @@ def validate_v2_policy(documents: Documents) -> dict[str, int]:
         "SDK owners must authenticate two distinct original compilers without rebuilding",
     )
     require(
-        "if: needs.v2-prepare.outputs.full_matrix == 'true'" in readback
+        "if: needs.v2-prepare.outputs.scope == 'full'" in readback
         and "needs: [v2-prepare, v2-runtimes, v2-build, v2-sdk]" in readback
         and "runs-on: ubuntu-24.04" in readback
         and "name: diagnostic-v2-native-runtime-linux-x86_64" in readback
@@ -2338,7 +2340,7 @@ class CompilerSdkWorkflowV2Tests(unittest.TestCase):
     def test_rejects_incomplete_sdk_owner_readback_graph(self) -> None:
         for before, after in (
             ("needs: [v2-prepare, v2-runtimes, v2-build, v2-sdk]", "needs: [v2-prepare, v2-runtimes, v2-build]"),
-            ("if: needs.v2-prepare.outputs.full_matrix == 'true'", "if: inputs.mode == 'qualify-v2'"),
+            ("if: needs.v2-prepare.outputs.scope == 'full'", "if: needs.v2-prepare.outputs.full_matrix == 'true'"),
             ("collect-sdk-owners-v2.sh", "unverified-sdk-download.sh"),
             ("collect-compiler-owners-v2.sh", "unverified-compiler-download.sh"),
             ('--release-id "$SELECTED_RELEASE_ID"', '--release-id stale-candidate'),
