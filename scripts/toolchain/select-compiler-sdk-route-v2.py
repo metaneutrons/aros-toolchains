@@ -179,13 +179,18 @@ def select(args):
         require(git(args.producer_dir, "check-ref-format", args.source_ref) == "",
                 "diagnostic branch ref is invalid")
         require((args.mode, args.scope) in (("qualify-v2", "linux-x86_64"),
+                                          ("qualify-v2-split", "linux-x86_64"),
                                           ("qualify-v2-full", "full")),
                 "diagnostic mode or host scope is unsupported")
         full = args.mode == "qualify-v2-full"
+        # The split mode runs the production job layout (one native compiler job
+        # per copy, then the SDK job from the owned compilers) for one host and
+        # optionally one group, so no job carries both compilers and the SDK.
+        split = full or args.mode == "qualify-v2-split"
         require(not full or args.group == "", "full qualification cannot select one group")
         outputs.update(event="workflow_dispatch", scope=args.scope,
                        full_qualification=str(full).lower(), runtime_kind="development",
-                       full_matrix=str(full).lower(),
+                       full_matrix=str(split).lower(),
                        release_id=f"toolchain-dev-{args.producer_commit[:12]}")
     return outputs
 

@@ -338,6 +338,32 @@ class CompilerSdkRouteTests(unittest.TestCase):
         self.assertEqual(full["release_id"], small["release_id"])
         self.assertEqual(self.fixture.gh_calls(), [])
 
+    def test_split_mode_runs_the_production_job_layout_for_one_host_and_group(self) -> None:
+        self.fixture.event = "workflow_dispatch"
+        self.fixture.ref_type = "branch"
+        self.fixture.source_ref = "refs/heads/feature/diagnostic"
+        self.fixture.mode = "qualify-v2-split"
+        self.fixture.scope = "linux-x86_64"
+        self.fixture.group = "i686-aros"
+        result = self.fixture.run()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        split = self.fixture.outputs()
+        self.assertEqual(split["runtime_kind"], "development")
+        self.assertEqual(split["full_qualification"], "false")
+        self.assertEqual(split["full_matrix"], "true")
+        self.assertEqual(split["scope"], "linux-x86_64")
+        self.assertEqual(self.fixture.gh_calls(), [])
+
+        # Counter-probes: the split mode is not a way to widen the host scope,
+        # to reach a tag route or to use another mode's scope.
+        for mode, scope in (("qualify-v2-split", "full"), ("qualify-v2-split", "linux"),
+                            ("qualify-v2", "full"), ("qualify-v2-full", "linux-x86_64")):
+            self.fixture.mode = mode
+            self.fixture.scope = scope
+            self.fixture.group = ""
+            self.fixture.output.write_bytes(SENTINEL)
+            self.assert_rejected(self.fixture.run(), gh_calls=0)
+
     def test_runtime_tools_mismatch_is_rejected_before_gh(self) -> None:
         self.fixture.runtime_value["source_commit"] = "f" * 40
         self.fixture.write_inputs()
