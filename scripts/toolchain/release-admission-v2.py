@@ -52,11 +52,16 @@ PAGE_SIZE = 100
 API_TIMEOUT_SECONDS = 30
 GIT_TIMEOUT_SECONDS = 20
 GOVERNANCE_RECEIPT_SECONDS = 900
+# The only identity allowed to create or bypass the immutable v* tag ruleset:
+# the repository-scoped GitHub App "metaneutrons-release-tag" (App ID is not a secret).
+RELEASE_TAG_APP_ID = 5668097
 GRAPHQL_TAG_RULESET_BYPASS_QUERY = (
     "query ReleaseAdmissionTagRuleset($rulesetID: ID!) { "
     "node(id: $rulesetID) { __typename id "
     "... on RepositoryRuleset { databaseId "
-    "bypassActors(first: 100) { totalCount nodes { __typename } pageInfo { hasNextPage } } "
+    "bypassActors(first: 100) { totalCount "
+    "nodes { bypassMode actor { __typename ... on App { databaseId } } } "
+    "pageInfo { hasNextPage } } "
     "} } }"
 )
 INPUT_PATHS = (
@@ -337,13 +342,25 @@ def _graphql_tag_ruleset_bypass(node_id: str, database_id: int) -> None:
     page_info = _exact_keys(
         connection.get("pageInfo"), {"hasNextPage"}, "GitHub GraphQL bypass page info"
     )
+    nodes = connection.get("nodes")
     if (type(connection.get("totalCount")) is not int
-            or connection["totalCount"] != 0
-            or type(connection.get("nodes")) is not list
-            or connection["nodes"] != []
+            or connection["totalCount"] != 1
+            or type(nodes) is not list
+            or len(nodes) != 1
             or type(page_info.get("hasNextPage")) is not bool
             or page_info["hasNextPage"] is not False):
-        fail("tag ruleset GraphQL bypass actors are nonempty, paginated, or malformed")
+        fail("tag ruleset GraphQL bypass actors are not exactly the release tag App, paginated, or malformed")
+    entry = _exact_keys(nodes[0], {"bypassMode", "actor"}, "GitHub GraphQL bypass actor")
+    actor = _exact_keys(
+        entry.get("actor"), {"__typename", "databaseId"}, "GitHub GraphQL bypass actor identity"
+    )
+    if (type(entry.get("bypassMode")) is not str
+            or entry["bypassMode"] != "ALWAYS"
+            or type(actor.get("__typename")) is not str
+            or actor["__typename"] != "App"
+            or type(actor.get("databaseId")) is not int
+            or actor["databaseId"] != RELEASE_TAG_APP_ID):
+        fail("tag ruleset GraphQL bypass actor is not the release tag App with mode always")
 
 
 def paginated(
@@ -691,13 +708,21 @@ def _governance(receipt: dict[str, Any] | None = None) -> dict[str, Any]:
         and isinstance(ref_names, dict)
         and ref_names.get("include") == ["refs/tags/v*"]
         and ref_names.get("exclude") == []
-        and {"update", "deletion"} <= set(rule_types)
+        and {"update", "deletion", "creation"} <= set(rule_types)
     ):
-        fail("active tag ruleset does not enforce the exact immutable v* ref scope")
+        fail("active tag ruleset does not enforce creation, update and deletion restrictions on the exact v* ref scope")
     if "bypass_actors" in ruleset:
         rest_bypass = ruleset["bypass_actors"]
-        if type(rest_bypass) is not list or rest_bypass != []:
-            fail("REST tag ruleset bypass metadata is nonempty or malformed")
+        if type(rest_bypass) is not list or len(rest_bypass) != 1:
+            fail("REST tag ruleset bypass metadata is not exactly the release tag App or malformed")
+        rest_actor = _exact_keys(
+            rest_bypass[0], {"actor_id", "actor_type", "bypass_mode"}, "REST tag ruleset bypass actor"
+        )
+        if (type(rest_actor.get("actor_id")) is not int
+                or rest_actor["actor_id"] != RELEASE_TAG_APP_ID
+                or rest_actor.get("actor_type") != "Integration"
+                or rest_actor.get("bypass_mode") != "always"):
+            fail("REST tag ruleset bypass actor is not the release tag App with mode always")
     if type(node_id) is not str or not node_id:
         fail("tag ruleset REST node id is malformed")
     _graphql_tag_ruleset_bypass(node_id, rest_id)

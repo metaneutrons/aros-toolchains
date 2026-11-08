@@ -32,6 +32,20 @@ PR_ID = 1100
 PR_NUMBER = 11
 RULESET_ID = 55
 RULESET_NODE_ID = "RRS_lAC_lifecycle_fixture"
+RELEASE_TAG_APP_ID = 5668097
+APP_REST_BYPASS = {"actor_id": RELEASE_TAG_APP_ID, "actor_type": "Integration", "bypass_mode": "always"}
+APP_GRAPHQL_BYPASS = {
+    "bypassMode": "ALWAYS",
+    "actor": {"__typename": "App", "databaseId": RELEASE_TAG_APP_ID},
+}
+
+
+def graphql_bypass(nodes: list, *, total: object = None, has_next: object = False) -> dict:
+    return {
+        "totalCount": len(nodes) if total is None else total,
+        "nodes": nodes,
+        "pageInfo": {"hasNextPage": has_next},
+    }
 JOB_ID = 4400
 GOV_TOKEN = "governance-secret-fixture"
 JOB_TOKEN = "job-token-fixture"
@@ -39,7 +53,9 @@ GRAPHQL_QUERY = (
     "query ReleaseAdmissionTagRuleset($rulesetID: ID!) { "
     "node(id: $rulesetID) { __typename id "
     "... on RepositoryRuleset { databaseId "
-    "bypassActors(first: 100) { totalCount nodes { __typename } pageInfo { hasNextPage } } "
+    "bypassActors(first: 100) { totalCount "
+    "nodes { bypassMode actor { __typename ... on App { databaseId } } } "
+    "pageInfo { hasNextPage } } "
     "} } }"
 )
 
@@ -56,11 +72,14 @@ RUN_PATH = f"repos/{REPOSITORY}/actions/runs/{RUN_ID}"
 ATTEMPT_PATH = f"{RUN_PATH}/attempts/{RUN_ATTEMPT}"
 JOBS_PATH = f"{ATTEMPT_PATH}/jobs"
 RELEASES_PATH = f"repos/{REPOSITORY}/releases"
-RUNTIME_RELEASE_PATH = f"repos/{RUNTIME_REPOSITORY}/releases/397412413"
-RUNTIME_TAG = "v0.3.12"
+# The runtime identity is read from the committed lock so that a runtime pin
+# update does not leave a second copy of the release identity behind.
+_RUNTIME_LOCK = json.loads(LOCK_SOURCE.read_text(encoding="utf-8"))
+RUNTIME_RELEASE_PATH = f"repos/{RUNTIME_REPOSITORY}/releases/{_RUNTIME_LOCK['release_id']}"
+RUNTIME_TAG = _RUNTIME_LOCK["tag"]
 RUNTIME_REF_PATH = f"repos/{RUNTIME_REPOSITORY}/git/ref/tags/{RUNTIME_TAG}"
-RUNTIME_TAG_OBJECT_PATH = f"repos/{RUNTIME_REPOSITORY}/git/tags/c3899780df174b644305cf00e17181514a1fc31b"
-RUNTIME_COMMIT_PATH = f"repos/{RUNTIME_REPOSITORY}/git/commits/ff08ff9df3556113a1eafc9733c3eb0f9445007c"
+RUNTIME_TAG_OBJECT_PATH = f"repos/{RUNTIME_REPOSITORY}/git/tags/{_RUNTIME_LOCK['tag_object']}"
+RUNTIME_COMMIT_PATH = f"repos/{RUNTIME_REPOSITORY}/git/commits/{_RUNTIME_LOCK['source_commit']}"
 
 
 FAKE_GH = r'''#!/usr/bin/env python3
@@ -272,7 +291,7 @@ class ReleaseAdmissionTests(unittest.TestCase):
         for index in range(28):
             asset_list.append({
                 "id": 5000 + index,
-                "name": f"aros-tools-v0.3.12-platform-asset-{index + 1}.tar.gz",
+                "name": f"aros-tools-{RUNTIME_TAG}-platform-asset-{index + 1}.tar.gz",
                 "size": 1024 + index,
                 "digest": "sha256:" + f"{index + 1:064x}",
             })
@@ -294,18 +313,14 @@ class ReleaseAdmissionTests(unittest.TestCase):
                 "target": "tag",
                 "enforcement": "active",
                 "conditions": {"ref_name": {"include": ["refs/tags/v*"], "exclude": []}},
-                "rules": [{"type": "update"}, {"type": "deletion"}],
-                "bypass_actors": [],
+                "rules": [{"type": "update"}, {"type": "deletion"}, {"type": "creation"}],
+                "bypass_actors": [dict(APP_REST_BYPASS)],
             },
             GRAPHQL_RULESET_PATH: {"data": {"node": {
                 "__typename": "RepositoryRuleset",
                 "id": RULESET_NODE_ID,
                 "databaseId": RULESET_ID,
-                "bypassActors": {
-                    "totalCount": 0,
-                    "nodes": [],
-                    "pageInfo": {"hasNextPage": False},
-                },
+                "bypassActors": graphql_bypass([copy.deepcopy(APP_GRAPHQL_BYPASS)]),
             }}},
             RUNTIME_RELEASE_PATH: {
                 "id": self.lock["release_id"],
@@ -451,8 +466,8 @@ class ReleaseAdmissionTests(unittest.TestCase):
                 self.assertEqual(json.loads(result.stdout), report)
                 self.assertEqual(report["assurance"], "visibility-only-not-release-admission")
                 self.assertEqual(report["declared_job_contents_permission"], profile)
-                self.assertTrue(report["explicitly_empty_bypass"])
-                self.assertEqual(report["bypass_count"], 0)
+                self.assertFalse(report["explicitly_empty_bypass"])
+                self.assertEqual(report["bypass_count"], 1)
                 invalid_output = self.base / f"not-admission-{profile}.json"
                 rejected = self._run_recheck(output, invalid_output)
                 self._assert_rejected(rejected)
@@ -983,11 +998,50 @@ class ReleaseAdmissionTests(unittest.TestCase):
         self.assertFalse(output.exists())
         self.assertEqual(github_output.read_bytes(), b"")
 
-        ruleset["bypass_actors"] = []
+        ruleset["bypass_actors"] = [dict(APP_REST_BYPASS)]
         ruleset["conditions"] = {"ref_name": {"include": ["refs/tags/*"], "exclude": []}}
         self._api_route(RULESET_PATH, ruleset)
         result, output, github_output = self._run_admit()
         self._assert_rejected(result)
+        self.assertFalse(output.exists())
+        self.assertEqual(github_output.read_bytes(), b"")
+
+    def test_rest_bypass_must_be_exactly_the_release_tag_app(self) -> None:
+        original = dict(self.responses[RULESET_PATH])
+        positive = dict(original)
+        positive["bypass_actors"] = [dict(APP_REST_BYPASS)]
+        self._api_route(RULESET_PATH, positive)
+        result, output, github_output = self._run_admit()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(output.exists())
+        cases = (
+            ("empty bypass list", []),
+            ("second actor", [dict(APP_REST_BYPASS), {**APP_REST_BYPASS, "actor_id": 123}]),
+            ("other app id", [{**APP_REST_BYPASS, "actor_id": RELEASE_TAG_APP_ID + 1}]),
+            ("boolean app id", [{**APP_REST_BYPASS, "actor_id": True}]),
+            ("user instead of app", [{**APP_REST_BYPASS, "actor_type": "User"}]),
+            ("mode pull request", [{**APP_REST_BYPASS, "bypass_mode": "pull_request"}]),
+            ("extra field", [{**APP_REST_BYPASS, "extra": 1}]),
+            ("missing mode", [{"actor_id": RELEASE_TAG_APP_ID, "actor_type": "Integration"}]),
+        )
+        for label, bypass in cases:
+            with self.subTest(label=label):
+                ruleset = dict(original)
+                ruleset["bypass_actors"] = bypass
+                self._api_route(RULESET_PATH, ruleset)
+                result, output, github_output = self._run_admit()
+                self._assert_rejected(result)
+                self.assertFalse(output.exists())
+                self.assertEqual(github_output.read_bytes(), b"")
+        self._api_route(RULESET_PATH, original)
+
+    def test_creation_restriction_is_required_for_the_app_only_claim(self) -> None:
+        ruleset = dict(self.responses[RULESET_PATH])
+        ruleset["rules"] = [{"type": "update"}, {"type": "deletion"}]
+        self._api_route(RULESET_PATH, ruleset)
+        result, output, github_output = self._run_admit()
+        self._assert_rejected(result)
+        self.assertIn("creation", result.stderr)
         self.assertFalse(output.exists())
         self.assertEqual(github_output.read_bytes(), b"")
 
@@ -996,11 +1050,9 @@ class ReleaseAdmissionTests(unittest.TestCase):
         ruleset.pop("bypass_actors")
         self._api_route(RULESET_PATH, ruleset)
         graph = copy.deepcopy(self.responses[GRAPHQL_RULESET_PATH])
-        graph["data"]["node"]["bypassActors"] = {
-            "totalCount": 1,
-            "nodes": [{"__typename": "Team"}],
-            "pageInfo": {"hasNextPage": False},
-        }
+        graph["data"]["node"]["bypassActors"] = graphql_bypass([
+            {"bypassMode": "ALWAYS", "actor": {"__typename": "Team"}},
+        ])
         self._api_route(GRAPHQL_RULESET_PATH, graph)
         result, output, github_output = self._run_admit()
         self._assert_rejected(result)
@@ -1025,25 +1077,37 @@ class ReleaseAdmissionTests(unittest.TestCase):
             ("wrong opaque node id", changed(id="RRS_wrong_fixture")),
             ("boolean database id", changed(databaseId=True)),
             ("wrong database id", changed(databaseId=RULESET_ID + 1)),
-            ("boolean total count", changed(bypassActors={
-                "totalCount": False, "nodes": [], "pageInfo": {"hasNextPage": False},
-            })),
-            ("string zero count", changed(bypassActors={
-                "totalCount": "0", "nodes": [], "pageInfo": {"hasNextPage": False},
-            })),
-            ("nonzero count", changed(bypassActors={
-                "totalCount": 1, "nodes": [], "pageInfo": {"hasNextPage": False},
-            })),
-            ("unexpected nodes", changed(bypassActors={
-                "totalCount": 0, "nodes": [{"__typename": "Team"}],
-                "pageInfo": {"hasNextPage": False},
-            })),
-            ("has next page", changed(bypassActors={
-                "totalCount": 0, "nodes": [], "pageInfo": {"hasNextPage": True},
-            })),
-            ("malformed next page flag", changed(bypassActors={
-                "totalCount": 0, "nodes": [], "pageInfo": {"hasNextPage": 0},
-            })),
+            ("boolean total count", changed(bypassActors=graphql_bypass(
+                [copy.deepcopy(APP_GRAPHQL_BYPASS)], total=True))),
+            ("string total count", changed(bypassActors=graphql_bypass(
+                [copy.deepcopy(APP_GRAPHQL_BYPASS)], total="1"))),
+            ("zero count", changed(bypassActors=graphql_bypass([]))),
+            ("count without nodes", changed(bypassActors=graphql_bypass([], total=1))),
+            ("second actor", changed(bypassActors=graphql_bypass([
+                copy.deepcopy(APP_GRAPHQL_BYPASS), copy.deepcopy(APP_GRAPHQL_BYPASS),
+            ]))),
+            ("other app id", changed(bypassActors=graphql_bypass([{
+                "bypassMode": "ALWAYS",
+                "actor": {"__typename": "App", "databaseId": RELEASE_TAG_APP_ID + 1},
+            }]))),
+            ("boolean app id", changed(bypassActors=graphql_bypass([{
+                "bypassMode": "ALWAYS",
+                "actor": {"__typename": "App", "databaseId": True},
+            }]))),
+            ("team instead of app", changed(bypassActors=graphql_bypass([{
+                "bypassMode": "ALWAYS", "actor": {"__typename": "Team"},
+            }]))),
+            ("mode pull request", changed(bypassActors=graphql_bypass([{
+                "bypassMode": "PULL_REQUEST",
+                "actor": {"__typename": "App", "databaseId": RELEASE_TAG_APP_ID},
+            }]))),
+            ("extra node field", changed(bypassActors=graphql_bypass([
+                {**APP_GRAPHQL_BYPASS, "extra": 1},
+            ]))),
+            ("has next page", changed(bypassActors=graphql_bypass(
+                [copy.deepcopy(APP_GRAPHQL_BYPASS)], has_next=True))),
+            ("malformed next page flag", changed(bypassActors=graphql_bypass(
+                [copy.deepcopy(APP_GRAPHQL_BYPASS)], has_next=0))),
         )
         for label, response in cases:
             with self.subTest(label=label):
@@ -1108,16 +1172,14 @@ class ReleaseAdmissionTests(unittest.TestCase):
         ruleset.pop("bypass_actors")
         self._api_route(RULESET_PATH, ruleset)
         graph = copy.deepcopy(self.responses[GRAPHQL_RULESET_PATH])
-        graph["data"]["node"]["bypassActors"] = {
-            "totalCount": 1,
-            "nodes": [{"__typename": "Integration"}],
-            "pageInfo": {"hasNextPage": False},
-        }
+        graph["data"]["node"]["bypassActors"] = graphql_bypass([
+            copy.deepcopy(APP_GRAPHQL_BYPASS), copy.deepcopy(APP_GRAPHQL_BYPASS),
+        ])
         self._api_route(GRAPHQL_RULESET_PATH, graph)
         output = self.base / "changed-bypass-recheck.json"
         rejected = self._run_recheck(admission_path, output)
         self._assert_rejected(rejected)
-        self.assertIn("GraphQL bypass actors are nonempty", rejected.stderr)
+        self.assertIn("not exactly the release tag App", rejected.stderr)
         self.assertFalse(output.exists())
         self.assertEqual(admission_path.read_bytes(), original)
 
