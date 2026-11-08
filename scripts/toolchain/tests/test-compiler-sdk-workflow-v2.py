@@ -973,7 +973,7 @@ def validate_v2_policy(documents: Documents) -> dict[str, int]:
         "SDK owners must authenticate two distinct original compilers without rebuilding",
     )
     require(
-        "if: needs.v2-prepare.outputs.full_matrix == 'true'" in readback
+        "if: needs.v2-prepare.outputs.scope == 'full'" in readback
         and "needs: [v2-prepare, v2-runtimes, v2-build, v2-sdk]" in readback
         and "runs-on: ubuntu-24.04" in readback
         and "name: diagnostic-v2-native-runtime-linux-x86_64" in readback
@@ -2340,7 +2340,7 @@ class CompilerSdkWorkflowV2Tests(unittest.TestCase):
     def test_rejects_incomplete_sdk_owner_readback_graph(self) -> None:
         for before, after in (
             ("needs: [v2-prepare, v2-runtimes, v2-build, v2-sdk]", "needs: [v2-prepare, v2-runtimes, v2-build]"),
-            ("if: needs.v2-prepare.outputs.full_matrix == 'true'", "if: inputs.mode == 'qualify-v2'"),
+            ("if: needs.v2-prepare.outputs.scope == 'full'", "if: needs.v2-prepare.outputs.full_matrix == 'true'"),
             ("collect-sdk-owners-v2.sh", "unverified-sdk-download.sh"),
             ("collect-compiler-owners-v2.sh", "unverified-compiler-download.sh"),
             ('--release-id "$SELECTED_RELEASE_ID"', '--release-id stale-candidate'),

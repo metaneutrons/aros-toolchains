@@ -79,6 +79,7 @@ jobs:
       release_id: ${{ steps.selection.outputs.release_id }}
       runtime_kind: ${{ steps.selection.outputs.runtime_kind }}
       full_matrix: ${{ steps.selection.outputs.full_matrix }}
+      scope: ${{ steps.selection.outputs.scope }}
       prerelease: ${{ steps.selection.outputs.prerelease }}
       tag_object: ${{ steps.selection.outputs.tag_object }}
       tag_epoch: ${{ steps.selection.outputs.tag_epoch }}
@@ -903,7 +904,9 @@ jobs:
 
   v2-readback:
     name: Read back original compiler and SDK owners
-    if: needs.v2-prepare.outputs.full_matrix == 'true'
+    # The owner readback authenticates the complete matrix (all hosts and
+    # groups). A one-host split run proves its lanes through the SDK jobs only.
+    if: needs.v2-prepare.outputs.scope == 'full'
     needs: [v2-prepare, v2-runtimes, v2-build, v2-sdk]
     runs-on: ubuntu-24.04
     timeout-minutes: 120
