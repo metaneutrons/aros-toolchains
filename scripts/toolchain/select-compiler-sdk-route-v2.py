@@ -23,6 +23,7 @@ ADMISSION_SPEC = importlib.util.spec_from_file_location(
 )
 ADMISSION = importlib.util.module_from_spec(ADMISSION_SPEC)
 ADMISSION_SPEC.loader.exec_module(ADMISSION)
+TAG_DISPATCH_MODE = "release-v2"
 MAX_COMMAND_STDOUT = 8 * 1024 * 1024
 MAX_COMMAND_STDERR = 64 * 1024
 
@@ -86,14 +87,20 @@ def api(repository, endpoint):
 def authenticate_tag(args, tools_commit):
     require(args.run_attempt == "1", "product tags cannot be requalified by rerunning an attempt")
     require(args.ref_type == "tag" and args.source_ref.startswith("refs/tags/"),
-            "push qualification requires a tag ref")
+            "tag qualification requires a tag ref")
     name = args.source_ref.removeprefix("refs/tags/")
     try:
         prerelease = TAG.classify_tag(name)
     except ValueError as error:
         raise RouteError("product tag is not canonical SemVer") from error
-    require(args.mode == args.scope == args.group == "",
-            "tag qualification does not accept diagnostic selectors")
+    if args.event == "push":
+        require(args.mode == args.scope == args.group == "",
+                "tag qualification does not accept diagnostic selectors")
+    else:
+        # The dispatcher's single native dispatch. Any other selector on a tag
+        # ref, including the diagnostic and legacy modes, is rejected.
+        require(args.mode == TAG_DISPATCH_MODE and args.scope == "full" and args.group == "",
+                "tag dispatch requires the release-v2 mode, the full scope and no group")
     require(REPOSITORY.fullmatch(args.repository) is not None, "repository identity is invalid")
 
     # Reject the unpublished development snapshot before any network request or
@@ -171,7 +178,11 @@ def select(args):
     if args.event == "push":
         outputs.update(authenticate_tag(args, selection["tools_commit"]))
         outputs.update(event="push", scope="full", full_qualification="false",
-                       runtime_kind="released", full_matrix="true")
+                       runtime_kind="released", full_matrix="true", route="tag")
+    elif args.event == "workflow_dispatch" and args.ref_type == "tag":
+        outputs.update(authenticate_tag(args, selection["tools_commit"]))
+        outputs.update(event="workflow_dispatch", scope="full", full_qualification="false",
+                       runtime_kind="released", full_matrix="true", route="tag")
     else:
         require(args.event == "workflow_dispatch" and args.ref_type == "branch"
                 and BRANCH.fullmatch(args.source_ref) is not None,
@@ -190,7 +201,7 @@ def select(args):
         require(not full or args.group == "", "full qualification cannot select one group")
         outputs.update(event="workflow_dispatch", scope=args.scope,
                        full_qualification=str(full).lower(), runtime_kind="development",
-                       full_matrix=str(split).lower(),
+                       full_matrix=str(split).lower(), route="diagnostic",
                        release_id=f"toolchain-dev-{args.producer_commit[:12]}")
     return outputs
 
