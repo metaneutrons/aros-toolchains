@@ -1,0 +1,233 @@
+# Inactive future caller. Keep this template outside .github/workflows until
+# the protected-start integration is separately qualified and deliberately installed.
+# It calls only commands of a released aros-tools runtime that ships the
+# dispatcher commands; with the current runtime lock it cannot run.
+name: Protected compiler and SDK dispatch
+
+on:
+  workflow_run:
+    workflows: ['Protected compiler and SDK start']
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fixed-compiler-sdk-protected-dispatch-main
+  cancel-in-progress: false
+
+jobs:
+  protected-dispatch:
+    name: Dispatch compiler and SDK qualification
+    if: >-
+      github.repository == 'metaneutrons/aros-toolchains' &&
+      github.ref == 'refs/heads/main' &&
+      github.run_attempt == 1 &&
+      github.event_name == 'workflow_run' &&
+      github.event.workflow_run.name == 'Protected compiler and SDK start' &&
+      github.event.workflow_run.path == '.github/workflows/compiler-sdk-release-start.yml' &&
+      github.event.workflow_run.event == 'workflow_run' &&
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.run_attempt == 1 &&
+      github.event.workflow_run.repository.full_name == 'metaneutrons/aros-toolchains' &&
+      github.event.workflow_run.head_repository.full_name == 'metaneutrons/aros-toolchains'
+    runs-on: ubuntu-24.04
+    environment: release
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      actions: write
+      id-token: write
+      attestations: write
+    steps:
+      - name: Checkout reviewed main controller
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Stage private controller root
+        id: private-root
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          runner_temp=$(cd -- "$RUNNER_TEMP" && pwd -P)
+          root="$runner_temp/aros-protected-dispatch-v2"
+          if [[ -e "$root" || -L "$root" ]]; then
+            echo 'private controller root is already occupied' >&2
+            exit 1
+          fi
+          mkdir -- "$root"
+          if [[ -L "$root" || ! -d "$root" || "$(stat -c '%u' -- "$root")" != "$(id -u)" ]]; then
+            echo 'new controller root has an unexpected identity' >&2
+            exit 1
+          fi
+          chmod 700 -- "$root"
+          mkdir -m 700 -- "$root/selected" "$root/context" "$root/out"
+          printf 'root=%s\n' "$root" >> "$GITHUB_OUTPUT"
+
+      - name: Materialize the locked aros-tools runtime
+        id: runtime
+        uses: ./.github/actions/materialize-aros-tools-runtime
+        with:
+          host: linux-x86_64
+          destination: ${{ steps.private-root.outputs.root }}/runtime
+
+      - name: Checkout the locked aros-tools source
+        uses: ./.github/actions/checkout-locked-aros-tools-source
+        id: tools
+        with:
+          path: dependencies/aros-tools
+
+      - name: Check the runtime interface
+        uses: ./.github/actions/check-v2-runtime-interface
+        with:
+          runtime-kind: released
+          root: ${{ steps.runtime.outputs.root }}
+          tools-source: ${{ github.workspace }}/dependencies/aros-tools
+          tools-commit: ${{ steps.tools.outputs.commit }}
+          output: ${{ steps.private-root.outputs.root }}/runtime-interface.json
+
+      - name: Select the sealed start transport
+        env:
+          GH_HOST: github.com
+          GH_TOKEN: ${{ github.token }}
+          PRIVATE_ROOT: ${{ steps.private-root.outputs.root }}
+        run: |
+          set -euo pipefail
+          "$PRIVATE_ROOT/runtime/bin/aros" toolchain producer dispatcher-select \
+            --output-dir "$PRIVATE_ROOT/selected"
+
+      - name: Derive the independent context files
+        id: context
+        env:
+          PRIVATE_ROOT: ${{ steps.private-root.outputs.root }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          selection="$PRIVATE_ROOT/selected/compiler-sdk-start-selection-v2.json"
+          jq -ce '.source_context' "$selection" > "$PRIVATE_ROOT/context/source.json"
+          jq -ce '.dispatcher_identity.context' "$selection" > "$PRIVATE_ROOT/context/dispatcher.json"
+          jq -ce '.dispatcher_identity.job' "$selection" > "$PRIVATE_ROOT/context/job.json"
+          record_sha256=$(jq -er '.record_sha256' "$selection")
+          bundle_sha256=$(jq -er '.bundle_sha256' "$selection")
+          [[ "$record_sha256" =~ ^[0-9a-f]{64}$ && "$bundle_sha256" =~ ^[0-9a-f]{64}$ ]]
+          printf 'record_sha256=%s\nbundle_sha256=%s\n' "$record_sha256" "$bundle_sha256" >> "$GITHUB_OUTPUT"
+
+      - name: Upload the claim once to the empty private draft
+        env:
+          GH_HOST: github.com
+          GH_TOKEN: ${{ github.token }}
+          PRIVATE_ROOT: ${{ steps.private-root.outputs.root }}
+          RECORD_SHA256: ${{ steps.context.outputs.record_sha256 }}
+          BUNDLE_SHA256: ${{ steps.context.outputs.bundle_sha256 }}
+        run: |
+          set -euo pipefail
+          "$PRIVATE_ROOT/runtime/bin/aros" toolchain producer dispatcher-claim \
+            --record "$PRIVATE_ROOT/selected/compiler-sdk-release-start-v2.json" \
+            --bundle "$PRIVATE_ROOT/selected/compiler-sdk-release-start-v2.sigstore.json" \
+            --source-context "$PRIVATE_ROOT/context/source.json" \
+            --dispatcher-context "$PRIVATE_ROOT/context/dispatcher.json" \
+            --dispatcher-job "$PRIVATE_ROOT/context/job.json" \
+            --expected-record-sha256 "$RECORD_SHA256" \
+            --expected-bundle-sha256 "$BUNDLE_SHA256" \
+            --runtime-lock "$GITHUB_WORKSPACE/toolchains/aros-tools-runtime-v1.json" \
+            --runtime-directory "$PRIVATE_ROOT/runtime" \
+            --runtime-interface "$PRIVATE_ROOT/runtime-interface.json" \
+            --runtime-host linux-x86_64 \
+            --claim-output "$PRIVATE_ROOT/out/compiler-sdk-dispatch-claim-v2.json" \
+            --asset-output "$PRIVATE_ROOT/out/claim-asset.json"
+
+      - name: Capture the claim path and pre-sign digest
+        id: claim
+        env:
+          PRIVATE_ROOT: ${{ steps.private-root.outputs.root }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          claim_path="$PRIVATE_ROOT/out/compiler-sdk-dispatch-claim-v2.json"
+          test -f "$claim_path"
+          claim_sha256=$(sha256sum -- "$claim_path" | awk '{print $1}')
+          [[ "$claim_sha256" =~ ^[0-9a-f]{64}$ ]]
+          asset_id=$(jq -er '.id | select(type == "number" and . > 0)' "$PRIVATE_ROOT/out/claim-asset.json")
+          printf 'path=%s\nsha256=%s\nasset_id=%s\n' "$claim_path" "$claim_sha256" "$asset_id" >> "$GITHUB_OUTPUT"
+
+      - name: Attest the canonical claim with build provenance
+        id: claim-signature
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        with:
+          subject-path: ${{ steps.claim.outputs.path }}
+          push-to-registry: false
+          create-storage-record: false
+
+      - name: Verify the claimed start
+        env:
+          GH_HOST: github.com
+          GH_TOKEN: ${{ github.token }}
+          PRIVATE_ROOT: ${{ steps.private-root.outputs.root }}
+          RECORD_SHA256: ${{ steps.context.outputs.record_sha256 }}
+          BUNDLE_SHA256: ${{ steps.context.outputs.bundle_sha256 }}
+          CLAIM_SHA256: ${{ steps.claim.outputs.sha256 }}
+          CLAIM_ASSET_ID: ${{ steps.claim.outputs.asset_id }}
+        run: |
+          set -euo pipefail
+          "$PRIVATE_ROOT/runtime/bin/aros" toolchain producer dispatcher-verify-claim \
+            --record "$PRIVATE_ROOT/selected/compiler-sdk-release-start-v2.json" \
+            --bundle "$PRIVATE_ROOT/selected/compiler-sdk-release-start-v2.sigstore.json" \
+            --claim "$PRIVATE_ROOT/out/compiler-sdk-dispatch-claim-v2.json" \
+            --claim-asset-id "$CLAIM_ASSET_ID" \
+            --source-context "$PRIVATE_ROOT/context/source.json" \
+            --dispatcher-context "$PRIVATE_ROOT/context/dispatcher.json" \
+            --dispatcher-job "$PRIVATE_ROOT/context/job.json" \
+            --expected-record-sha256 "$RECORD_SHA256" \
+            --expected-bundle-sha256 "$BUNDLE_SHA256" \
+            --expected-claim-sha256 "$CLAIM_SHA256" \
+            --runtime-lock "$GITHUB_WORKSPACE/toolchains/aros-tools-runtime-v1.json" \
+            --runtime-directory "$PRIVATE_ROOT/runtime" \
+            --runtime-interface "$PRIVATE_ROOT/runtime-interface.json" \
+            --runtime-host linux-x86_64 \
+            --output "$PRIVATE_ROOT/out/claimed-start-receipt.json"
+
+      - name: Dispatch the native qualification once
+        env:
+          GH_HOST: github.com
+          GH_TOKEN: ${{ github.token }}
+          PRIVATE_ROOT: ${{ steps.private-root.outputs.root }}
+          CLAIM_BUNDLE_PATH: ${{ steps.claim-signature.outputs.bundle-path }}
+        run: |
+          set -euo pipefail
+          claim_bundle_sha256=$(sha256sum -- "$CLAIM_BUNDLE_PATH" | awk '{print $1}')
+          [[ "$claim_bundle_sha256" =~ ^[0-9a-f]{64}$ ]]
+          "$PRIVATE_ROOT/runtime/bin/aros" toolchain producer dispatcher-dispatch \
+            --record "$PRIVATE_ROOT/selected/compiler-sdk-release-start-v2.json" \
+            --bundle "$PRIVATE_ROOT/selected/compiler-sdk-release-start-v2.sigstore.json" \
+            --claim "$PRIVATE_ROOT/out/compiler-sdk-dispatch-claim-v2.json" \
+            --claim-asset "$PRIVATE_ROOT/out/claim-asset.json" \
+            --claim-bundle-sha256 "$claim_bundle_sha256" \
+            --source-context "$PRIVATE_ROOT/context/source.json" \
+            --dispatcher-context "$PRIVATE_ROOT/context/dispatcher.json" \
+            --dispatcher-job "$PRIVATE_ROOT/context/job.json" \
+            --output "$PRIVATE_ROOT/out/compiler-sdk-dispatch-binding-v2.json"
+
+      - name: Attest the dispatch binding with build provenance
+        id: binding-signature
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        with:
+          subject-path: ${{ steps.private-root.outputs.root }}/out/compiler-sdk-dispatch-binding-v2.json
+          push-to-registry: false
+          create-storage-record: false
+
+      - name: Upload only the dispatch binding transport
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: compiler-sdk-dispatch-binding-v2-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ steps.private-root.outputs.root }}/out/compiler-sdk-dispatch-binding-v2.json
+            ${{ steps.binding-signature.outputs.bundle-path }}
+          if-no-files-found: error
+          retention-days: 90
+          overwrite: false
