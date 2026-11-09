@@ -157,6 +157,26 @@ INTERFACES = (
         "selection", "selection-sha256", "subject-manifest", "subject-manifest-sha256",
         "forbidden-prefix", "format",
     ),
+    _interface(
+        ("toolchain", "producer", "dispatcher-select"),
+        "output-dir",
+    ),
+    _interface(
+        ("toolchain", "producer", "dispatcher-verify-claim"),
+        "record", "bundle", "claim", "claim-asset-id", "source-context", "dispatcher-context", "dispatcher-job", "expected-record-sha256", "expected-bundle-sha256", "expected-claim-sha256", "runtime-lock", "runtime-directory", "runtime-interface", "runtime-host", "output",
+    ),
+    _interface(
+        ("toolchain", "producer", "dispatcher-dispatch"),
+        "record", "bundle", "claim", "claim-asset", "claim-bundle-sha256", "source-context", "dispatcher-context", "dispatcher-job", "output",
+    ),
+    _interface(
+        ("toolchain", "producer", "dispatcher-verify-binding"),
+        "binding", "signature", "expected-binding-sha256", "expected-signature-sha256", "record", "bundle", "claim", "claim-asset", "claim-bundle-sha256", "source-context", "dispatcher-context", "dispatcher-job", "native-context", "native-event", "output",
+    ),
+    _interface(
+        ("toolchain", "producer", "dispatcher-claim"),
+        "record", "bundle", "source-context", "dispatcher-context", "dispatcher-job", "expected-record-sha256", "expected-bundle-sha256", "runtime-lock", "runtime-directory", "runtime-interface", "runtime-host", "claim-output", "asset-output",
+    ),
 )
 
 
