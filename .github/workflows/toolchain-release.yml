@@ -83,6 +83,7 @@ jobs:
       prerelease: ${{ steps.selection.outputs.prerelease }}
       tag_object: ${{ steps.selection.outputs.tag_object }}
       tag_epoch: ${{ steps.selection.outputs.tag_epoch }}
+      route: ${{ steps.selection.outputs.route }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -1251,7 +1252,7 @@ jobs:
           # authenticated product-tag route may record complete qualification.
       - name: Record complete tag-bound V2 qualification
         id: complete-qualification
-        if: github.event_name == 'push' && needs.v2-prepare.outputs.runtime_kind == 'released'
+        if: needs.v2-prepare.outputs.route == 'tag' && needs.v2-prepare.outputs.runtime_kind == 'released'
         env:
           GH_TOKEN: ${{ github.token }}
           SELECTED_TAG_OBJECT: ${{ needs.v2-prepare.outputs.tag_object }}
@@ -1319,12 +1320,12 @@ jobs:
           printf 'evidence=%s\nevidence_sha256=%s\n' "$evidence" "$evidence_sha" >> "$GITHUB_OUTPUT"
       - name: Attest the unchanged complete qualification record
         id: qualification-signature
-        if: github.event_name == 'push' && steps.complete-qualification.outcome == 'success'
+        if: needs.v2-prepare.outputs.route == 'tag' && steps.complete-qualification.outcome == 'success'
         uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373
         with:
           subject-path: ${{ steps.complete-qualification.outputs.evidence }}
       - name: Seal qualification transport metadata
-        if: github.event_name == 'push' && steps.qualification-signature.outcome == 'success'
+        if: needs.v2-prepare.outputs.route == 'tag' && steps.qualification-signature.outcome == 'success'
         env:
           QUALIFICATION_PARENT: ${{ steps.complete-qualification.outputs.parent }}
           QUALIFICATION_PATH: ${{ steps.complete-qualification.outputs.evidence }}
@@ -1355,7 +1356,7 @@ jobs:
           qualification._stat_expected(evidence, qualification.MAX_METADATA, 'qualification record', measurement, fingerprint)
           PY
       - name: Retain complete qualification and its signed provenance
-        if: github.event_name == 'push' && steps.qualification-signature.outcome == 'success'
+        if: needs.v2-prepare.outputs.route == 'tag' && steps.qualification-signature.outcome == 'success'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: complete-v2-qualification-${{ github.run_id }}-${{ github.run_attempt }}
