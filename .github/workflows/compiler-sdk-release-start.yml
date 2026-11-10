@@ -1,5 +1,7 @@
-# Inactive future caller. Keep this template outside .github/workflows until
-# the protected-start integration is separately qualified and deliberately installed.
+# Protected compiler and SDK start. The path is the reader's fixed path; see
+# toolchains/release-start-v2.md. Only a green first-attempt push run of
+# 'Producer contracts' on main for a Release Please release commit gets past the
+# job gate, and admission then re-derives everything from the provider.
 name: Protected compiler and SDK start
 
 on:
@@ -30,7 +32,8 @@ jobs:
       github.event.workflow_run.conclusion == 'success' &&
       github.event.workflow_run.run_attempt == 1 &&
       github.event.workflow_run.repository.full_name == 'metaneutrons/aros-toolchains' &&
-      github.event.workflow_run.head_repository.full_name == 'metaneutrons/aros-toolchains'
+      github.event.workflow_run.head_repository.full_name == 'metaneutrons/aros-toolchains' &&
+      startsWith(github.event.workflow_run.head_commit.message, 'chore(main): release ')
     runs-on: ubuntu-24.04
     environment: release
     timeout-minutes: 30

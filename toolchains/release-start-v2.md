@@ -284,11 +284,15 @@ behavior or production qualification:
   binding check requires the admitted PR to remain pending. Label transition
   is not an alternative admission route.
 
-### Inactive protected-start template
+### Installed protected-start workflow
 
-`toolchains/workflow-templates/compiler-sdk-release-start.yml` stages the future
-single-job caller outside `.github/workflows`; GitHub does not install it as a
-workflow there. It composes admission, committed draft-config validation,
+`.github/workflows/compiler-sdk-release-start.yml` (installed 2026-11-10 at the
+reader's fixed path, with the maintainer's approval) is the single-job caller.
+Its job gate additionally requires that the triggering commit title starts with
+`chore(main): release `, the title Release Please gives its merged version pull
+request, so that ordinary pushes to main do not leave a pending approval of the
+environment `release`. Admission re-derives everything from the provider and
+remains the authority. It composes admission, committed draft-config validation,
 authenticated runtime/candidate creation, the pinned Release Please draft
 invocation, exact output binding, record construction, attestation and bounded
 transport retention. Its proposed artifact name is
@@ -296,14 +300,14 @@ transport retention. Its proposed artifact name is
 only the sealed record/bundle directory as payload. Its concurrency group
 serializes invocations; it does not prove durable exclusive consumption.
 
-This is not an activated start or a provider observation. The template's static
-positive/counterprobes and syntax checks do not execute the action, establish
-environment protection or token scope, verify a published runtime, authenticate
-a start, upload evidence or dispatch native qualification. Installation at the
-reader's fixed workflow path requires separate authorization and genuine
-nonpublishing provider/signature qualification. The independently authenticated
-successful-start dispatcher, exclusive claim consumption and native entry
-integration remain separate requirements; START-A5 and START-A7 remain open.
+Installation is not a provider observation. The static positive/counterprobes
+and syntax checks do not execute the action, establish environment protection or
+token scope, verify a published runtime, authenticate a start, upload evidence or
+dispatch native qualification. Genuine nonpublishing provider and signature
+evidence is still outstanding (aros-toolchains#118). The independently
+authenticated successful-start dispatcher, exclusive claim consumption and native
+entry integration remain separate requirements; START-A5 and START-A7 remain
+open.
 
 ### Remaining integration proof
 
