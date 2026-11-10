@@ -698,6 +698,18 @@ jobs:
             printf 'runtime-sha256=%s\n' "$runtime_sha"
             printf 'release-id=%s\n' "$SELECTED_RELEASE_ID"
           } >> "$GITHUB_OUTPUT"
+      - name: Record runner hardware for reproducibility diagnosis
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$RUNNER_OS" == Linux ]]; then
+            lscpu | grep -E '^(Architecture|Vendor ID|Model name|CPU family|Model|Stepping|CPU\(s\)):'
+            grep -m1 '^flags' /proc/cpuinfo | tr ' ' '\n' | grep -E '^(avx|avx2|avx512[a-z]*|bmi2|adx|sse4_2)$' | sort | tr '\n' ' ' || true
+            echo
+          else
+            sysctl -n machdep.cpu.brand_string
+            sysctl -n hw.ncpu
+          fi
       - uses: ./.github/actions/build-native-lane-v2
         with:
           aros: ${{ runner.temp }}/diagnostic-runtime/bin/aros
