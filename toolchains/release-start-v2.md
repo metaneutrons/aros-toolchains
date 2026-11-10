@@ -111,7 +111,11 @@ exactly this App with mode `always`. Its private key is a secret of the protecte
 environment `release`, whose required reviewer is the repository owner; the
 client ID is the environment variable `RELEASE_TAG_CLIENT_ID`. The controller
 obtains a short-lived installation token from it for the single tag creation and
-for no other step. No PAT is used.
+for no other step. No PAT is used. The staged start template implements this with
+a pinned `actions/create-github-app-token` step, an identity check (slug and an
+installation on this repository alone) and the tag step as the only consumers of
+the token; its static policy test rejects any other use. The template stays
+inactive until it is separately installed.
 
 Admission therefore no longer requires an empty bypass list. It requires the
 `creation` rule and exactly one bypass actor, the App with the numeric ID above

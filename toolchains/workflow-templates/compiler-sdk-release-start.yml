@@ -98,10 +98,38 @@ jobs:
         with:
           cosign-release: v3.0.6
 
+      - name: Issue a repository-scoped release tag App token
+        id: tag-token
+        if: success() && steps.admit.outputs.ready == 'true'
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
+        with:
+          client-id: ${{ vars.RELEASE_TAG_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_TAG_APP_PRIVATE_KEY }}
+          owner: metaneutrons
+          repositories: aros-toolchains
+          permission-contents: write
+
+      - name: Verify release tag App identity and repository scope
+        if: success() && steps.admit.outputs.ready == 'true'
+        env:
+          GH_TOKEN: ${{ steps.tag-token.outputs.token }}
+          APP_SLUG: ${{ steps.tag-token.outputs.app-slug }}
+        run: |
+          set -euo pipefail
+          [[ "$APP_SLUG" == metaneutrons-release-tag ]] || {
+            echo 'unexpected release tag App identity' >&2
+            exit 1
+          }
+          gh api 'installation/repositories?per_page=100' --paginate --slurp |
+            jq -e --arg repository "$GITHUB_REPOSITORY" '
+              length > 0 and all(.[]; .total_count == 1) and
+              ([.[].repositories[].full_name] == [$repository])
+            ' >/dev/null
+
       - name: Create the admitted annotated candidate tag
         if: success() && steps.admit.outputs.ready == 'true'
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.tag-token.outputs.token }}
           PRIVATE_ROOT: ${{ steps.private-root.outputs.root }}
         run: |
           set -euo pipefail

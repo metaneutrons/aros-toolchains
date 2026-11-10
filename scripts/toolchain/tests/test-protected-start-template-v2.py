@@ -24,6 +24,7 @@ COSIGN = "sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6"
 RELEASE_PLEASE = "googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7"
 ATTEST = "actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373"
 UPLOAD = "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
+APP_TOKEN = "actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1"
 READY_GUARD = "if: success() && steps.admit.outputs.ready == 'true'"
 
 EXPECTED_STEP_NAMES = [
@@ -32,6 +33,8 @@ EXPECTED_STEP_NAMES = [
     "Admit exact release candidate",
     "Validate derived Release Please draft configuration",
     "Install pinned Cosign",
+    "Issue a repository-scoped release tag App token",
+    "Verify release tag App identity and repository scope",
     "Create the admitted annotated candidate tag",
     "Create the admitted private Release Please draft",
     "Bind the private draft to the admitted tag",
@@ -240,9 +243,37 @@ def validate_template(text: str) -> None:
         "tag creation must use the current candidate-helper CLI and exact locked inputs",
     )
     require(mapping_block(candidate_create, "env") == {
-        "GH_TOKEN": "${{ github.token }}",
+        "GH_TOKEN": "${{ steps.tag-token.outputs.token }}",
         "PRIVATE_ROOT": "${{ steps.private-root.outputs.root }}",
-    }, "tag creation must use only the job token and staged private root")
+    }, "tag creation must use only the release tag App token and staged private root")
+
+    tag_token = selected_step(steps, "Issue a repository-scoped release tag App token")
+    require("id: tag-token\n" in tag_token, "App token step output identity is required")
+    require(f"uses: {APP_TOKEN} # v3\n" in tag_token,
+            "App token action must use the approved immutable pin")
+    require(mapping_block(tag_token, "with") == {
+        "client-id": "${{ vars.RELEASE_TAG_CLIENT_ID }}",
+        "private-key": "${{ secrets.RELEASE_TAG_APP_PRIVATE_KEY }}",
+        "owner": "metaneutrons",
+        "repositories": "aros-toolchains",
+        "permission-contents": "write",
+    }, "App token must be scoped to this repository, contents write only, from the release environment")
+
+    tag_verify = selected_step(steps, "Verify release tag App identity and repository scope")
+    require(mapping_block(tag_verify, "env") == {
+        "GH_TOKEN": "${{ steps.tag-token.outputs.token }}",
+        "APP_SLUG": "${{ steps.tag-token.outputs.app-slug }}",
+    }, "identity check must receive only the App token and its slug")
+    verify_body = run_body(tag_verify)
+    require('[[ "$APP_SLUG" == metaneutrons-release-tag ]]' in verify_body,
+            "identity check must require the release tag App slug")
+    require("([.[].repositories[].full_name] == [$repository])" in verify_body,
+            "identity check must require an installation on this repository alone")
+    token_users = [name for name, block in steps if "steps.tag-token.outputs.token" in block]
+    require(token_users == [
+        "Verify release tag App identity and repository scope",
+        "Create the admitted annotated candidate tag",
+    ], "the App token may be used only by its identity check and the tag creation")
 
     release = selected_step(steps, "Create the admitted private Release Please draft")
     require(f"uses: {RELEASE_PLEASE} # v5.0.0\n" in release,
@@ -349,11 +380,12 @@ def validate_template(text: str) -> None:
     expected_uses = [
         f"uses: {CHECKOUT} # v7.0.1",
         f"uses: {COSIGN} # v4.1.2",
+        f"uses: {APP_TOKEN} # v3",
         f"uses: {RELEASE_PLEASE} # v5.0.0",
         f"uses: {ATTEST} # v4.1.1",
         f"uses: {UPLOAD} # v7.0.1",
     ]
-    require(uses == expected_uses, "template must contain only the five approved pinned actions")
+    require(uses == expected_uses, "template must contain only the six approved pinned actions")
 
     forbidden = (
         "continue-on-error:",
@@ -364,8 +396,8 @@ def validate_template(text: str) -> None:
         "retry",
         "workflow_dispatch:",
         "repository_dispatch:",
-        "actions/create-github-app-token",
-        "secrets.",
+        "secrets.PAT",
+        "secrets.GITHUB_TOKEN",
         "GH_AUTH_TOKEN",
         "GOVERNANCE_TOKEN",
         "gh workflow run",
@@ -375,6 +407,10 @@ def validate_template(text: str) -> None:
     )
     for marker in forbidden:
         require(marker not in text, f"template contains forbidden alternate path {marker!r}")
+    require(re.findall(r"secrets\.[A-Za-z0-9_]+", text) == ["secrets.RELEASE_TAG_APP_PRIVATE_KEY"],
+            "the only secret reference must be the release tag App private key")
+    require(re.findall(r"vars\.[A-Za-z0-9_]+", text) == ["vars.RELEASE_TAG_CLIENT_ID"],
+            "the only variable reference must be the release tag App client ID")
 
 
 class ProtectedStartTemplateTests(unittest.TestCase):
@@ -401,6 +437,13 @@ class ProtectedStartTemplateTests(unittest.TestCase):
             ("pull request phase enabled", "skip-github-pull-request: true", "skip-github-pull-request: false"),
             ("label mutation enabled", "skip-labeling: true", "skip-labeling: false"),
             ("alternate workflow token", "GH_TOKEN: ${{ github.token }}", "GH_TOKEN: ${{ secrets.PAT }}"),
+            ("tag creation with the job token", "GH_TOKEN: ${{ steps.tag-token.outputs.token }}\n          PRIVATE_ROOT", "GH_TOKEN: ${{ github.token }}\n          PRIVATE_ROOT"),
+            ("App token for another repository", "repositories: aros-toolchains", "repositories: aros-tools"),
+            ("App token with wider permission", "permission-contents: write", "permission-contents: write\n          permission-pull-requests: write"),
+            ("wrong App slug", "== metaneutrons-release-tag ]]", "== metaneutrons-release-please ]]"),
+            ("App token from another secret", "secrets.RELEASE_TAG_APP_PRIVATE_KEY", "secrets.RELEASE_PLEASE_APP_PRIVATE_KEY"),
+            ("App token without ready guard", "id: tag-token\n        if: success() && steps.admit.outputs.ready == 'true'", "id: tag-token"),
+            ("floating App token action", APP_TOKEN, "actions/create-github-app-token@main"),
             ("broader pull request permission", "pull-requests: read", "pull-requests: write"),
             ("floating runner", "runs-on: ubuntu-24.04", "runs-on: ubuntu-latest"),
             ("floating attestation action", ATTEST, "actions/attest-build-provenance@main"),
