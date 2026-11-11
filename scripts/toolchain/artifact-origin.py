@@ -208,14 +208,56 @@ def owning_check_id(context: dict, *, expected_event: str) -> int:
         raise OriginError("authenticated runner OIDC acquisition failed") from None
 
 
+GH_ATTEMPTS = 5
+# Seconds to wait before the second, third, fourth and fifth attempt.
+GH_BACKOFF_SECONDS = (5, 15, 45, 90)
+# Provider-side or transport-side failures of a read-only `gh api` call. A
+# client error (HTTP 4xx), a failed signature check or any other command is
+# never matched, so a real rejection fails at once with its original message.
+GH_TRANSIENT = re.compile(
+    rb"HTTP 5\d\d|error connecting|i/o timeout|connection reset|connection refused|"
+    rb"TLS handshake timeout|unexpected EOF|no such host|temporary failure", re.IGNORECASE)
+
+
 def gh_json(arguments: list[str], purpose: str = "GitHub observation") -> object:
-    try:
-        result = subprocess.run(["gh", *arguments], stdout=subprocess.PIPE,
-                                stderr=subprocess.DEVNULL, timeout=90, check=False)
-    except (OSError, subprocess.TimeoutExpired):
-        raise OriginError("GitHub observation is unavailable") from None
-    require(result.returncode == 0, f"{purpose} failed; no retry or credential fallback")
-    return parse_json(result.stdout)
+    """Run one GitHub CLI observation and parse its JSON.
+
+    Only a read-only ``gh api`` call that fails with a provider or transport
+    error is retried, up to five attempts with a bounded backoff. Every attempt
+    is the same request with the same ambient token; there is no second
+    credential, no cached answer and no weaker check. A client error, a failed
+    signature check, any other command, and a body that does not parse or
+    validate fail at once, because only unavailability is transient. A run that
+    has spent hours on a build must not die on one provider error page
+    (aros-toolchains run 43048632908, 2026-11-11).
+    """
+    retryable = bool(arguments) and arguments[0] == "api"
+    attempts = GH_ATTEMPTS if retryable else 1
+    unavailable = False
+    for attempt in range(attempts):
+        if attempt:
+            time.sleep(GH_BACKOFF_SECONDS[attempt - 1])
+        try:
+            result = subprocess.run(["gh", *arguments], stdout=subprocess.PIPE,
+                                    stderr=subprocess.PIPE if retryable else subprocess.DEVNULL,
+                                    timeout=90, check=False)
+        except subprocess.TimeoutExpired:
+            unavailable = True
+            continue
+        except OSError:
+            raise OriginError("GitHub observation is unavailable") from None
+        if result.returncode == 0:
+            return parse_json(result.stdout)
+        unavailable = False
+        if not (retryable and GH_TRANSIENT.search(result.stderr or b"")):
+            break
+    else:
+        raise OriginError(
+            "GitHub observation is unavailable" if unavailable
+            else f"{purpose} failed after {attempts} attempts; no credential fallback")
+    if unavailable:
+        raise OriginError("GitHub observation is unavailable")
+    raise OriginError(f"{purpose} failed; no retry or credential fallback")
 
 
 def observe_run_event(context: dict) -> str:
