@@ -944,5 +944,97 @@ class RecordVerifyCallFlowTests(unittest.TestCase):
                 self.assertEqual(len(fixture["_download_calls"]), 1)
 
 
+class GitHubObservationRetryTests(unittest.TestCase):
+    """Only a transient provider failure of a read-only api call is retried."""
+
+    @staticmethod
+    def _completed(returncode: int, stdout: bytes = b"", stderr: bytes = b"") -> subprocess.CompletedProcess:
+        return subprocess.CompletedProcess(["gh"], returncode, stdout=stdout, stderr=stderr)
+
+    def _bad_gateway(self) -> subprocess.CompletedProcess:
+        return self._completed(1, stderr=b"gh: HTTP 502: Server Error (https://api.github.com/x)")
+
+    def test_a_provider_error_is_retried_with_a_bounded_backoff(self) -> None:
+        results = [self._bad_gateway(), self._bad_gateway(), self._completed(0, b'{"ok":true}')]
+        with mock.patch.object(origin.subprocess, "run", side_effect=results) as run, \
+                mock.patch.object(origin.time, "sleep") as sleep:
+            self.assertEqual(origin.gh_json(["api", "x"]), {"ok": True})
+        self.assertEqual(run.call_count, 3)
+        self.assertEqual([call.args[0] for call in sleep.call_args_list], [5, 15])
+
+    def test_a_connection_failure_and_a_timeout_are_retried(self) -> None:
+        results = [
+            self._completed(1, stderr=b"error connecting to api.github.com"),
+            subprocess.TimeoutExpired(["gh"], 90),
+            self._completed(0, b"[1]"),
+        ]
+        with mock.patch.object(origin.subprocess, "run", side_effect=results), \
+                mock.patch.object(origin.time, "sleep"):
+            self.assertEqual(origin.gh_json(["api", "x"]), [1])
+
+    def test_a_persistent_provider_error_ends_after_exactly_five_attempts(self) -> None:
+        with mock.patch.object(origin.subprocess, "run", return_value=self._bad_gateway()) as run, \
+                mock.patch.object(origin.time, "sleep") as sleep:
+            with self.assertRaisesRegex(origin.OriginError, "after 5 attempts; no credential fallback"):
+                origin.gh_json(["api", "x"])
+        self.assertEqual(run.call_count, 5)
+        self.assertEqual([call.args[0] for call in sleep.call_args_list], [5, 15, 45, 90])
+
+    def test_a_persistent_timeout_reports_unavailability(self) -> None:
+        with mock.patch.object(origin.subprocess, "run",
+                               side_effect=subprocess.TimeoutExpired(["gh"], 90)) as run, \
+                mock.patch.object(origin.time, "sleep"):
+            with self.assertRaisesRegex(origin.OriginError, "unavailable"):
+                origin.gh_json(["api", "x"])
+        self.assertEqual(run.call_count, 5)
+
+    def test_a_client_error_is_not_retried(self) -> None:
+        for stderr in (b"gh: HTTP 404: Not Found", b"gh: HTTP 403: Resource not accessible", b""):
+            with self.subTest(stderr=stderr):
+                failed = self._completed(1, stderr=stderr)
+                with mock.patch.object(origin.subprocess, "run", return_value=failed) as run, \
+                        mock.patch.object(origin.time, "sleep") as sleep:
+                    with self.assertRaisesRegex(
+                            origin.OriginError, "GitHub observation failed; no retry or credential fallback"):
+                        origin.gh_json(["api", "x"])
+                self.assertEqual(run.call_count, 1)
+                sleep.assert_not_called()
+
+    def test_a_signature_check_is_never_retried(self) -> None:
+        # gh attestation verify exits non-zero for a rejected signature. Even a
+        # transient looking message must not repeat the check.
+        failed = self._completed(1, stderr=b"HTTP 502")
+        with mock.patch.object(origin.subprocess, "run", return_value=failed) as run, \
+                mock.patch.object(origin.time, "sleep") as sleep:
+            with self.assertRaisesRegex(
+                    origin.OriginError,
+                    "^origin signature authentication failed; no retry or credential fallback$"):
+                origin.gh_json(["attestation", "verify", "x"], "origin signature authentication")
+        self.assertEqual(run.call_count, 1)
+        sleep.assert_not_called()
+        self.assertEqual(run.call_args.kwargs["stderr"], subprocess.DEVNULL)
+
+    def test_a_body_that_does_not_parse_is_not_retried(self) -> None:
+        for body in (b"<!DOCTYPE html>", b'{"a":1,"a":2}'):
+            with self.subTest(body=body):
+                with mock.patch.object(origin.subprocess, "run",
+                                       return_value=self._completed(0, body)) as run, \
+                        mock.patch.object(origin.time, "sleep") as sleep:
+                    with self.assertRaises(origin.OriginError):
+                        origin.gh_json(["api", "x"])
+                self.assertEqual(run.call_count, 1)
+                sleep.assert_not_called()
+
+    def test_every_attempt_is_the_same_request_with_the_same_environment(self) -> None:
+        results = [self._bad_gateway(), self._completed(0, b"{}")]
+        with mock.patch.object(origin.subprocess, "run", side_effect=results) as run, \
+                mock.patch.object(origin.time, "sleep"):
+            origin.gh_json(["api", "repos/o/r/actions/runs/1"])
+        first, second = run.call_args_list
+        self.assertEqual(first.args, second.args)
+        self.assertEqual(first.kwargs, second.kwargs)
+        self.assertNotIn("env", first.kwargs)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
