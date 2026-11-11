@@ -916,6 +916,18 @@ jobs:
           include-hidden-files: true
           if-no-files-found: warn
           retention-days: 7
+      - name: Retain both compiler packages when the SDK job fails
+        # A compiler A/B mismatch (AX0702) cannot be diagnosed from digests alone.
+        # Keep both original packages briefly so that the differing members can be
+        # compared byte for byte (for example with diffoscope).
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: diagnostic-v2-owned-sdk-packages-${{ matrix.group_id }}-${{ matrix.host }}-${{ matrix.profile }}
+          path: ${{ runner.temp }}/owned-sdk-lane/compiler-*/payload/package/*.tar.xz
+          if-no-files-found: warn
+          compression-level: 0
+          retention-days: 3
 
   v2-readback:
     name: Read back original compiler and SDK owners
