@@ -55,6 +55,20 @@ def _load_owner_selector():
     return module
 
 
+def _sync_generations(plan, skip=frozenset()):
+    """Rebuild the producer-owned SDK generation lanes.
+
+    ``skip`` holds (group, host) pairs without an SDK generation, as the native
+    plan omits the llvm group on macOS.
+    """
+    plan["sdk_generation_lanes"] = [
+        {"sdk_id": sdk["id"], "group_id": ref["group_id"], "profile": ref["profile"], "host": host}
+        for sdk in plan["sdks"] for ref in sdk["compiler_profiles"] for host in plan["hosts"]
+        if (ref["group_id"], host) not in skip
+    ]
+    plan["sdk_generation_count"] = len(plan["sdk_generation_lanes"])
+
+
 def _full_mixed_plan() -> dict:
     plan = release_fixture.owner_plan()
     sdk_specs = (
@@ -74,6 +88,7 @@ def _full_mixed_plan() -> dict:
         })
     plan["sdks"] = sorted(sdks, key=lambda sdk: sdk["id"])
     plan["sdk_count"] = len(sdks)
+    _sync_generations(plan)
     return plan
 
 
@@ -256,6 +271,41 @@ class SdkOwnerMatrixV2Tests(unittest.TestCase):
         with self.assertRaises(module.artifact_origin.OriginError):
             module._projection_route("refs/pull/17/merge")
 
+    def test_owners_follow_the_producer_owned_generation_lanes(self) -> None:
+        # family-beta has no SDK generation on macOS (as the llvm group in the
+        # real plan): its two SDKs lose the macOS owner, nothing else changes.
+        plan = _full_mixed_plan()
+        for group in plan["groups"]:
+            raw_lock = (self.inputs / group["source_lock"]["file"]).read_bytes()
+            group["source_lock"]["sha256"] = _sha(raw_lock)
+        _sync_generations(plan, {("family-beta", "macos-aarch64")})
+        result = self.run_cli(self.write_plan(plan))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        wrapper = json.loads(result.stdout)
+        self.assertEqual(len(wrapper["owners"]), 10)
+        self.assertEqual(len(wrapper["expected_sdk_generations"]), 10)
+        beta_hosts = {
+            owner["host"] for owner in wrapper["owners"] if owner["group_id"] == "family-beta"
+        }
+        self.assertEqual(beta_hosts, {"linux-aarch64", "linux-x86_64"})
+        self.assertEqual(
+            {owner["host"] for owner in wrapper["owners"] if owner["group_id"] == "family-alpha"},
+            set(plan["hosts"]),
+        )
+        self.assertFalse(any(
+            row["group_id"] == "family-beta" and row["host"] == "macos-aarch64"
+            for row in wrapper["expected_sdk_generations"]
+        ))
+
+        # A generation lane that no SDK declares is rejected, not ignored.
+        plan = _full_mixed_plan()
+        plan["sdk_generation_lanes"].append(
+            {"sdk_id": "sdk-unknown", "group_id": "family-beta", "profile": "beta-one",
+             "host": "linux-x86_64"}
+        )
+        plan["sdk_generation_count"] = len(plan["sdk_generation_lanes"])
+        self.assert_rejected(self.run_cli(self.write_plan(plan)))
+
     def test_two_sdk_ids_sharing_one_compiler_lane_form_one_owner_per_host(self) -> None:
         plan = _full_mixed_plan()
         for group in plan["groups"]:
@@ -265,6 +315,7 @@ class SdkOwnerMatrixV2Tests(unittest.TestCase):
         sdk_by_id["sdk-alpha-two"]["compiler_profiles"] = [
             {"group_id": "family-alpha", "profile": "alpha-one"}
         ]
+        _sync_generations(plan)
         result = self.run_cli(self.write_plan(plan))
         self.assertEqual(result.returncode, 0, result.stderr)
         wrapper = json.loads(result.stdout)
@@ -370,6 +421,7 @@ class SdkOwnerMatrixV2Tests(unittest.TestCase):
         plan = _full_mixed_plan()
         plan["sdks"].append(dict(plan["sdks"][-1]))
         plan["sdk_count"] = len(plan["sdks"])
+        _sync_generations(plan)
         self.assert_rejected(self.run_cli(self.write_plan(plan)))
 
     def test_repeated_option_is_rejected_before_opening_selected_inputs(self) -> None:

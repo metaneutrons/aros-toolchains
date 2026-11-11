@@ -220,6 +220,20 @@ copy, then the SDK job from the owned compilers, each with its own six-hour
 limit. It accepts the same optional `diagnostic_group`, stays on the branch
 event and the development runtime, and remains nonpublishing and incomplete.
 
+The SDK job matrix is not the compiler lane matrix. The native release plan
+lists the SDK generations it requires (`sdk_generation_lanes`), and the workflow
+runs one SDK job per compiler lane that appears there (`sdk_lane_matrix`). The
+`llvm` group has no SDK generation on `macos-aarch64`: that SDK job exceeds the
+six-hour limit of a GitHub-hosted macOS runner (aros-toolchains issue 119), and
+release evidence must come from GitHub-hosted runners, so a self-hosted runner is
+not an option. The macOS host still builds and compares both LLVM compiler
+copies. SDK packages are host-independent, so no package is lost; what is given
+up is the proof that the macOS-hosted LLVM compiler generates the same SDK
+bytes as the Linux-hosted ones. The `gnu-rv32` group keeps all three hosts. The
+host policy is owned by aros-tools (`sdk_generation_required_on_host`); the
+scripts here only check that the list is a closed, sorted subset of the SDK,
+compiler profile and host product.
+
 For the complete native non-publishing matrix, explicitly select
 `mode=qualify-v2-full` and `scope=full` on a reviewed branch. The workflow rejects
 a diagnostic group in this mode, and the scheduler validates the entire native

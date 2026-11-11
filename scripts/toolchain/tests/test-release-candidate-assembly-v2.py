@@ -263,7 +263,12 @@ class CombinedFixture:
                 "tools_commit": TOOLS, "hosts": list(HOSTS), "groups": [group],
                 "lane_count": len(lanes), "lanes": lanes, "sdks": sdks,
                 "sdk_count": len(sdks),
+                "sdk_generation_lanes": [{"sdk_id": _s["id"], "group_id": _r["group_id"], "profile": _r["profile"], "host": _h}
+                for _s in sdks for _r in _s["compiler_profiles"] for _h in HOSTS
+                if not (_r["group_id"] == "llvm" and _h == "macos-aarch64")],
+                "sdk_generation_count": 0,
             }
+            plan["sdk_generation_count"] = len(plan["sdk_generation_lanes"])
             return sdk_fixture_module.stage.canonical_json(plan)
 
         with mock.patch.object(sdk_fixture_module.Fixture, "_make_plan", make_plan):
@@ -289,6 +294,12 @@ class CombinedFixture:
         plan["inputs_sha256"] = compiler_fixture.inputs_sha
         plan["sdks"] = sdks
         plan["sdk_count"] = len(sdks)
+        plan["sdk_generation_lanes"] = [
+            {"sdk_id": sdk["id"], "group_id": ref["group_id"], "profile": ref["profile"], "host": host}
+            for sdk in sdks for ref in sdk["compiler_profiles"] for host in HOSTS
+            if not (ref["group_id"] == "llvm" and host == "macos-aarch64")
+        ]
+        plan["sdk_generation_count"] = len(plan["sdk_generation_lanes"])
         compiler_fixture.plan = plan
         compiler_fixture.plan_raw = canonical(plan)
         compiler_fixture.plan_path.write_bytes(compiler_fixture.plan_raw)

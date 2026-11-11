@@ -118,15 +118,14 @@ def _project_owners(plan: dict[str, Any], families: dict[str, str],
         sdk_id = sdk["id"]
         _require(sdk_id not in sdk_ids, "SDK IDs are not unique")
         sdk_ids.add(sdk_id)
-        for reference in sdk["compiler_profiles"]:
-            group_id = reference["group_id"]
-            profile = reference["profile"]
-            for host in plan["hosts"]:
-                key = (group_id, host, profile)
-                owner_sdks.setdefault(key, set()).add(sdk_id)
-                expected_key = (sdk_id, group_id, profile, host)
-                _require(expected_key not in expected, "SDK compiler closure contains duplicates")
-                expected.add(expected_key)
+
+    # The producer owns on which hosts each SDK compiler profile is generated.
+    for sdk_id, group_id, profile, host in release_matrix.sdk_generation_lanes(plan):
+        _require(sdk_id in sdk_ids, "SDK generation lane refers to an unknown SDK")
+        owner_sdks.setdefault((group_id, host, profile), set()).add(sdk_id)
+        expected_key = (sdk_id, group_id, profile, host)
+        _require(expected_key not in expected, "SDK compiler closure contains duplicates")
+        expected.add(expected_key)
 
     _require(bool(sdk_ids), "release plan must select at least one SDK")
     _require(len(owner_sdks) <= release_matrix.MAX_BUILD_ENTRIES,

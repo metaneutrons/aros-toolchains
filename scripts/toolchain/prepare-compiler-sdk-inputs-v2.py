@@ -24,6 +24,11 @@ from typing import Any
 SELECTION_SCHEMA = "aros-compiler-sdk-ci-selection-v2"
 RELEASE_INPUTS_SCHEMA = "aros-toolchain-release-inputs-v2"
 ACTIVE_HOSTS = ["linux-aarch64", "linux-x86_64", "macos-aarch64"]
+# Hosts without an SDK generation per compiler group. This independently
+# restates the host policy that aros-tools owns (`sdk_generation_required_on_host`):
+# the llvm SDK generation does not finish within the six hour limit of a
+# GitHub-hosted macOS runner (aros-toolchains#119). The native plan must agree.
+SDK_GENERATION_EXCLUDED_HOSTS = {"llvm": ("macos-aarch64",)}
 MAX_DOCUMENT_BYTES = 1_048_576
 MAX_SELECTION_BYTES = 1_048_576
 MAX_GROUPS = 32
@@ -578,6 +583,8 @@ def validate_release_plan(
         "groups",
         "sdk_count",
         "sdks",
+        "sdk_generation_count",
+        "sdk_generation_lanes",
         "lane_count",
         "lanes",
     }
@@ -614,6 +621,25 @@ def validate_release_plan(
         or plan["sdk_count"] != len(sdk_records)
     ):
         fail("native release plan differs from the independently assembled selection")
+    expected_generations = [
+        {
+            "sdk_id": sdk["id"],
+            "group_id": reference["group_id"],
+            "profile": reference["profile"],
+            "host": host,
+        }
+        for sdk in sdk_records
+        for reference in sdk["compiler_profiles"]
+        for host in ACTIVE_HOSTS
+        if host not in SDK_GENERATION_EXCLUDED_HOSTS.get(reference["group_id"], ())
+    ]
+    if (
+        plan["sdk_generation_lanes"] != expected_generations
+        or isinstance(plan["sdk_generation_count"], bool)
+        or not isinstance(plan["sdk_generation_count"], int)
+        or plan["sdk_generation_count"] != len(expected_generations)
+    ):
+        fail("native release plan SDK generation lanes differ from the independent host policy")
     lanes = plan["lanes"]
     if (
         not isinstance(lanes, list)

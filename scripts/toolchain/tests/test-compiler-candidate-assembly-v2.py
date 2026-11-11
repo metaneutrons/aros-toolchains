@@ -329,6 +329,7 @@ class Fixture:
             "tools_commit": TOOLS, "hosts": list(HOSTS), "groups": [self.group],
             "lane_count": len(self.lanes), "lanes": self.lanes,
             "sdks": [], "sdk_count": 0,
+            "sdk_generation_lanes": [], "sdk_generation_count": 0,
         }
         self.plan_raw = canonical(self.plan)
         self.plan_path = self.base / "native-plan.json"
