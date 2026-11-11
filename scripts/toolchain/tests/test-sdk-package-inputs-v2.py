@@ -159,7 +159,12 @@ class Fixture:
             "lanes": lanes,
             "sdks": sdks,
             "sdk_count": len(sdks),
+            "sdk_generation_lanes": [{"sdk_id": _s["id"], "group_id": _r["group_id"], "profile": _r["profile"], "host": _h}
+                for _s in sdks for _r in _s["compiler_profiles"] for _h in HOSTS
+                if not (_r["group_id"] == "llvm" and _h == "macos-aarch64")],
+            "sdk_generation_count": 0,
         }
+        plan["sdk_generation_count"] = len(plan["sdk_generation_lanes"])
         return stage.canonical_json(plan)
 
     @staticmethod
@@ -456,6 +461,16 @@ class SdkPackageInputsV2Tests(unittest.TestCase):
                     plan["sdks"][0]["compiler_profiles"] = [
                         {"group_id": "group-b", "profile": "debug"}
                     ]
+                    plan["sdk_generation_lanes"] = sorted(
+                        [
+                            {"sdk_id": sdk["id"], "group_id": ref["group_id"],
+                             "profile": ref["profile"], "host": host}
+                            for sdk in plan["sdks"] for ref in sdk["compiler_profiles"]
+                            for host in plan["hosts"]
+                        ],
+                        key=lambda row: (row["sdk_id"], row["group_id"], row["profile"], row["host"]),
+                    )
+                    plan["sdk_generation_count"] = len(plan["sdk_generation_lanes"])
                 selector._MATRIX._validate_plan(
                     plan,
                     expected_inputs_sha256=fixture.inputs_sha256,

@@ -44,6 +44,8 @@ TOP_LEVEL_FIELDS = {
     "lanes",
     "sdks",
     "sdk_count",
+    "sdk_generation_count",
+    "sdk_generation_lanes",
 }
 GROUP_FIELDS = {
     "group_id",
@@ -58,6 +60,7 @@ REFERENCE_FIELDS = {"file", "sha256"}
 LANE_FIELDS = {"group_id", "host", "target_profile"}
 SDK_FIELDS = {"id", "identity", "source_preset", "compiler_profiles"}
 SDK_COMPILER_PROFILE_FIELDS = {"group_id", "profile"}
+SDK_GENERATION_FIELDS = {"sdk_id", "group_id", "profile", "host"}
 RESERVED_FILES = {
     "SHA256SUMS",
     "toolchain-index-v1.json",
@@ -352,7 +355,59 @@ def _validate_plan(
         if profile_references != sorted(set(profile_references)):
             raise PlanError("SDK compiler profile references must be sorted and unique")
 
+    _validate_sdk_generation_lanes(value, sdk_values)
     return lanes, group_ids, lane_count, sdk_values
+
+
+def _validate_sdk_generation_lanes(value: dict[str, Any], sdk_values: list[dict[str, Any]]) -> None:
+    """Check the producer-owned SDK generation matrix against the SDK array.
+
+    The native release plan decides on which hosts each SDK/compiler-profile
+    association needs an SDK generation (the llvm group is not generated on
+    macOS). This helper only checks that the list is a closed, sorted subset of
+    the SDK/compiler-profile/host product and that no association is dropped
+    entirely. It does not recompute the producer's host policy.
+    """
+    generations = value["sdk_generation_lanes"]
+    count = value["sdk_generation_count"]
+    if (
+        type(count) is not int
+        or not isinstance(generations, list)
+        or count != len(generations)
+        or not 0 <= count <= MAX_SDKS * MAX_SDK_COMPILER_PROFILES * len(ACTIVE_HOSTS)
+    ):
+        raise PlanError("SDK generation count must match a bounded array")
+    associations = {
+        (sdk["id"], reference["group_id"], reference["profile"])
+        for sdk in sdk_values
+        for reference in sdk["compiler_profiles"]
+    }
+    tuples: list[tuple[str, str, str, str]] = []
+    for generation_value in generations:
+        generation = _require_exact_fields(
+            generation_value, SDK_GENERATION_FIELDS, "SDK generation lane"
+        )
+        sdk_id = _require_sdk_id(generation["sdk_id"])
+        group_id = _require_safe_id(generation["group_id"], "SDK generation group ID")
+        profile = _require_sdk_profile_id(generation["profile"], "SDK generation profile")
+        host = generation["host"]
+        if not isinstance(host, str) or host not in ACTIVE_HOSTS:
+            raise PlanError("SDK generation lane refers to an unknown host")
+        if (sdk_id, group_id, profile) not in associations:
+            raise PlanError("SDK generation lane does not match an SDK compiler profile")
+        tuples.append((sdk_id, group_id, profile, host))
+    if tuples != sorted(set(tuples)):
+        raise PlanError("SDK generation lanes must be sorted and unique")
+    if {item[:3] for item in tuples} != associations:
+        raise PlanError("every SDK compiler profile needs at least one SDK generation lane")
+
+
+def sdk_generation_lanes(plan: dict[str, Any]) -> list[tuple[str, str, str, str]]:
+    """Return the validated (SDK, group, profile, host) generation tuples."""
+    return [
+        (item["sdk_id"], item["group_id"], item["profile"], item["host"])
+        for item in plan["sdk_generation_lanes"]
+    ]
 
 
 def _select_scope(event: str, scope: str, full_qualification: bool = False) -> set[str]:
@@ -424,6 +479,14 @@ def project(
         for entry in verify_entries
         for copy in ("a", "b")
     ]
+    generation_keys = {
+        (group_id, host, profile) for _, group_id, profile, host in sdk_generation_lanes(plan)
+    }
+    sdk_lane_entries = [
+        entry
+        for entry in verify_entries
+        if (entry["group_id"], entry["host"], entry["profile"]) in generation_keys
+    ]
     selected_sdks = sdks
     if diagnostic_group is not None:
         selected_sdks = [
@@ -452,9 +515,11 @@ def project(
         "verify_matrix": {"include": verify_entries},
         "build_matrix": {"include": build_entries},
         "sdk_matrix": {"include": selected_sdks},
+        "sdk_lane_matrix": {"include": sdk_lane_entries},
         "build_count": len(build_entries),
         "lane_count": len(verify_entries),
         "sdk_count": len(selected_sdks),
+        "sdk_lane_count": len(sdk_lane_entries),
     }
     if diagnostic_group is not None:
         result["diagnostic_group"] = diagnostic_group
@@ -467,12 +532,13 @@ def _github_output_lines(result: dict[str, Any]) -> str:
         ("verify_matrix", "verify_matrix"),
         ("build_matrix", "build_matrix"),
         ("sdk_matrix", "sdk_matrix"),
+        ("sdk_lane_matrix", "sdk_lane_matrix"),
     )
     lines = [
         f"{name}={json.dumps(result[field], separators=(',', ':'), ensure_ascii=True)}"
         for name, field in keys
     ]
-    for field in ("lane_count", "build_count", "sdk_count"):
+    for field in ("lane_count", "build_count", "sdk_count", "sdk_lane_count"):
         lines.append(f"{field}={result[field]}")
     for field in ("plan_sha256", "inputs_sha256", "producer_commit", "tools_commit"):
         lines.append(f"{field}={result[field]}")

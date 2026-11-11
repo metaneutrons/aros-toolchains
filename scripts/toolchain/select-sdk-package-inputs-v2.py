@@ -120,11 +120,7 @@ def _path_field(value: object, label: str) -> Path:
 
 
 def _expected_package_tuples(plan: dict[str, Any]) -> list[tuple[str, str, str, str]]:
-    result = []
-    for sdk in plan["sdks"]:
-        for reference in sdk["compiler_profiles"]:
-            for host in plan["hosts"]:
-                result.append((sdk["id"], reference["group_id"], reference["profile"], host))
+    result = list(_MATRIX.sdk_generation_lanes(plan))
     result.sort()
     _require(0 < len(result) <= MAX_ROWS,
              "native release plan has no SDK package tuples or exceeds the tuple bound")

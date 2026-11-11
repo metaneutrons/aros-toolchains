@@ -68,7 +68,7 @@ def owner_plan(profiles_by_group: dict[str, list[str]] | None = None) -> dict[st
                     ],
                 }
             )
-    return {
+    plan = {
         "schema": "aros-toolchain-producer-stage-v2",
         "operation": "release-plan",
         "release_format": "family-v2",
@@ -82,7 +82,29 @@ def owner_plan(profiles_by_group: dict[str, list[str]] | None = None) -> dict[st
         "lanes": lanes,
         "sdk_count": len(sdks),
         "sdks": sdks,
+        "sdk_generation_lanes": [{"sdk_id": _s["id"], "group_id": _r["group_id"], "profile": _r["profile"], "host": _h}
+                for _s in sdks for _r in _s["compiler_profiles"] for _h in ACTIVE_HOSTS
+                if not (_r["group_id"] == "llvm" and _h == "macos-aarch64")],
+        "sdk_generation_count": 0,
     }
+    plan["sdk_generation_count"] = len(plan["sdk_generation_lanes"])
+    return plan
+
+
+def sync_generations(plan: dict[str, object], skip: set[tuple[str, str]] = frozenset()) -> None:
+    """Rebuild the producer-owned SDK generation lanes after a test edits the SDKs.
+
+    ``skip`` holds (group, host) pairs without a generation, as the native plan
+    omits the llvm group on macOS.
+    """
+    plan["sdk_generation_lanes"] = [
+        {"sdk_id": sdk["id"], "group_id": ref["group_id"], "profile": ref["profile"], "host": host}
+        for sdk in plan["sdks"]  # type: ignore[union-attr]
+        for ref in sdk["compiler_profiles"]
+        for host in ACTIVE_HOSTS
+        if (ref["group_id"], host) not in skip
+    ]
+    plan["sdk_generation_count"] = len(plan["sdk_generation_lanes"])  # type: ignore[arg-type]
 
 
 def plan_bytes(plan: dict[str, object]) -> bytes:
@@ -174,9 +196,11 @@ class ReleaseMatrixV2Tests(unittest.TestCase):
                 "verify_matrix",
                 "build_matrix",
                 "sdk_matrix",
+                "sdk_lane_matrix",
                 "build_count",
                 "lane_count",
                 "sdk_count",
+                "sdk_lane_count",
             },
         )
         self.assertEqual(projection["assurance"], "scheduling-only")
@@ -215,9 +239,11 @@ class ReleaseMatrixV2Tests(unittest.TestCase):
                 "verify_matrix",
                 "build_matrix",
                 "sdk_matrix",
+                "sdk_lane_matrix",
                 "lane_count",
                 "build_count",
                 "sdk_count",
+                "sdk_lane_count",
                 "plan_sha256",
                 "inputs_sha256",
                 "producer_commit",
@@ -425,6 +451,7 @@ class ReleaseMatrixV2Tests(unittest.TestCase):
         shared["compiler_profiles"].extend(plan["sdks"][1]["compiler_profiles"])
         plan["sdks"] = [shared]
         plan["sdk_count"] = 1
+        sync_generations(plan)
         result = self.run_cli(
             plan_bytes(plan),
             event="workflow_dispatch",
@@ -527,10 +554,73 @@ class ReleaseMatrixV2Tests(unittest.TestCase):
         ]  # type: ignore[index]
         self.assert_rejected(plan_bytes(plan))
 
+    def test_sdk_lane_matrix_follows_the_producer_owned_generation_lanes(self) -> None:
+        full = owner_plan()
+        result = self.run_cli(plan_bytes(full))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        everywhere = json.loads(result.stdout)
+        self.assertEqual(everywhere["sdk_lane_count"], 12)
+        self.assertEqual(everywhere["sdk_lane_matrix"], everywhere["verify_matrix"])
+
+        # family-beta has no SDK generation on macOS, but its compiler lane stays.
+        restricted = owner_plan()
+        sync_generations(restricted, {("family-beta", "macos-aarch64")})
+        result = self.run_cli(plan_bytes(restricted))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        projection = json.loads(result.stdout)
+        self.assertEqual(projection["lane_count"], 12)
+        self.assertEqual(len(projection["build_matrix"]["include"]), 24)
+        sdk_lanes = {
+            (entry["group_id"], entry["host"], entry["profile"])
+            for entry in projection["sdk_lane_matrix"]["include"]
+        }
+        self.assertEqual(projection["sdk_lane_count"], len(sdk_lanes))
+        self.assertEqual(
+            {(group, host) for group, host, _ in sdk_lanes if group == "family-beta"},
+            {("family-beta", "linux-aarch64"), ("family-beta", "linux-x86_64")},
+        )
+        self.assertIn(("family-alpha", "macos-aarch64", "alpha-one"), sdk_lanes)
+        compiler_lanes = {
+            (entry["group_id"], entry["host"], entry["profile"])
+            for entry in projection["verify_matrix"]["include"]
+        }
+        self.assertTrue(sdk_lanes < compiler_lanes)
+        self.assertTrue(
+            any(group == "family-beta" and host == "macos-aarch64" for group, host, _ in compiler_lanes)
+        )
+
+    def test_rejects_malformed_sdk_generation_lanes(self) -> None:
+        def broken(change) -> bytes:
+            plan = owner_plan()
+            change(plan)
+            return plan_bytes(plan)
+
+        lanes = lambda plan: plan["sdk_generation_lanes"]  # noqa: E731
+        self.assert_rejected(broken(lambda plan: plan.pop("sdk_generation_lanes")))
+        self.assert_rejected(broken(lambda plan: plan.update(sdk_generation_count=1)))
+        self.assert_rejected(broken(lambda plan: lanes(plan).reverse()))
+        self.assert_rejected(broken(lambda plan: lanes(plan).append(dict(lanes(plan)[0]))))
+        self.assert_rejected(broken(lambda plan: lanes(plan)[0].update(host="macos-x86_64")))
+        self.assert_rejected(broken(lambda plan: lanes(plan)[0].update(sdk_id="sdk-unknown")))
+        self.assert_rejected(broken(lambda plan: lanes(plan)[0].update(unexpected="field")))
+
+        def drop_every_host_of_one_association(plan: dict[str, object]) -> None:
+            first = lanes(plan)[0]
+            plan["sdk_generation_lanes"] = [
+                lane
+                for lane in lanes(plan)
+                if (lane["sdk_id"], lane["group_id"], lane["profile"])
+                != (first["sdk_id"], first["group_id"], first["profile"])
+            ]
+            plan["sdk_generation_count"] = len(lanes(plan))
+
+        self.assert_rejected(broken(drop_every_host_of_one_association))
+
     def test_empty_sdk_selection_is_a_valid_closed_projection(self) -> None:
         plan = owner_plan()
         plan["sdks"] = []
         plan["sdk_count"] = 0
+        sync_generations(plan)
         result = self.run_cli(plan_bytes(plan))
         self.assertEqual(result.returncode, 0, result.stderr)
         projection = json.loads(result.stdout)

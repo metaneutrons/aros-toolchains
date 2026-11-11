@@ -971,7 +971,8 @@ def validate_v2_policy(documents: Documents) -> dict[str, int]:
     )
     require(
         "needs: [v2-prepare, v2-sources, v2-runtimes, v2-cargo-catalog, v2-build]" in sdk
-        and "matrix: ${{ fromJSON(needs.v2-prepare.outputs.matrix) }}" in sdk
+        and "matrix: ${{ fromJSON(needs.v2-prepare.outputs.sdk_lane_matrix) }}" in sdk
+        and "matrix: ${{ fromJSON(needs.v2-prepare.outputs.matrix) }}" not in sdk
         and "name: diagnostic-v2-native-runtime-${{ matrix.host }}" in sdk
         and "select-owner-artifacts-v2.py" in sdk
         and '--job-name "Native compiler ($SELECTED_GROUP, $SELECTED_HOST, $SELECTED_PRESET, $copy)"' in sdk

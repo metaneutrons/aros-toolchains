@@ -74,6 +74,7 @@ jobs:
       matrix: ${{ steps.matrix.outputs.verify_matrix }}
       build_matrix: ${{ steps.matrix.outputs.build_matrix }}
       host_matrix: ${{ steps.matrix.outputs.host_matrix }}
+      sdk_lane_matrix: ${{ steps.matrix.outputs.sdk_lane_matrix }}
       source_commit: ${{ steps.selection.outputs.source_commit }}
       tools_commit: ${{ steps.selection.outputs.tools_commit }}
       release_id: ${{ steps.selection.outputs.release_id }}
@@ -750,7 +751,9 @@ jobs:
     strategy:
       fail-fast: false
       max-parallel: 3
-      matrix: ${{ fromJSON(needs.v2-prepare.outputs.matrix) }}
+      # Only the lanes with an SDK generation in the native release plan (the
+      # llvm group is not generated on macOS, see aros-toolchains#119).
+      matrix: ${{ fromJSON(needs.v2-prepare.outputs.sdk_lane_matrix) }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 360
     permissions:
