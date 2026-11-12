@@ -414,7 +414,7 @@ while IFS= read -r owner; do
         fail "authenticated compiler measurement bytes changed for $owner_id"
     jq -e --arg schema "aros-toolchain-native-lane-transport-v2" '
         type == "object" and .schema == $schema and .assurance == "transport-byte-readback-only" and
-        (.files | type == "object" and length > 0)
+        (.output_files | type == "object" and length > 0)
         ' "$transport_result" >/dev/null || fail "native compiler transport metadata is invalid for $owner_id"
     check_bound_inputs
     for ref_index in 0 1 2; do
