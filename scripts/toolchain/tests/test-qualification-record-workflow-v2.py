@@ -276,9 +276,17 @@ class QualificationWorkflowTests(unittest.TestCase):
 
     def test_workflow_gate_order_permissions_and_readback_checkout_are_closed(self) -> None:
         self.assertIn(
-            "if: github.event_name == 'push' && needs.v2-prepare.outputs.runtime_kind == 'released'",
+            "if: needs.v2-prepare.outputs.route == 'tag' && needs.v2-prepare.outputs.runtime_kind == 'released'",
             self.record_step,
         )
+        # No qualification step is keyed on the event name alone; the route
+        # output of the authenticated selector decides, and the step body still
+        # fails closed for any event other than the tag push until activation.
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        readback = workflow[workflow.index("  v2-readback:"):workflow.index("  v2-qualify:")]
+        self.assertNotIn("github.event_name == 'push'", readback)
+        self.assertEqual(readback.count("needs.v2-prepare.outputs.route == 'tag'"), 4)
+        self.assertIn("route: ${{ steps.selection.outputs.route }}", workflow)
         self.assertIn(
             '[[ "$GITHUB_EVENT_NAME" == push && "$GITHUB_REF_TYPE" == tag && "$GITHUB_RUN_ATTEMPT" == 1 ]]',
             self.record_body,
