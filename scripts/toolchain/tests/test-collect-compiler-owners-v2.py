@@ -162,7 +162,8 @@ environment.write_bytes(b'{"original":"authenticated environment bytes"}\n')
 transport = {
     "schema": "aros-toolchain-native-lane-transport-v2",
     "assurance": "transport-byte-readback-only",
-    "files": {"payload.index": {
+    "output_files": {"evidence/measurement.json": {
+        "path": str(transport_dir / "payload.index"),
         "sha256": sha((transport_dir / "payload.index").read_bytes()),
         "size": (transport_dir / "payload.index").stat().st_size,
     }},
