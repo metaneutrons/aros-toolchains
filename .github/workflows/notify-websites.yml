@@ -1,0 +1,60 @@
+name: Notify websites
+
+# The landing pages that show the current aros-toolchains version poll twice a day.
+# When a release qualification finishes, this workflow tells them to look now.
+# The receivers compare the live page with the latest stable release and only
+# redeploy when they differ, so a dispatch after a non-publishing qualification run
+# costs one cheap check and nothing else.
+
+on:
+  workflow_run:
+    workflows: [AROS Compiler and SDK Producer]
+    types: [completed]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: notify-websites
+  cancel-in-progress: false
+
+jobs:
+  notify:
+    name: Announce the release to the websites
+    if: github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    environment: website-notification
+    permissions:
+      contents: read
+    steps:
+      - name: Dispatch upstream-release to both site repositories
+        shell: bash
+        env:
+          DISPATCH_TOKEN: ${{ secrets.GH_PAT_DISPATCH_METANEUTRONS_SITES }}
+        run: |
+          set -euo pipefail
+          trap 'unset DISPATCH_TOKEN' EXIT
+          trap 'exit 130' HUP INT TERM
+          [[ -n "$DISPATCH_TOKEN" ]] || {
+            echo '::error::the website dispatch credential is missing'
+            exit 1
+          }
+          failed=0
+          for repository in metaneutrons/www-metaneutrons metaneutrons/aros-site; do
+            status=$(curl --silent --show-error --output /dev/null \
+              --write-out '%{http_code}' --proto '=https' --tlsv1.2 \
+              --max-time 30 --request POST \
+              --header "Authorization: Bearer $DISPATCH_TOKEN" \
+              --header 'Accept: application/vnd.github+json' \
+              --header 'X-GitHub-Api-Version: 2022-11-28' \
+              "https://api.github.com/repos/${repository}/dispatches" \
+              --data '{"event_type":"upstream-release"}') || status=000
+            if [[ "$status" == 204 ]]; then
+              echo "notified ${repository}"
+            else
+              echo "::warning::${repository} dispatch returned HTTP ${status}"
+              failed=1
+            fi
+          done
+          exit "$failed"
