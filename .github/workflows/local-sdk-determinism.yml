@@ -136,8 +136,8 @@ jobs:
           github-token: ${{ github.token }}
       - uses: ./.github/actions/disable-google-chrome-apt-source
         if: runner.os == 'Linux'
-      - name: Install compiler and SDK consumer prerequisites
-        run: bash dependencies/aros/scripts/ci/install-build-prerequisites.sh
+      - name: Verify the host prerequisites (local runners never install packages)
+        run: bash scripts/toolchain/verify-local-host-prerequisites.sh dependencies/aros/scripts/ci/install-build-prerequisites.sh
       - name: Select installed macOS LLVM tools
         if: runner.os == 'macOS'
         run: bash scripts/toolchain/select-macos-native-llvm.sh
