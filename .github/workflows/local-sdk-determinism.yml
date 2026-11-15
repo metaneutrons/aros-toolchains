@@ -1,0 +1,214 @@
+name: Local SDK determinism loop
+
+# Diagnostic only. Runs one compiler/SDK lane (same-job compiler A/B, then the
+# source-bound SDK) on the owner's local self-hosted runners, reusing the
+# preparation artifacts of an earlier hosted toolchain-release.yml run of the
+# same commit. It cannot publish and produces no attested evidence: local runners
+# never take part in qualification (artifact-origin.py admits github-hosted only).
+#
+# Local runners must never execute code from outside this repository, so this
+# workflow has exactly one trigger (a manual dispatch by the repository owner on
+# main) and no pull_request, pull_request_target or push trigger. The audit
+# scripts/toolchain/tests/test-local-sdk-determinism-workflow.py enforces this.
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_run_id:
+        description: Hosted toolchain-release.yml qualify-v2 run of this exact commit whose preparation artifacts are still retained
+        required: true
+        type: string
+      host:
+        description: Local runner host
+        required: true
+        type: choice
+        options:
+          - macos-aarch64
+          - linux-x86_64
+      group_id:
+        description: Exact plan group ID of the lane
+        required: true
+        type: string
+      profile:
+        description: Exact target profile of the lane
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: local-sdk-determinism-${{ inputs.host }}
+  cancel-in-progress: false
+
+env:
+  PYTHONHASHSEED: "0"
+
+jobs:
+  lane:
+    name: Local lane (${{ inputs.group_id }}, ${{ inputs.host }}, ${{ inputs.profile }})
+    if: >-
+      github.repository == 'metaneutrons/aros-toolchains' &&
+      github.event_name == 'workflow_dispatch' &&
+      github.ref == 'refs/heads/main' &&
+      github.triggering_actor == github.repository_owner
+    runs-on: [self-hosted, aros-local, "${{ inputs.host }}"]
+    timeout-minutes: 600
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - name: Start from an empty workspace and temp directory
+        # Self-hosted runners keep their work directory between jobs. Remove
+        # everything an earlier job left behind before any input is fetched.
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ -n "$GITHUB_WORKSPACE" && "$GITHUB_WORKSPACE" == */_work/* ]]
+          [[ -n "$RUNNER_TEMP" && "$RUNNER_TEMP" == */_work/_temp ]]
+          find "$GITHUB_WORKSPACE" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+          find "$RUNNER_TEMP" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - id: source
+        name: Bind the preparation run to this exact commit and read the pinned inputs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_RUN_ID" =~ ^[1-9][0-9]{0,15}$ ]]
+          run=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN_ID")
+          jq -e --arg repo "$GITHUB_REPOSITORY" --arg sha "$GITHUB_SHA" '
+            .path == ".github/workflows/toolchain-release.yml"
+            and .event == "workflow_dispatch"
+            and .head_sha == $sha
+            and .head_repository.full_name == $repo
+            and .repository.full_name == $repo' <<< "$run" >/dev/null
+          selection=toolchains/compiler-sdk-ci-selection-v2.json
+          printf 'source_commit=%s\n' "$(jq -er '.source_commit | select(test("^[0-9a-f]{40}$"))' "$selection")" >> "$GITHUB_OUTPUT"
+          printf 'tools_commit=%s\n' "$(jq -er '.tools_commit | select(test("^[0-9a-f]{40}$"))' "$selection")" >> "$GITHUB_OUTPUT"
+      - uses: ./.github/actions/checkout-pinned-recursive-source
+        with:
+          repository: metaneutrons/AROS-NX
+          ref: ${{ steps.source.outputs.source_commit }}
+          fetch-depth: 0
+          path: dependencies/aros
+      - uses: ./.github/actions/checkout-pinned-recursive-source
+        with:
+          repository: metaneutrons/AROS-NX
+          ref: ${{ steps.source.outputs.source_commit }}
+          fetch-depth: 0
+          path: dependencies/upstream-aros
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: metaneutrons/aros-tools
+          ref: ${{ steps.source.outputs.tools_commit }}
+          fetch-depth: 0
+          persist-credentials: false
+          path: dependencies/aros-tools
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: diagnostic-v2-native-runtime-${{ inputs.host }}
+          path: ${{ runner.temp }}/diagnostic-runtime
+          run-id: ${{ inputs.source_run_id }}
+          github-token: ${{ github.token }}
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: diagnostic-v2-inputs
+          path: ${{ runner.temp }}/diagnostic-inputs
+          run-id: ${{ inputs.source_run_id }}
+          github-token: ${{ github.token }}
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: diagnostic-v2-cache
+          path: ${{ runner.temp }}/diagnostic-cache-input
+          run-id: ${{ inputs.source_run_id }}
+          github-token: ${{ github.token }}
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: diagnostic-v2-cargo-cache-${{ inputs.host }}
+          path: ${{ runner.temp }}/diagnostic-cargo-input
+          run-id: ${{ inputs.source_run_id }}
+          github-token: ${{ github.token }}
+      - uses: ./.github/actions/disable-google-chrome-apt-source
+        if: runner.os == 'Linux'
+      - name: Install compiler and SDK consumer prerequisites
+        run: bash dependencies/aros/scripts/ci/install-build-prerequisites.sh
+      - name: Select installed macOS LLVM tools
+        if: runner.os == 'macOS'
+        run: bash scripts/toolchain/select-macos-native-llvm.sh
+      - id: rust
+        uses: ./.github/actions/select-native-rust-toolchain
+        with:
+          producer-dir: ${{ github.workspace }}
+      - uses: ./.github/actions/verify-aros-tools-runtime-transport
+        with:
+          runtime-kind: development
+          root: ${{ runner.temp }}/diagnostic-runtime
+          host: ${{ inputs.host }}
+      - id: qualify
+        name: Execute native compiler A/B and source-bound SDK qualification
+        env:
+          SELECTED_GROUP: ${{ inputs.group_id }}
+          SELECTED_PRESET: ${{ inputs.profile }}
+          SELECTED_HOST: ${{ inputs.host }}
+        run: |
+          set -euo pipefail
+          runtime="$RUNNER_TEMP/diagnostic-runtime"
+          producer="$RUNNER_TEMP/diagnostic-producer"
+          git worktree add --detach "$producer" "$GITHUB_SHA"
+          runtime_sha=$(shasum -a 256 "$runtime/bin/aros" | awk '{print $1}')
+          # The archives come from a run of this repository at this exact commit
+          # (checked above). Their digests are measured here, not taken from a
+          # job output, so this is a transport check only.
+          cache_sha=$(shasum -a 256 "$RUNNER_TEMP/diagnostic-cache-input/diagnostic-cache.tar.gz" | awk '{print $1}')
+          cargo_sha=$(shasum -a 256 "$RUNNER_TEMP/diagnostic-cargo-input/native-cargo-cache.tar.gz" | awk '{print $1}')
+          python3 -B scripts/toolchain/cache-archive-transport.py \
+            --archive "$RUNNER_TEMP/diagnostic-cache-input/diagnostic-cache.tar.gz" \
+            --archive-sha256 "$cache_sha" --output-dir "$RUNNER_TEMP/diagnostic-cache"
+          python3 -B scripts/toolchain/cache-archive-transport.py \
+            --archive "$RUNNER_TEMP/diagnostic-cargo-input/native-cargo-cache.tar.gz" \
+            --archive-sha256 "$cargo_sha" --output-dir "$RUNNER_TEMP/diagnostic-cache/cargo"
+          "$runtime/bin/aros" cache cargo verify --producer-dir "$producer" \
+            --tools-dir "$GITHUB_WORKSPACE/dependencies/aros-tools" --dir "$RUNNER_TEMP/diagnostic-cache" \
+            --cargo "${{ steps.rust.outputs.cargo }}"
+          bash scripts/toolchain/qualify-compiler-sdk-lane-v2.sh \
+            --aros "$runtime/bin/aros" --runtime-sha256 "$runtime_sha" \
+            --inputs-dir "$RUNNER_TEMP/diagnostic-inputs" \
+            --selection "$producer/toolchains/compiler-sdk-ci-selection-v2.json" \
+            --source-dir "$GITHUB_WORKSPACE/dependencies/aros" --producer-dir "$producer" \
+            --tools-dir "$GITHUB_WORKSPACE/dependencies/aros-tools" --cache-dir "$RUNNER_TEMP/diagnostic-cache" \
+            --upstream-source-dir "$GITHUB_WORKSPACE/dependencies/upstream-aros" \
+            --group "$SELECTED_GROUP" --preset "$SELECTED_PRESET" --host "$SELECTED_HOST" \
+            --root "$RUNNER_TEMP/diagnostic-lane" --jobs 3 --timeout-seconds 30000
+      - name: Report the SDK package digests of this host
+        run: |
+          set -euo pipefail
+          find "$RUNNER_TEMP/diagnostic-lane" -path '*/sdk-*/result.json' -print0 \
+            | sort -z | xargs -0 -I{} sh -c 'printf "%s\n" "{}"; cat "{}"; echo'
+      - name: Retain diagnostic results and failure logs; never release assets
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: local-sdk-${{ inputs.group_id }}-${{ inputs.host }}-${{ inputs.profile }}
+          path: |
+            ${{ runner.temp }}/diagnostic-lane/*.json
+            ${{ runner.temp }}/diagnostic-lane/sdk-*/package/
+            ${{ runner.temp }}/diagnostic-lane/sdk-*/reports/
+            ${{ runner.temp }}/diagnostic-lane/sdk-*/result.json
+            ${{ runner.temp }}/diagnostic-lane/sdk-*/generation.json
+            ${{ runner.temp }}/diagnostic-lane/compiler-*/work/native-lifecycle/logs/
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Leave no build tree behind
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          find "$GITHUB_WORKSPACE" -mindepth 1 -maxdepth 1 -exec rm -rf {} + || true
+          find "$RUNNER_TEMP" -mindepth 1 -maxdepth 1 -exec rm -rf {} + || true
