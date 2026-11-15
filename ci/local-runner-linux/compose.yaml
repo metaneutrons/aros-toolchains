@@ -1,0 +1,19 @@
+# Start on the NAS (kirk) with a fresh registration token for each job:
+#   RUNNER_TOKEN=<token> RUNNER_NAME=aros-toolchains-kirk docker compose up --build
+# The token is created with:
+#   gh api -X POST repos/metaneutrons/aros-toolchains/actions/runners/registration-token --jq .token
+services:
+  runner:
+    build: .
+    environment:
+      RUNNER_TOKEN: ${RUNNER_TOKEN:?set a registration token}
+      RUNNER_NAME: ${RUNNER_NAME:-aros-toolchains-kirk}
+    restart: "no"
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs:
+      - /tmp
+    volumes:
+      - runner-work:/home/ci/actions-runner/_work
+volumes:
+  runner-work:
