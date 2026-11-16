@@ -190,7 +190,9 @@ def select(args):
         require(git(args.producer_dir, "check-ref-format", args.source_ref) == "",
                 "diagnostic branch ref is invalid")
         require((args.mode, args.scope) in (("qualify-v2", "linux-x86_64"),
+                                          ("qualify-v2", "macos-aarch64"),
                                           ("qualify-v2-split", "linux-x86_64"),
+                                          ("qualify-v2-split", "macos-aarch64"),
                                           ("qualify-v2-full", "full")),
                 "diagnostic mode or host scope is unsupported")
         full = args.mode == "qualify-v2-full"
