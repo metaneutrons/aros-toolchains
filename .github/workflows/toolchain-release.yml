@@ -15,13 +15,14 @@ on:
           - qualify-v2-split
           - qualify-v2-full
       scope:
-        description: Host tier; full requires non-publishing qualify-v2-full mode
+        description: Host tier; macos-aarch64 is for the non-publishing qualify-v2 and qualify-v2-split modes only; full requires non-publishing qualify-v2-full mode
         required: true
         default: linux-x86_64
         type: choice
         options:
           - linux-x86_64
           - linux
+          - macos-aarch64
           - full
       source_run_id:
         description: Recovery only - qualified producer run ID

@@ -257,6 +257,27 @@ class ReleaseMatrixV2Tests(unittest.TestCase):
         self.assertEqual(outputs["sdk_count"], "2")
         self.assertEqual(len(json.loads(outputs["sdk_matrix"])["include"]), 2)
 
+    def test_manual_macos_scope_selects_only_the_macos_host_and_every_other_scope_stays_closed(self) -> None:
+        raw = plan_bytes(owner_plan())
+        macos = self.run_cli(raw, event="workflow_dispatch", scope="macos-aarch64")
+        self.assertEqual(macos.returncode, 0, macos.stderr)
+        projection = json.loads(macos.stdout)
+        self.assertFalse(projection["complete_selection"])
+        self.assertEqual(projection["scope"], "macos-aarch64")
+        self.assertEqual(projection["host_matrix"]["include"],
+                         [{"host": "macos-aarch64", "runner": "macos-15"}])
+        self.assertEqual({entry["host"] for entry in projection["verify_matrix"]["include"]},
+                         {"macos-aarch64"})
+        self.assertEqual(projection["build_count"], projection["lane_count"] * 2)
+        self.assertGreater(projection["lane_count"], 0)
+        self.assertEqual(projection["sdk_matrix"], json.loads(
+            self.run_cli(raw, event="workflow_dispatch", scope="linux-x86_64").stdout)["sdk_matrix"])
+        # Counter-probes: a tag push cannot narrow to one host, and full
+        # qualification cannot be combined with the one-host scope.
+        self.assert_rejected(raw, event="push", scope="macos-aarch64")
+        self.assert_rejected(raw, event="workflow_dispatch", scope="macos-aarch64",
+                             full_qualification=True)
+
     def test_manual_linux_scopes_are_subsets_and_profile_changes_are_derived(self) -> None:
         raw = plan_bytes(owner_plan())
         linux = self.run_cli(raw, event="workflow_dispatch", scope="linux")

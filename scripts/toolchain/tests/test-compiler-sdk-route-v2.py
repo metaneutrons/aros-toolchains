@@ -343,6 +343,37 @@ class CompilerSdkRouteTests(unittest.TestCase):
         self.assertEqual(full["release_id"], small["release_id"])
         self.assertEqual(self.fixture.gh_calls(), [])
 
+    def test_macos_scope_is_reachable_only_through_the_two_single_host_diagnostic_modes(self) -> None:
+        self.fixture.event = "workflow_dispatch"
+        self.fixture.ref_type = "branch"
+        self.fixture.source_ref = "refs/heads/feature/diagnostic"
+        self.fixture.group = "gnu-rv32"
+        for mode, split in (("qualify-v2", "false"), ("qualify-v2-split", "true")):
+            with self.subTest(mode=mode):
+                self.fixture.mode = mode
+                self.fixture.scope = "macos-aarch64"
+                self.fixture.output.write_bytes(SENTINEL)
+                result = self.fixture.run()
+                self.assertEqual(result.returncode, 0, result.stderr)
+                outputs = self.fixture.outputs()
+                self.assertEqual(outputs["scope"], "macos-aarch64")
+                self.assertEqual(outputs["runtime_kind"], "development")
+                self.assertEqual(outputs["route"], "diagnostic")
+                self.assertEqual(outputs["full_qualification"], "false")
+                self.assertEqual(outputs["full_matrix"], split)
+                self.assertEqual(self.fixture.gh_calls(), [])
+
+        # Counter-probes: macOS is no way to reach the full mode, the tag route
+        # or a publishing mode, and a tag dispatch cannot carry the scope.
+        for mode, scope in (("qualify-v2-full", "macos-aarch64"), ("release-v2", "macos-aarch64"),
+                            ("produce", "macos-aarch64"), ("recover", "macos-aarch64")):
+            with self.subTest(mode=mode, scope=scope):
+                self.fixture.mode = mode
+                self.fixture.scope = scope
+                self.fixture.output.write_bytes(SENTINEL)
+                self.assert_rejected(self.fixture.run(), gh_calls=0)
+        self.assert_rejected(self.dispatch_tag(mode="release-v2", scope="macos-aarch64"))
+
     def test_split_mode_runs_the_production_job_layout_for_one_host_and_group(self) -> None:
         self.fixture.event = "workflow_dispatch"
         self.fixture.ref_type = "branch"

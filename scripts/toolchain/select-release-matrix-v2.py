@@ -411,7 +411,7 @@ def sdk_generation_lanes(plan: dict[str, Any]) -> list[tuple[str, str, str, str]
 
 
 def _select_scope(event: str, scope: str, full_qualification: bool = False) -> set[str]:
-    if event not in {"push", "workflow_dispatch"} or scope not in {"full", "linux-x86_64", "linux"}:
+    if event not in {"push", "workflow_dispatch"} or scope not in {"full", "linux-x86_64", "linux", "macos-aarch64"}:
         raise PlanError("event or scope is unsupported")
     if full_qualification and (event != "workflow_dispatch" or scope != "full"):
         raise PlanError("full qualification requires a complete manual dispatch scope")
@@ -423,6 +423,8 @@ def _select_scope(event: str, scope: str, full_qualification: bool = False) -> s
         return set(ACTIVE_HOSTS)
     if scope == "linux-x86_64":
         return {"linux-x86_64"}
+    if scope == "macos-aarch64":
+        return {"macos-aarch64"}
     return {"linux-aarch64", "linux-x86_64"}
 
 
@@ -581,7 +583,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--producer-commit", required=True)
     parser.add_argument("--tools-commit", required=True)
     parser.add_argument("--event", required=True, choices=("push", "workflow_dispatch"))
-    parser.add_argument("--scope", required=True, choices=("full", "linux-x86_64", "linux"))
+    parser.add_argument("--scope", required=True, choices=("full", "linux-x86_64", "linux", "macos-aarch64"))
     parser.add_argument("--full-qualification", action="store_true")
     parser.add_argument("--diagnostic-group")
     parser.add_argument("--github-output", type=Path)

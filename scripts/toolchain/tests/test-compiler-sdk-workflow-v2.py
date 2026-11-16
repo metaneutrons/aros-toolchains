@@ -611,6 +611,8 @@ def validate_v2_policy(documents: Documents) -> dict[str, int]:
         and 'args.mode == args.scope == args.group == ""' in route_script
         and '("qualify-v2", "linux-x86_64")' in route_script
         and '("qualify-v2-split", "linux-x86_64")' in route_script
+        and '("qualify-v2", "macos-aarch64")' in route_script
+        and '("qualify-v2-split", "macos-aarch64")' in route_script
         and '("qualify-v2-full", "full")' in route_script
         and 'not full or args.group == ""' in route_script
         and 'runtime.get("source_commit") == tools_commit' in route_script
@@ -925,7 +927,7 @@ def validate_v2_policy(documents: Documents) -> dict[str, int]:
     )
     require(
         re.search(
-            r"(?ms)^      scope:\n.*?^        options:\n          - linux-x86_64\n          - linux\n          - full\n",
+            r"(?ms)^      scope:\n.*?^        options:\n          - linux-x86_64\n          - linux\n          - macos-aarch64\n          - full\n",
             workflow,
         ) is not None,
         "existing manual release scopes must remain available",
@@ -2304,6 +2306,15 @@ class CompilerSdkWorkflowV2Tests(unittest.TestCase):
         route_script = documents.text(ROUTE)
         documents.set_text(ROUTE, route_script.replace(
             '("qualify-v2", "linux-x86_64")', '("qualify-v2", "linux")', 1,
+        ))
+        with self.assertRaisesRegex(PolicyViolation, "route selector must close"):
+            validate_v2_policy(documents)
+
+    def test_rejects_macos_scope_in_the_full_or_publishing_route(self) -> None:
+        documents = self.new_documents()
+        route_script = documents.text(ROUTE)
+        documents.set_text(ROUTE, route_script.replace(
+            '("qualify-v2-full", "full")', '("qualify-v2-full", "macos-aarch64")', 1,
         ))
         with self.assertRaisesRegex(PolicyViolation, "route selector must close"):
             validate_v2_policy(documents)
