@@ -1,19 +1,22 @@
-# Start on the NAS (kirk) with a fresh registration token for each job:
-#   RUNNER_TOKEN=<token> RUNNER_NAME=aros-toolchains-kirk docker compose up --build
-# The token is created with:
+# Persistent runner for metaneutrons/aros-toolchains on a UGOS NAS (kirk, picard).
+# Deploy with ugos-cli, not with docker compose on the NAS; see README.md.
+# RUNNER_TOKEN is needed for the first start only. Create it with
 #   gh api -X POST repos/metaneutrons/aros-toolchains/actions/runners/registration-token --jq .token
 services:
   runner:
-    build: .
+    image: aros-toolchains-runner:local
+    container_name: ${RUNNER_NAME}
     environment:
-      RUNNER_TOKEN: ${RUNNER_TOKEN:?set a registration token}
-      RUNNER_NAME: ${RUNNER_NAME:-aros-toolchains-kirk}
-    restart: "no"
+      RUNNER_NAME: ${RUNNER_NAME:?set the runner name}
+      RUNNER_TOKEN: ${RUNNER_TOKEN:-}
+    restart: unless-stopped
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
     tmpfs:
       - /tmp
     volumes:
+      - runner-state:/home/ci/state
       - runner-work:/home/ci/actions-runner/_work
 volumes:
+  runner-state:
   runner-work:

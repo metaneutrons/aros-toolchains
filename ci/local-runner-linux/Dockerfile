@@ -11,7 +11,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libpng-dev libtool lld llvm make netpbm ninja-build patch python3 xz-utils \
         ca-certificates curl git jq gh libicu74 libssl3t64 tar gzip unzip \
     && rm -rf /var/lib/apt/lists/*
-RUN useradd --create-home --uid 1001 ci
+RUN useradd --create-home --uid 1001 ci \
+    && mkdir -p /home/ci/state /home/ci/actions-runner/_work && chown -R ci:ci /home/ci
 USER ci
 WORKDIR /home/ci/actions-runner
 RUN curl -fsSL -o runner.tgz "https://github.com/actions/runner/releases/download/v${RUNNER_VERSION}/actions-runner-linux-x64-${RUNNER_VERSION}.tar.gz" \
