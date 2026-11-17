@@ -49,7 +49,10 @@ permissions:
   attestations: read
 
 concurrency:
-  group: toolchain-producer-${{ github.ref }}
+  # The non-publishing single-host diagnostics queue per host scope so that a
+  # Linux and a macOS qualification run in parallel. Every other event and mode
+  # keeps one queue per ref.
+  group: toolchain-producer-${{ github.ref }}${{ github.event_name == 'workflow_dispatch' && (inputs.mode == 'qualify-v2' || inputs.mode == 'qualify-v2-split') && format('-{0}', inputs.scope) || '' }}
   cancel-in-progress: false
 
 env:

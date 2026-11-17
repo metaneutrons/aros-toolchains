@@ -2310,6 +2310,19 @@ class CompilerSdkWorkflowV2Tests(unittest.TestCase):
         with self.assertRaisesRegex(PolicyViolation, "route selector must close"):
             validate_v2_policy(documents)
 
+    def test_concurrency_splits_only_the_single_host_diagnostic_modes_by_scope(self) -> None:
+        workflow = self.new_documents().text(WORKFLOW)
+        match = re.search(r"(?m)^concurrency:\n(?:  #.*\n)*  group: (.+)\n  cancel-in-progress: false\n", workflow)
+        self.assertIsNotNone(match, "the workflow must keep a non-cancelling concurrency group")
+        group = match.group(1)
+        self.assertTrue(group.startswith("toolchain-producer-${{ github.ref }}"))
+        self.assertIn("github.event_name == 'workflow_dispatch'", group)
+        self.assertIn("inputs.mode == 'qualify-v2' || inputs.mode == 'qualify-v2-split'", group)
+        self.assertIn("format('-{0}', inputs.scope)", group)
+        # Counter-probe: the full, recovery, produce and tag routes keep the ref queue.
+        for mode in ("qualify-v2-full", "release-v2", "produce", "recover"):
+            self.assertNotIn(f"inputs.mode == '{mode}'", group)
+
     def test_rejects_macos_scope_in_the_full_or_publishing_route(self) -> None:
         documents = self.new_documents()
         route_script = documents.text(ROUTE)
