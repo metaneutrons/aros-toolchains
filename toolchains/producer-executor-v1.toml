@@ -2,7 +2,7 @@ schema_version = 2
 contract_id = "aros-toolchain-producer-v1"
 contract_path = "contracts/toolchain-producer-v1.toml"
 contract_sha256 = "e02c04385e1f181f68dd8a20639834dcb56e7757e5f71846da89dac5165f5660"
-tools_commit = "093f1f9d9d3362dcb6a2e549924af227d9305fb2"
+tools_commit = "b9acfa76b893d580b1b36fd5a303f7cb4c478743"
 
 [[groups]]
 id = "gnu-rv32"
