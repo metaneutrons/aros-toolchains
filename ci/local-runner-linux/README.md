@@ -14,11 +14,14 @@ docker save aros-toolchains-runner:local | gzip > runner.tar.gz
 ugos-cli fs mkdir /volume1/docker/github-runner-aros-image
 ugos-cli fs put runner.tar.gz /volume1/docker/github-runner-aros-image
 ugos-cli docker load-path /volume1/docker/github-runner-aros-image/runner.tar.gz
-# Render compose.yaml: replace ${RUNNER_NAME} and ${RUNNER_TOKEN:-} (token from
+# Render compose.yaml: replace ${RUNNER_NAME}, ${RUNNER_SUBNET:?...} (a subnet no LAN
+#   on the host uses, for example 10.200.128.0/24) and ${RUNNER_TOKEN:-} (token from
 #   gh api -X POST repos/metaneutrons/aros-toolchains/actions/runners/registration-token --jq .token)
 ugos-cli docker project-create github-runner-aros --file docker-compose.yaml
 ugos-cli docker project-start github-runner-aros
 ```
+
+Keep the `networks:` block in every later `project-update`: dropping it recreates the network from Docker's default pool.
 
 Afterwards run `project-update` with the token removed from the file. The token
 is single-use and expires after an hour; the registration stays in the volume.
