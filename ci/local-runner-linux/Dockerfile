@@ -23,7 +23,7 @@ ARG RUNNER_SHA256=baebf204307bac6193480852732f0aba2ae97b6c5597c244f4d5558390147c
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
         autoconf automake bison build-essential clang cmake flex gawk \
-        libpng-dev libtool lld llvm make netpbm ninja-build patch python3 xz-utils \
+        libpng-dev libtool lld llvm make netpbm ninja-build patch pkg-config python3 xz-utils \
         ca-certificates curl git jq gh libicu74 libssl3t64 libcurl4t64 libexpat1 tar gzip unzip \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=git-build /opt/git /opt/git
