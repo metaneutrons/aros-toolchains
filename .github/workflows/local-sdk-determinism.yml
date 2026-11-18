@@ -134,8 +134,6 @@ jobs:
           path: ${{ runner.temp }}/diagnostic-cargo-input
           run-id: ${{ inputs.source_run_id }}
           github-token: ${{ github.token }}
-      - uses: ./.github/actions/disable-google-chrome-apt-source
-        if: runner.os == 'Linux'
       - name: Verify the host prerequisites (local runners never install packages)
         run: bash scripts/toolchain/verify-local-host-prerequisites.sh dependencies/aros/scripts/ci/install-build-prerequisites.sh
       - name: Select installed macOS LLVM tools
