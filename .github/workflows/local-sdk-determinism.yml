@@ -138,6 +138,8 @@ jobs:
         run: bash scripts/toolchain/verify-local-host-prerequisites.sh dependencies/aros/scripts/ci/install-build-prerequisites.sh
       - name: Select installed macOS LLVM tools
         if: runner.os == 'macOS'
+        env:
+          AROS_LLVM_PREFIX: /opt/homebrew/opt/llvm
         run: bash scripts/toolchain/select-macos-native-llvm.sh
       - id: rust
         uses: ./.github/actions/select-native-rust-toolchain

@@ -7,7 +7,13 @@ if [[ "${RUNNER_OS:-}" != macOS || -z "${GITHUB_PATH:-}" ]]; then
     echo "macOS LLVM selection requires a macOS runner and GITHUB_PATH" >&2
     exit 1
 fi
-llvm_prefix=$(brew --prefix llvm)
+# Local runners run as an unprivileged user that cannot take Homebrew's lock files, so
+# the local loop names the installed prefix itself. Hosted runners leave it unset.
+if [[ -n "${AROS_LLVM_PREFIX:-}" ]]; then
+    llvm_prefix=$AROS_LLVM_PREFIX
+else
+    llvm_prefix=$(brew --prefix llvm)
+fi
 if [[ "$llvm_prefix" != /* || "$llvm_prefix" == *$'\n'* ||
       "$llvm_prefix" == *$'\r'* || ! -d "$llvm_prefix/bin" ]]; then
     echo "Homebrew did not resolve an absolute LLVM binary directory" >&2

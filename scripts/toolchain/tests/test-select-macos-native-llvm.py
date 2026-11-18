@@ -160,6 +160,33 @@ class MacOSNativeLLVMHelperTests(unittest.TestCase):
         with self.subTest(reason="missing bin directory"):
             self.assert_failed_without_publication(prefix_has_bin=False)
 
+    def test_override_prefix_bypasses_brew(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="macos-native-llvm-override-") as temporary:
+            base = Path(temporary)
+            bin_dir = base / "llvm" / "bin"
+            bin_dir.mkdir(parents=True)
+            for tool in ("llvm-ar", "llvm-ranlib"):
+                executable = bin_dir / tool
+                executable.write_text("#!/bin/sh\necho override\n", encoding="utf-8")
+                executable.chmod(0o700)
+            github_path = base / "github-path"
+            github_path.write_text("", encoding="utf-8")
+            result = subprocess.run(
+                ["bash", str(HELPER)],
+                cwd=ROOT,
+                env={
+                    "PATH": "/usr/bin:/bin",
+                    "RUNNER_OS": "macOS",
+                    "GITHUB_PATH": str(github_path),
+                    "AROS_LLVM_PREFIX": str(base / "llvm"),
+                },
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertEqual(github_path.read_text(encoding="utf-8"), f"{base}/llvm/bin\n")
+
     def test_rejects_nonmac_runner_and_missing_github_path_without_publication(self) -> None:
         with self.subTest(reason="non-macOS runner"):
             self.assert_failed_without_publication(runner_os="Linux")
