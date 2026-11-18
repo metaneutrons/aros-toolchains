@@ -14,8 +14,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN curl -fsSL -o /tmp/git.tar.xz "https://mirrors.edge.kernel.org/pub/software/scm/git/git-${GIT_VERSION}.tar.xz" \
     && echo "${GIT_SHA256}  /tmp/git.tar.xz" | sha256sum -c - \
     && tar -xJf /tmp/git.tar.xz -C /tmp \
-    && make -C "/tmp/git-${GIT_VERSION}" -j1 prefix=/opt/git NO_GETTEXT=1 NO_TCLTK=1 NO_PERL=1 NO_PYTHON=1 all \
-    && make -C "/tmp/git-${GIT_VERSION}" prefix=/opt/git NO_GETTEXT=1 NO_TCLTK=1 NO_PERL=1 NO_PYTHON=1 install
+    && make -C "/tmp/git-${GIT_VERSION}" -j"$(nproc)" prefix=/opt/git NO_GETTEXT=1 NO_TCLTK=1 NO_PERL=1 NO_PYTHON=1 NO_RUST=1 all \
+    && make -C "/tmp/git-${GIT_VERSION}" prefix=/opt/git NO_GETTEXT=1 NO_TCLTK=1 NO_PERL=1 NO_PYTHON=1 NO_RUST=1 install
 
 FROM ubuntu:24.04
 ARG RUNNER_VERSION=2.338.2
