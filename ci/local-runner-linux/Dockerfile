@@ -18,5 +18,15 @@ WORKDIR /home/ci/actions-runner
 RUN curl -fsSL -o runner.tgz "https://github.com/actions/runner/releases/download/v${RUNNER_VERSION}/actions-runner-linux-x64-${RUNNER_VERSION}.tar.gz" \
     && echo "${RUNNER_SHA256}  runner.tgz" | sha256sum -c - \
     && tar -xzf runner.tgz && rm runner.tgz
+# rustup is baked in with a pinned digest because the runner user cannot install
+# packages. The workflow selects the exact Rust channel itself (rustup toolchain install).
+ARG RUSTUP_VERSION=1.29.3
+ARG RUSTUP_INIT_SHA256=b1c8cb14e30889e7e2999e6b69e62d9e9b9ffc0f4df8180564d306d9680e6c55
+RUN curl -fsSL -o /tmp/rustup-init "https://static.rust-lang.org/rustup/archive/${RUSTUP_VERSION}/x86_64-unknown-linux-gnu/rustup-init" \
+    && echo "${RUSTUP_INIT_SHA256}  /tmp/rustup-init" | sha256sum -c - \
+    && chmod +x /tmp/rustup-init \
+    && /tmp/rustup-init -y --default-toolchain none --profile minimal --no-modify-path \
+    && rm /tmp/rustup-init
+ENV PATH=/home/ci/.cargo/bin:$PATH
 COPY --chown=ci:ci entrypoint.sh /home/ci/entrypoint.sh
 ENTRYPOINT ["/home/ci/entrypoint.sh"]
