@@ -2,6 +2,21 @@
 # Host packages are those of AROS-NX scripts/ci/install-build-prerequisites.sh
 # plus what the runner and the workflow need. The runner user has no sudo and the
 # container gets no Docker socket: it only ever runs owner-dispatched workflows.
+# Git is built from a digest-pinned release tarball because the planner calls
+# `git --no-lazy-fetch` (Git 2.44 or newer) and Ubuntu 24.04 ships 2.43.
+FROM ubuntu:24.04 AS git-build
+ARG GIT_VERSION=2.56.1
+ARG GIT_SHA256=f0b0bf89264b9bd2e1c640363e7529643989da76281600473c50745cd34a607f
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential ca-certificates curl libcurl4-openssl-dev libexpat1-dev libssl-dev xz-utils zlib1g-dev \
+    && rm -rf /var/lib/apt/lists/*
+RUN curl -fsSL -o /tmp/git.tar.xz "https://mirrors.edge.kernel.org/pub/software/scm/git/git-${GIT_VERSION}.tar.xz" \
+    && echo "${GIT_SHA256}  /tmp/git.tar.xz" | sha256sum -c - \
+    && tar -xJf /tmp/git.tar.xz -C /tmp \
+    && make -C "/tmp/git-${GIT_VERSION}" -j1 prefix=/opt/git NO_GETTEXT=1 NO_TCLTK=1 NO_PERL=1 NO_PYTHON=1 all \
+    && make -C "/tmp/git-${GIT_VERSION}" prefix=/opt/git NO_GETTEXT=1 NO_TCLTK=1 NO_PERL=1 NO_PYTHON=1 install
+
 FROM ubuntu:24.04
 ARG RUNNER_VERSION=2.338.2
 ARG RUNNER_SHA256=baebf204307bac6193480852732f0aba2ae97b6c5597c244f4d5558390147c40
@@ -9,8 +24,9 @@ ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
         autoconf automake bison build-essential clang cmake flex gawk \
         libpng-dev libtool lld llvm make netpbm ninja-build patch python3 xz-utils \
-        ca-certificates curl git jq gh libicu74 libssl3t64 tar gzip unzip \
+        ca-certificates curl git jq gh libicu74 libssl3t64 libcurl4t64 libexpat1 tar gzip unzip \
     && rm -rf /var/lib/apt/lists/*
+COPY --from=git-build /opt/git /opt/git
 RUN useradd --create-home --uid 1001 ci \
     && mkdir -p /home/ci/state /home/ci/actions-runner/_work && chown -R ci:ci /home/ci
 USER ci
@@ -27,6 +43,6 @@ RUN curl -fsSL -o /tmp/rustup-init "https://static.rust-lang.org/rustup/archive/
     && chmod +x /tmp/rustup-init \
     && /tmp/rustup-init -y --default-toolchain none --profile minimal --no-modify-path \
     && rm /tmp/rustup-init
-ENV PATH=/home/ci/.cargo/bin:$PATH
+ENV PATH=/opt/git/bin:/home/ci/.cargo/bin:$PATH
 COPY --chown=ci:ci entrypoint.sh /home/ci/entrypoint.sh
 ENTRYPOINT ["/home/ci/entrypoint.sh"]
