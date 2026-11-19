@@ -19,11 +19,12 @@ services:
       - runner-work:/home/ci/actions-runner/_work
 # Pin the subnet. Without it Docker takes the next range from its default pool, which
 # can be a range the host's LAN already uses, and the host stops answering that LAN.
+# Set RUNNER_SUBNET only when the default collides with a range on the host.
 networks:
   default:
     ipam:
       config:
-        - subnet: ${RUNNER_SUBNET:?set a fixed subnet, for example 10.200.128.0/24}
+        - subnet: ${RUNNER_SUBNET:-10.200.128.0/24}
 volumes:
   runner-state:
   runner-work:
