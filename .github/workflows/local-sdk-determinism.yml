@@ -210,5 +210,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          find "$GITHUB_WORKSPACE" -mindepth 1 -maxdepth 1 -exec rm -rf {} + || true
+          # Keep .github: the post step of the local checkout action reads its
+          # action.yml from there. The next job removes it in its first step.
+          find "$GITHUB_WORKSPACE" -mindepth 1 -maxdepth 1 ! -name .github -exec rm -rf {} + || true
           find "$RUNNER_TEMP" -mindepth 1 -maxdepth 1 -exec rm -rf {} + || true
