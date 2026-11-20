@@ -1,84 +1,84 @@
 {
   "schema": "aros-tools-runtime-v1",
   "repository": "metaneutrons/aros-tools",
-  "release_id": 445365730,
-  "version": "0.6.16",
-  "tag": "v0.6.16",
-  "tag_object": "866d7a57b5744c8d28085ef95196be8c516c9ff8",
-  "source_commit": "b60651883de68f3f234769c51878d140febf660c",
-  "source_tree": "80505ca5cde4598b0efb6291c37c44699cdadd8d",
-  "source_date_epoch": 1794663090,
+  "release_id": 452443837,
+  "version": "0.6.17",
+  "tag": "v0.6.17",
+  "tag_object": "3814d2d10a3c44901fefb2597516bf74c991f92b",
+  "source_commit": "76740de8f0478ce36acbf98dce2eb7687d8860c8",
+  "source_tree": "d87d4dc49c26e363eb1fd36005f78e62e2846b70",
+  "source_date_epoch": 1795159312,
   "signer_workflow": "metaneutrons/aros-tools/.github/workflows/release.yml",
-  "certificate_identity": "https://github.com/metaneutrons/aros-tools/.github/workflows/release.yml@refs/tags/v0.6.16",
+  "certificate_identity": "https://github.com/metaneutrons/aros-tools/.github/workflows/release.yml@refs/tags/v0.6.17",
   "certificate_oidc_issuer": "https://token.actions.githubusercontent.com",
   "hosts": {
     "linux-x86_64": {
       "target": "x86_64-unknown-linux-gnu",
       "archive": {
-        "name": "aros-tools-v0.6.16-x86_64-unknown-linux-gnu.tar.gz",
-        "sha256": "a72f7040226f43defe3e36aabc5d8174f8579ef895ac59bf21f134f01d9abbdb",
-        "size": 25625695
+        "name": "aros-tools-v0.6.17-x86_64-unknown-linux-gnu.tar.gz",
+        "sha256": "edc2709c81c8e7e5027edd49de26449a84bd37be078eab32bc9172666bf84086",
+        "size": 25594186
       },
       "manifest": {
-        "name": "aros-tools-v0.6.16-x86_64-unknown-linux-gnu.tar.gz.manifest.json",
-        "sha256": "dd2f5120fc68057cb1ab0367a56acada2d055a1534dc5357facec51fb736d4e8",
+        "name": "aros-tools-v0.6.17-x86_64-unknown-linux-gnu.tar.gz.manifest.json",
+        "sha256": "59bb05bea7ef6ee2a5daf83dc34619275057564689dc62a537595c63c225c08d",
         "size": 2136
       },
       "archive_bundle": {
-        "name": "aros-tools-v0.6.16-x86_64-unknown-linux-gnu.tar.gz.sigstore.json",
-        "sha256": "75d8912bce897d007890d4b113ae15279c807b8aca8d9556adf20f841077ab38",
-        "size": 10303
+        "name": "aros-tools-v0.6.17-x86_64-unknown-linux-gnu.tar.gz.sigstore.json",
+        "sha256": "44ed1878d5ab2aae0bba4d908046a16d7f033e9e4bcfc036ac9bfde589111fe4",
+        "size": 10495
       },
       "manifest_bundle": {
-        "name": "aros-tools-v0.6.16-x86_64-unknown-linux-gnu.tar.gz.manifest.json.sigstore.json",
-        "sha256": "45d02efc862af558a4b02781220ec4126b384982e6890f545800939a938be829",
-        "size": 10203
+        "name": "aros-tools-v0.6.17-x86_64-unknown-linux-gnu.tar.gz.manifest.json.sigstore.json",
+        "sha256": "38a9156c6c7ab8fedee4ad7b2053fd6738133060b40c2c1fb2fb4e9fcc619e45",
+        "size": 10399
       }
     },
     "linux-aarch64": {
       "target": "aarch64-unknown-linux-gnu",
       "archive": {
-        "name": "aros-tools-v0.6.16-aarch64-unknown-linux-gnu.tar.gz",
-        "sha256": "9402ce24338d3f6026830fde70660b2be2f044a7b80b6de31f9ba5870503075f",
-        "size": 24561022
+        "name": "aros-tools-v0.6.17-aarch64-unknown-linux-gnu.tar.gz",
+        "sha256": "b8168c3e07e6d14a1d54c46db948f0b2ca6890c58882514c03c74f0f1f717838",
+        "size": 24496176
       },
       "manifest": {
-        "name": "aros-tools-v0.6.16-aarch64-unknown-linux-gnu.tar.gz.manifest.json",
-        "sha256": "ddec4f2dda97c2d0e3249976c65e352240abdf778c2c805cf9a490e729d0a4ed",
+        "name": "aros-tools-v0.6.17-aarch64-unknown-linux-gnu.tar.gz.manifest.json",
+        "sha256": "0011b00969343641746975ea2e9a14bd9d70b12c15851a2de9bd2789c46afa17",
         "size": 2137
       },
       "archive_bundle": {
-        "name": "aros-tools-v0.6.16-aarch64-unknown-linux-gnu.tar.gz.sigstore.json",
-        "sha256": "99a0834d4a9b1cf8261f528fb1f8ae32ad55fdcfa9a838f5f2a4d3726d4eefef",
-        "size": 10015
+        "name": "aros-tools-v0.6.17-aarch64-unknown-linux-gnu.tar.gz.sigstore.json",
+        "sha256": "4bb0f6c3e147813b5cd145b5ebc068df9410d870286b5c05044f94c63f444ed8",
+        "size": 10411
       },
       "manifest_bundle": {
-        "name": "aros-tools-v0.6.16-aarch64-unknown-linux-gnu.tar.gz.manifest.json.sigstore.json",
-        "sha256": "1b017cf1a0718686ab136535cf9bf3a1e5f7f6b21b9f5a41f865315337356884",
-        "size": 10255
+        "name": "aros-tools-v0.6.17-aarch64-unknown-linux-gnu.tar.gz.manifest.json.sigstore.json",
+        "sha256": "933795c40b1ec3bfc51ec4902acba08fe6bb9c90652538b9dd685212939f5659",
+        "size": 10403
       }
     },
     "macos-aarch64": {
       "target": "aarch64-apple-darwin",
       "archive": {
-        "name": "aros-tools-v0.6.16-aarch64-apple-darwin.tar.gz",
-        "sha256": "800f4d0605a847cc842c959af32af1d31197eed0dfb33f2d8d503e4846a2b83b",
-        "size": 22931526
+        "name": "aros-tools-v0.6.17-aarch64-apple-darwin.tar.gz",
+        "sha256": "53b27b700b05f437ab43a7d120d8037add70c76907c6914d6a68d3c466e17594",
+        "size": 22969969
       },
       "manifest": {
-        "name": "aros-tools-v0.6.16-aarch64-apple-darwin.tar.gz.manifest.json",
-        "sha256": "436e2799a12ab37d3ea90c35bbf3e92577c59a2adee8d04ff107edc1d569f804",
+        "name": "aros-tools-v0.6.17-aarch64-apple-darwin.tar.gz.manifest.json",
+        "sha256": "8d1781649454a76e5297835eff469ace4714852b130f1be5045caa92288c3810",
         "size": 2127
       },
       "archive_bundle": {
-        "name": "aros-tools-v0.6.16-aarch64-apple-darwin.tar.gz.sigstore.json",
-        "sha256": "392ae1e8d936a415ac7eafd965c2bb446a2e67ad5a46527dc2257c49ddb3f7ec",
-        "size": 10411
+        "name": "aros-tools-v0.6.17-aarch64-apple-darwin.tar.gz.sigstore.json",
+        "sha256": "13a756c28031e591a9e53fdf747a880dbea77de78caf227f2b75bc99dc82ad97",
+        "size": 10551
       },
       "manifest_bundle": {
-        "name": "aros-tools-v0.6.16-aarch64-apple-darwin.tar.gz.manifest.json.sigstore.json",
-        "sha256": "d42689db8120024593f0d887d30be4b324b15e5f5faa9db03caf3eef8a1025c9",
-        "size": 10547
+        "name": "aros-tools-v0.6.17-aarch64-apple-darwin.tar.gz.manifest.json.sigstore.json",
+        "sha256": "78e766aa4d79690db7c279191ecc8a60e653e89ee641369a366ac6b2cf1a370e",
+        "size": 10399
       }
     }
   }
