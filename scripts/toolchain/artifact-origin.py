@@ -216,7 +216,19 @@ GH_BACKOFF_SECONDS = (5, 15, 45, 90)
 # never matched, so a real rejection fails at once with its original message.
 GH_TRANSIENT = re.compile(
     rb"HTTP 5\d\d|error connecting|i/o timeout|connection reset|connection refused|"
-    rb"TLS handshake timeout|unexpected EOF|no such host|temporary failure", re.IGNORECASE)
+    rb"TLS handshake timeout|unexpected EOF|no such host|temporary failure|"
+    # A primary or secondary rate limit is provider throttling, not a
+    # rejection: GitHub answers it with HTTP 429 or with HTTP 403 and a
+    # rate-limit message. A 403 without that message is still final.
+    rb"HTTP 429|rate limit", re.IGNORECASE)
+# Only the three-digit HTTP status of a failed call is reported. The message,
+# request URL and response body never leave this module.
+GH_STATUS = re.compile(rb"\bHTTP (\d{3})\b")
+
+
+def http_status(stderr: bytes | None) -> str:
+    match = GH_STATUS.search(stderr or b"")
+    return f" (HTTP {match.group(1).decode()})" if match else ""
 
 
 def gh_json(arguments: list[str], purpose: str = "GitHub observation") -> object:
@@ -234,6 +246,7 @@ def gh_json(arguments: list[str], purpose: str = "GitHub observation") -> object
     retryable = bool(arguments) and arguments[0] == "api"
     attempts = GH_ATTEMPTS if retryable else 1
     unavailable = False
+    status = ""
     for attempt in range(attempts):
         if attempt:
             time.sleep(GH_BACKOFF_SECONDS[attempt - 1])
@@ -249,15 +262,16 @@ def gh_json(arguments: list[str], purpose: str = "GitHub observation") -> object
         if result.returncode == 0:
             return parse_json(result.stdout)
         unavailable = False
+        status = http_status(result.stderr) if retryable else ""
         if not (retryable and GH_TRANSIENT.search(result.stderr or b"")):
             break
     else:
         raise OriginError(
             "GitHub observation is unavailable" if unavailable
-            else f"{purpose} failed after {attempts} attempts; no credential fallback")
+            else f"{purpose} failed after {attempts} attempts{status}; no credential fallback")
     if unavailable:
         raise OriginError("GitHub observation is unavailable")
-    raise OriginError(f"{purpose} failed; no retry or credential fallback")
+    raise OriginError(f"{purpose} failed{status}; no retry or credential fallback")
 
 
 def observe_run_event(context: dict) -> str:

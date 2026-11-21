@@ -975,7 +975,7 @@ class GitHubObservationRetryTests(unittest.TestCase):
     def test_a_persistent_provider_error_ends_after_exactly_five_attempts(self) -> None:
         with mock.patch.object(origin.subprocess, "run", return_value=self._bad_gateway()) as run, \
                 mock.patch.object(origin.time, "sleep") as sleep:
-            with self.assertRaisesRegex(origin.OriginError, "after 5 attempts; no credential fallback"):
+            with self.assertRaisesRegex(origin.OriginError, r"after 5 attempts \(HTTP 502\); no credential fallback"):
                 origin.gh_json(["api", "x"])
         self.assertEqual(run.call_count, 5)
         self.assertEqual([call.args[0] for call in sleep.call_args_list], [5, 15, 45, 90])
@@ -988,17 +988,48 @@ class GitHubObservationRetryTests(unittest.TestCase):
                 origin.gh_json(["api", "x"])
         self.assertEqual(run.call_count, 5)
 
-    def test_a_client_error_is_not_retried(self) -> None:
-        for stderr in (b"gh: HTTP 404: Not Found", b"gh: HTTP 403: Resource not accessible", b""):
+    def test_a_client_error_is_not_retried_and_names_only_its_status(self) -> None:
+        cases = (
+            (b"gh: HTTP 404: Not Found (https://api.github.com/secret-path)", " (HTTP 404)"),
+            (b"gh: HTTP 403: Resource not accessible by integration", " (HTTP 403)"),
+            (b"", ""),
+        )
+        for stderr, status in cases:
             with self.subTest(stderr=stderr):
                 failed = self._completed(1, stderr=stderr)
                 with mock.patch.object(origin.subprocess, "run", return_value=failed) as run, \
                         mock.patch.object(origin.time, "sleep") as sleep:
-                    with self.assertRaisesRegex(
-                            origin.OriginError, "GitHub observation failed; no retry or credential fallback"):
+                    with self.assertRaises(origin.OriginError) as raised:
                         origin.gh_json(["api", "x"])
+                self.assertEqual(
+                    str(raised.exception),
+                    f"GitHub observation failed{status}; no retry or credential fallback")
+                self.assertNotIn("secret-path", str(raised.exception))
+                self.assertNotIn("Not Found", str(raised.exception))
                 self.assertEqual(run.call_count, 1)
                 sleep.assert_not_called()
+
+    def test_a_rate_limit_is_retried(self) -> None:
+        for stderr in (b"gh: HTTP 429: Too Many Requests",
+                       b"gh: API rate limit exceeded for installation ID 1 (HTTP 403)",
+                       b"gh: You have exceeded a secondary rate limit. (HTTP 403)"):
+            with self.subTest(stderr=stderr):
+                results = [self._completed(1, stderr=stderr), self._completed(0, b"{}")]
+                with mock.patch.object(origin.subprocess, "run", side_effect=results) as run, \
+                        mock.patch.object(origin.time, "sleep") as sleep:
+                    self.assertEqual(origin.gh_json(["api", "x"]), {})
+                self.assertEqual(run.call_count, 2)
+                self.assertEqual([call.args[0] for call in sleep.call_args_list], [5])
+
+    def test_a_persistent_rate_limit_names_its_status(self) -> None:
+        limited = self._completed(1, stderr=b"gh: HTTP 429: Too Many Requests")
+        with mock.patch.object(origin.subprocess, "run", return_value=limited) as run, \
+                mock.patch.object(origin.time, "sleep"):
+            with self.assertRaises(origin.OriginError) as raised:
+                origin.gh_json(["api", "x"])
+        self.assertEqual(str(raised.exception),
+                         "GitHub observation failed after 5 attempts (HTTP 429); no credential fallback")
+        self.assertEqual(run.call_count, 5)
 
     def test_a_signature_check_is_never_retried(self) -> None:
         # gh attestation verify exits non-zero for a rejected signature. Even a
