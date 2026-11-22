@@ -247,6 +247,15 @@ if args[:3] == ["toolchain", "producer", "compare"]:
         report["schema"] = True
     report_raw = canonical(report)
     report_path.write_bytes(report_raw)
+    # Like aros-common, keep a persistent zero-byte advisory lock beside the
+    # published receipt, named from its transaction journal.
+    journal = ".aros-file-%s-transaction.json" % sha(report_path.name.lower().encode())[:32]
+    lock = report_path.parent / (".aros-lock-%s-0000000000000000" % sha(journal.encode())[:16])
+    lock.write_bytes(b"lock" if mode == "nonempty-lock" else b"")
+    if mode == "second-lock":
+        (report_path.parent / ".aros-lock-0123456789abcdef-0000000000000000").write_bytes(b"")
+    elif mode == "other-hidden-file":
+        (report_path.parent / ".aros-stage-leftover").write_bytes(b"")
     receipt_sha = sha(report_raw)
     if mode == "response-receipt-sha-substitution":
         receipt_sha = "4" * 64
@@ -788,6 +797,27 @@ class CompilerCandidateAssemblyTests(unittest.TestCase):
                             "--executor-binary-sha256" in call and
                             "--package-measurement-sha256" in call
                             for call in verify_calls))
+
+    def test_compare_publication_locks_are_released_and_leave_no_hidden_entry(self) -> None:
+        root = self.base / "lock-operation"
+        result = self.fixture.run(root)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        hidden = [path for path in root.rglob(".*")]
+        self.assertEqual(hidden, [])
+
+    def test_a_publication_lock_that_is_not_a_bare_lock_is_rejected(self) -> None:
+        cases = {
+            "nonempty-lock": "publication lock is not an owned zero-byte regular file",
+            "second-lock": "contains more than one publication lock",
+            "other-hidden-file": "contains a nonportable name",
+        }
+        for mode, message in cases.items():
+            with self.subTest(mode=mode):
+                root = self.base / f"lock-{mode}"
+                result = self.fixture.run(root, FAKE_COMPARE_MODE=mode)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(message, result.stderr)
+                self.assertEqual(result.stdout, "")
 
     def test_tag_bound_complete_matrix_assembles_with_original_owner_context(self) -> None:
         tag_fixture_base = self.base / "tag-fixture"

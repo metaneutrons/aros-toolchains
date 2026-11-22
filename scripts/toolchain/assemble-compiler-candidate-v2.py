@@ -38,6 +38,9 @@ NATIVE_TIMEOUT_SECONDS = 1800
 HEX64 = re.compile(r"[0-9a-f]{64}\Z")
 HEX40 = re.compile(r"[0-9a-f]{40}\Z")
 LANE_ID_COMPONENT = re.compile(r"[A-Za-z0-9._+-]{1,255}\Z")
+# aros-common keeps one zero-byte advisory lock beside every durably published
+# file. Only this exact form is recognized, and only as a lock.
+PUBLICATION_LOCK_NAME = re.compile(r"\.aros-lock-[0-9a-f]{16}-0000000000000000\Z")
 ROOT_FLAGS = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
 FILE_FLAGS = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
 CREATE_FLAGS = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
@@ -1244,6 +1247,7 @@ def assemble(args: argparse.Namespace) -> dict:
                         "--format", "json"]
         compare_result = _run_native(data, compare_stdout, compare_args,
                                      f"{lane_id} A/B comparison", data["selected_files"])
+        _release_publication_lock(reports_dir, "owned compiler command result directory")
         compare_result["receipt_path"] = receipt_path
         compare_result["selected_files"] = data["selected_files"]
         comparison = _validate_compare_result(compare_result, receipt_path,
@@ -1379,6 +1383,41 @@ def assemble(args: argparse.Namespace) -> dict:
     _require(final_source_event == data["source_event"],
              "source run event changed during compiler assembly")
     return summary
+
+
+def _release_publication_lock(directory: Path, label: str) -> None:
+    """Remove the advisory lock that a finished native publisher left behind.
+
+    ``producer compare`` publishes its receipt through aros-common, which keeps
+    a persistent advisory lock beside the target. The directory is private to
+    this operation and the publisher has exited, so the lock guards nothing.
+    It is removed only if it has the exact lock form, is the only lock, and is
+    an owned zero-byte regular file; anything else is left for the strict
+    directory checks to reject.
+    """
+    _STAGE.directory_fingerprint(directory, label)
+    try:
+        with os.scandir(directory) as entries:
+            locks = [entry.name for entry in entries
+                     if PUBLICATION_LOCK_NAME.fullmatch(entry.name) is not None]
+    except OSError as error:
+        raise AssemblyError(f"{label} cannot be enumerated") from error
+    _require(len(locks) <= 1, f"{label} contains more than one publication lock")
+    for name in locks:
+        try:
+            directory_fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        except OSError as error:
+            raise AssemblyError(f"{label} cannot be opened") from error
+        try:
+            metadata = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+            _require(stat.S_ISREG(metadata.st_mode) and metadata.st_size == 0
+                     and metadata.st_nlink == 1 and metadata.st_uid == os.geteuid(),
+                     f"{label} publication lock is not an owned zero-byte regular file")
+            os.unlink(name, dir_fd=directory_fd)
+        except OSError as error:
+            raise AssemblyError(f"{label} publication lock cannot be released") from error
+        finally:
+            os.close(directory_fd)
 
 
 def _verify_staged(staged: dict, release_dir: Path) -> None:
