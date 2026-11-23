@@ -23,6 +23,8 @@ import unittest
 
 TOOLCHAIN = Path(__file__).resolve().parents[1]
 SCRIPT = TOOLCHAIN / "select-native-release-evidence-v2.py"
+SPLIT_COMPILER_WORKFLOW = ".github/workflows/toolchain-compilers-v2.yml"
+SPLIT_SDK_WORKFLOW = ".github/workflows/toolchain-sdk-v2.yml"
 SELECTOR_SPEC = importlib.util.spec_from_file_location(
     "native_release_evidence_selector_under_test", SCRIPT
 )
@@ -70,21 +72,54 @@ def measured(path: Path) -> dict:
     return {"sha256": digest(raw), "size": len(raw)}
 
 
+SPLIT_FAKE_GH_SOURCE = '''#!/usr/bin/env python3
+import json
+import os
+import sys
+
+responses = json.loads(os.environ["FAKE_GH_SPLIT_RESPONSES"])
+if len(sys.argv) != 3 or sys.argv[1] != "api" or sys.argv[2] not in responses:
+    raise SystemExit(64)
+sys.stdout.write(json.dumps(responses[sys.argv[2]], separators=(",", ":")))
+'''
+
+
+def run_endpoint(context: dict) -> str:
+    return (f"repos/{context['repository']}/actions/runs/{context['run_id']}"
+            f"/attempts/{context['run_attempt']}")
+
+
 class Fixture:
-    def __init__(self, base: Path, *, source_ref: str = "refs/heads/main") -> None:
+    def __init__(self, base: Path, *, source_ref: str = "refs/heads/main",
+                 split: bool = False, compiler_overrides: dict | None = None,
+                 bind_compiler_evidence_to_sdk: bool = False) -> None:
         self.base = base.resolve()
+        self.split = split
         self.sdk = sdk_tests.Fixture(self.base)
         self._bind_valid_plan_documents()
         self.source_context = {
             "repository": "example/project", "repository_id": 7890,
             "producer_commit": sdk_tests.PRODUCER, "source_ref": source_ref,
-            "workflow": self.sdk.fragment["source_workflow"],
+            "workflow": (SPLIT_SDK_WORKFLOW if split
+                         else self.sdk.fragment["source_workflow"]),
             "run_id": 321456, "run_attempt": 2,
         }
         self.source_context_raw = canonical(self.source_context)
         self.source_context_sha256 = digest(self.source_context_raw)
         self.source_context_path = self.base / "source-context.json"
         write(self.source_context_path, self.source_context_raw)
+        self.compiler_context = None
+        self.compiler_context_sha256 = self.source_context_sha256
+        self.bind_compiler_evidence_to_sdk = bind_compiler_evidence_to_sdk
+        if split:
+            self.compiler_context = {
+                **self.source_context, "workflow": SPLIT_COMPILER_WORKFLOW,
+                "run_id": 321000, "run_attempt": 1, **(compiler_overrides or {}),
+            }
+            raw = canonical(self.compiler_context)
+            self.compiler_context_sha256 = digest(raw)
+            self.compiler_context_path = self.base / "compiler-source-context.json"
+            write(self.compiler_context_path, raw)
         self.sdk.fragment["source_context_sha256"] = self.source_context_sha256
         self.sdk.fragment["source_producer_commit"] = self.source_context["producer_commit"]
         self.sdk.fragment["source_workflow"] = self.source_context["workflow"]
@@ -136,7 +171,8 @@ class Fixture:
         self.plan = plan
 
     def _write_compiler_candidate(self) -> None:
-        source_context_sha = self.sdk.fragment["source_context_sha256"]
+        source_context_sha = (self.source_context_sha256 if self.bind_compiler_evidence_to_sdk
+                              else self.compiler_context_sha256)
         runtime_sha = self.sdk.fragment["aros_sha256"]
         release_id = "fixture-release-2026"
         bindings = {
@@ -340,7 +376,28 @@ class Fixture:
             "--sdk-fragment-sha256", digest(self.sdk.fragment_path.read_bytes()),
             "--sdk-owner-root", str(self.sdk.owner_root),
             "--index", str(self.index_path), "--index-sha256", digest(self.index_path.read_bytes()),
-        ]
+        ] + ([
+            "--compiler-source-context", str(self.compiler_context_path),
+            "--compiler-source-context-sha256", self.compiler_context_sha256,
+        ] if self.split else [])
+
+    def split_environment(self, *, compiler_event: str = "workflow_dispatch",
+                          sdk_event: str = "workflow_dispatch") -> dict[str, str]:
+        binary_dir = self.base / "split-fake-gh-bin"
+        binary_dir.mkdir(exist_ok=True)
+        binary = binary_dir / "gh"
+        binary.write_text(SPLIT_FAKE_GH_SOURCE, encoding="utf-8")
+        binary.chmod(0o700)
+        responses = {
+            run_endpoint(self.source_context):
+                compiler_tests.provider_run(self.source_context, sdk_event),
+            run_endpoint(self.compiler_context):
+                compiler_tests.provider_run(self.compiler_context, compiler_event),
+        }
+        return {
+            "PATH": str(binary_dir) + os.pathsep + os.environ.get("PATH", ""),
+            "FAKE_GH_SPLIT_RESPONSES": json.dumps(responses),
+        }
 
     def run(self, *, extra: list[str] | None = None,
             replace: dict[str, str] | None = None,
@@ -394,6 +451,86 @@ importlib.util.spec_from_file_location = _hooked_spec
         )
         environment["NATIVE_EVIDENCE_MUTATE_PATH"] = str(path)
         return self.run(environment=environment)
+
+
+class SplitQualificationEvidenceTests(unittest.TestCase):
+    """Compiler evidence from a compiler run, SDK evidence from an SDK run."""
+
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory(prefix="native-release-evidence-split.")
+        self.base = Path(self.temporary.name)
+
+    def tearDown(self) -> None:
+        self.temporary.cleanup()
+
+    def fixture(self, name: str, **options: object) -> Fixture:
+        base = self.base / name
+        base.mkdir()
+        return Fixture(base, split=True, **options)
+
+    def assert_rejected(self, result: subprocess.CompletedProcess[str], message: str) -> None:
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertEqual(result.stdout, "")
+        self.assertIn("native release evidence selection failed:", result.stderr)
+        self.assertIn(message, result.stderr)
+
+    def test_split_contexts_select_one_candidate(self) -> None:
+        fixture = self.fixture("valid")
+        result = fixture.run(environment=fixture.split_environment())
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)["schema"],
+                         "aros-toolchain-release-evidence-selection-v2")
+
+    def test_tag_bound_split_contexts_select_one_candidate(self) -> None:
+        fixture = self.fixture("tag", source_ref=compiler_tests.TAG_REF)
+        result = fixture.run(environment=fixture.split_environment())
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_compiler_context_identity_mismatches_are_rejected(self) -> None:
+        cases = {
+            "producer": ({"producer_commit": "f" * 40}, "differ in producer commit or ref"),
+            "ref": ({"source_ref": "refs/heads/other"}, "differ in producer commit or ref"),
+            "repository": ({"repository": "example/other"}, "different repositories"),
+            "repository-id": ({"repository_id": 7891}, "different repositories"),
+            "same-run": ({"run_id": 321456}, "must be distinct runs"),
+            "workflow": ({"workflow": SPLIT_SDK_WORKFLOW}, "compiler and SDK workflows"),
+            "legacy-workflow": ({"workflow": ".github/workflows/toolchain-release.yml"},
+                                "compiler and SDK workflows"),
+        }
+        for name, (overrides, message) in cases.items():
+            with self.subTest(case=name):
+                fixture = self.fixture(f"identity-{name}", compiler_overrides=overrides)
+                self.assert_rejected(fixture.run(environment=fixture.split_environment()), message)
+
+    def test_compiler_evidence_must_bind_the_compiler_context(self) -> None:
+        fixture = self.fixture("bound-to-sdk", bind_compiler_evidence_to_sdk=True)
+        self.assert_rejected(fixture.run(environment=fixture.split_environment()),
+                             "compiler evidence source-context digest differs")
+
+    def test_compiler_context_digest_and_pairing_are_required(self) -> None:
+        fixture = self.fixture("digest")
+        self.assert_rejected(
+            fixture.run(replace={"--compiler-source-context-sha256": "0" * 64},
+                        environment=fixture.split_environment()),
+            "compiler source context bytes differ")
+        arguments = fixture.arguments()
+        position = arguments.index("--compiler-source-context-sha256")
+        del arguments[position:position + 2]
+        result = subprocess.run(arguments, capture_output=True, text=True, check=False,
+                                env={**os.environ, **fixture.split_environment()})
+        self.assert_rejected(result, "must be selected together")
+
+    def test_split_runs_with_different_events_are_rejected(self) -> None:
+        fixture = self.fixture("events", source_ref=compiler_tests.TAG_REF)
+        self.assert_rejected(
+            fixture.run(environment=fixture.split_environment(compiler_event="push")),
+            "different provider events")
+
+    def test_single_run_evidence_cannot_claim_split_contexts(self) -> None:
+        fixture = self.fixture("single-run-evidence")
+        fixture.split = False
+        result = fixture.run(environment=fixture.split_environment())
+        self.assert_rejected(result, "compiler evidence source-context digest differs")
 
 
 class NativeReleaseEvidenceSelectionTests(unittest.TestCase):

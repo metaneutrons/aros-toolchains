@@ -102,6 +102,41 @@ def validate_context(value: object) -> dict:
     return ctx
 
 
+# Split qualification (docs/plans/split-compiler-sdk-qualification.md): the
+# compiler run and the SDK run are two workflow files on one producer commit.
+SPLIT_COMPILER_WORKFLOW = ".github/workflows/toolchain-compilers-v2.yml"
+SPLIT_SDK_WORKFLOW = ".github/workflows/toolchain-sdk-v2.yml"
+
+
+def require_split_contexts(compiler: object, sdk: object) -> tuple[dict, dict]:
+    """Admit a compiler-run context for consumption by an SDK-run context.
+
+    Both runs must belong to one repository, execute one producer commit at one
+    ref (binding policy (a)) and be distinct runs of the two fixed workflows.
+    This compares identities only; each run's provider event and every owner
+    attestation are still observed and verified separately.
+    """
+    compiler, sdk = validate_context(compiler), validate_context(sdk)
+    require(compiler["workflow"] == SPLIT_COMPILER_WORKFLOW
+            and sdk["workflow"] == SPLIT_SDK_WORKFLOW,
+            "split qualification contexts must name the compiler and SDK workflows")
+    require(compiler["repository"] == sdk["repository"]
+            and compiler["repository_id"] == sdk["repository_id"],
+            "split qualification contexts belong to different repositories")
+    require(compiler["producer_commit"] == sdk["producer_commit"]
+            and compiler["source_ref"] == sdk["source_ref"],
+            "split qualification contexts differ in producer commit or ref")
+    require(compiler["run_id"] != sdk["run_id"],
+            "split qualification contexts must be distinct runs")
+    return compiler, sdk
+
+
+def require_split_events(compiler_event: str, sdk_event: str) -> str:
+    require(compiler_event in SUPPORTED_EVENTS and compiler_event == sdk_event,
+            "split qualification runs have different provider events")
+    return compiler_event
+
+
 def context_from_environment(workflow: str) -> dict:
     return validate_context({
         "repository": os.environ.get("GITHUB_REPOSITORY", ""),
