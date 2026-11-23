@@ -9,11 +9,11 @@ id = "gnu-rv32"
 source_lock = "toolchains/gnu-16.2.0.sources.json"
 source_lock_sha256 = "ced11b5c510c89a05fe3863be812f211362c08d550a8acdd46b6942b92c38c0b"
 profiles = "toolchains/profiles-sdk-gnu-v2.json"
-profiles_sha256 = "805bea6986719b3ad2b78b20aa70544fca85c635305b70814748db09268d734f"
+profiles_sha256 = "3978f1ccd7a93648887168a1af1912168b425c22247db7b6b20d24e931cc562e"
 
 [[groups]]
 id = "llvm"
 source_lock = "toolchains/llvm-23.1.0.sources.json"
 source_lock_sha256 = "d55dbdff4b0d45bfa7704cd0710272665cf21a9b3f873d13779bef98ebbb133d"
 profiles = "toolchains/profiles-sdk-llvm-v2.json"
-profiles_sha256 = "56666aa2bbbdaeb54a3850cd8789f6dfb94bdb65c57a5cc66b7c5adca98ea650"
+profiles_sha256 = "b05be9517a3a7cec1dc30282ebba19232d2f01b20d42ad1b0b855b4891c8e80c"
