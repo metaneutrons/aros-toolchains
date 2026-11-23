@@ -417,6 +417,15 @@ class CollectCompilerOwnersProcessTests(unittest.TestCase):
         self.assertEqual(sum(entry["stage"] == "transport" for entry in stages), 24)
         self.assertEqual(list(self.operations.glob(".compiler-owner-collection-v2.*")), [])
 
+    def test_prior_run_collection_reads_every_owner_without_same_attempt(self) -> None:
+        # Split qualification: the SDK run collects the compiler run's owners,
+        # so no reader may claim the current attempt.
+        result = self.run_wrapper(["--forbidden-prefix", "/var/forbidden"])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        readers = [entry for entry in self.stages() if entry["stage"] == "reader"]
+        self.assertEqual(len(readers), 24)
+        self.assertTrue(all("--same-attempt" not in entry["args"] for entry in readers))
+
     def test_invalid_collection_stops_before_cli_or_root(self) -> None:
         arguments = self.arguments()
         arguments[arguments.index("--inputs-sha256") + 1] = "f" * 64
