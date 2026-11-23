@@ -174,9 +174,31 @@ if args[:3] == ["toolchain", "producer", "index"]:
     return original.replace(marker, additions + "\n" + marker)
 
 
+SPLIT_COMPILER_WORKFLOW = ".github/workflows/toolchain-compilers-v2.yml"
+SPLIT_SDK_WORKFLOW = ".github/workflows/toolchain-sdk-v2.yml"
+SPLIT_FAKE_GH_SOURCE = '''#!/usr/bin/env python3
+import json
+import os
+import sys
+
+responses = json.loads(os.environ["FAKE_GH_SPLIT_RESPONSES"])
+if len(sys.argv) != 3 or sys.argv[1] != "api" or sys.argv[2] not in responses:
+    raise SystemExit(64)
+sys.stdout.write(json.dumps(responses[sys.argv[2]], separators=(",", ":")))
+'''
+
+
+def run_endpoint(context: dict) -> str:
+    return (f"repos/{context['repository']}/actions/runs/{context['run_id']}"
+            f"/attempts/{context['run_attempt']}")
+
+
 class CombinedFixture:
-    def __init__(self, base: Path, *, source_ref: str = compiler_tests.SOURCE_REF) -> None:
+    def __init__(self, base: Path, *, source_ref: str = compiler_tests.SOURCE_REF,
+                 split: bool = False, sdk_overrides: dict | None = None,
+                 bind_sdk_fragment_to_compiler: bool = False) -> None:
         self.base = base.resolve()
+        self.split = split
         self.base.mkdir(parents=True, exist_ok=True)
         self.fake_source = _combined_fake_aros()
         self.compiler_fixture = None
@@ -208,9 +230,11 @@ class CombinedFixture:
             fixture.aros_sha = digest(fixture.aros.read_bytes())
             fixture.log = fixture.base / "native.log"
 
+        workflow = SPLIT_COMPILER_WORKFLOW if split else compiler_tests.SOURCE_WORKFLOW
         with (mock.patch.object(compiler_tests.Fixture, "_make_plan_and_inputs",
                                 make_plan_and_inputs),
-              mock.patch.object(compiler_tests.Fixture, "_make_native_executable", make_native)):
+              mock.patch.object(compiler_tests.Fixture, "_make_native_executable", make_native),
+              mock.patch.object(compiler_tests, "SOURCE_WORKFLOW", workflow)):
             (self.base / "owners").mkdir(mode=0o700)
             self.compiler_fixture = compiler_tests.Fixture(
                 self.base / "owners", source_ref=source_ref
@@ -218,7 +242,40 @@ class CombinedFixture:
         assert self.compiler_fixture is not None
         self._make_sdk_fixture()
         self._join_input_collection()
+        if split:
+            self._split_sdk_context(sdk_overrides or {}, bind_sdk_fragment_to_compiler)
         self._make_support()
+
+    def _split_sdk_context(self, overrides: dict, bind_to_compiler: bool) -> None:
+        compiler = self.compiler_fixture.context
+        self.sdk_context = {**compiler, "workflow": SPLIT_SDK_WORKFLOW,
+                            "run_id": compiler["run_id"] + 1000, "run_attempt": 1, **overrides}
+        raw = canonical(self.sdk_context)
+        self.sdk_context_path = self.base / "sdk-source-context.json"
+        self.sdk_context_path.write_bytes(raw)
+        self.sdk_context_sha = digest(raw)
+        fragment = self.sdk_fixture.fragment
+        fragment["source_context_sha256"] = (self.compiler_fixture.context_sha if bind_to_compiler
+                                             else self.sdk_context_sha)
+        fragment["source_workflow"] = self.sdk_context["workflow"]
+        fragment["source_ref"] = self.sdk_context["source_ref"]
+        fragment["source_producer_commit"] = self.sdk_context["producer_commit"]
+        self.sdk_fixture.write_fragment()
+
+    def split_environment(self, *, compiler_events: list[str] | None = None,
+                          sdk_event: str = "workflow_dispatch") -> dict[str, str]:
+        binary_dir = self.base / "split-fake-gh-bin"
+        binary_dir.mkdir(exist_ok=True)
+        binary = binary_dir / "gh"
+        binary.write_text(SPLIT_FAKE_GH_SOURCE, encoding="utf-8")
+        binary.chmod(0o700)
+        compiler = self.compiler_fixture.context
+        responses = {
+            run_endpoint(compiler): compiler_tests.provider_run(compiler, "workflow_dispatch"),
+            run_endpoint(self.sdk_context): compiler_tests.provider_run(self.sdk_context, sdk_event),
+        }
+        return {"PATH": str(binary_dir) + os.pathsep + os.environ.get("PATH", ""),
+                "FAKE_GH_SPLIT_RESPONSES": json.dumps(responses)}
 
     def _make_sdk_fixture(self) -> None:
         sdk_fixture_module.SDK_SPECS = SDK_SPECS
@@ -347,8 +404,13 @@ class CombinedFixture:
             "--plan", str(compiler_fixture.plan_path), "--plan-sha256", compiler_fixture.plan_sha,
             "--inputs-dir", str(compiler_fixture.inputs), "--inputs-sha256", compiler_fixture.inputs_sha,
             "--producer-commit", PRODUCER, "--tools-commit", TOOLS,
-            "--source-context", str(compiler_fixture.context_path),
-            "--source-context-sha256", compiler_fixture.context_sha,
+            *(["--source-context", str(self.sdk_context_path),
+               "--source-context-sha256", self.sdk_context_sha,
+               "--compiler-source-context", str(compiler_fixture.context_path),
+               "--compiler-source-context-sha256", compiler_fixture.context_sha]
+              if self.split else
+              ["--source-context", str(compiler_fixture.context_path),
+               "--source-context-sha256", compiler_fixture.context_sha]),
             "--compiler-fragment", str(compiler_fixture.fragment_path),
             "--compiler-fragment-sha256", digest(compiler_fixture.fragment_path.read_bytes()),
             "--compiler-owner-root", str(compiler_fixture.owner_root),
@@ -384,6 +446,8 @@ class CombinedFixture:
             "FAKE_AROS_RUNTIME": str(self.compiler_fixture.aros),
             "FAKE_LATE_SOURCE_CONTEXT": str(self.compiler_fixture.context_path),
         })
+        if self.split:
+            env.update(self.split_environment())
         env.update(environment or {})
         first_row = self.compiler_fixture.rows[0]
         observation = Path(first_row["observation"]["path"])
@@ -395,6 +459,70 @@ class CombinedFixture:
             arguments[arguments.index(option) + 1] = value
         return subprocess.run([*arguments, *(extra or [])], capture_output=True,
                               text=True, env=env, check=False, timeout=240)
+
+
+class SplitReleaseCandidateAssemblyTests(unittest.TestCase):
+    """Compiler owners from a compiler run, SDK owners from an SDK run."""
+
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory(prefix="release-candidate-split.")
+        self.base = Path(self.temporary.name).resolve()
+
+    def tearDown(self) -> None:
+        self.temporary.cleanup()
+
+    def assert_failed(self, result: subprocess.CompletedProcess[str], message: str) -> None:
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertEqual(result.stdout, "")
+        self.assertIn("release candidate pre-index assembly failed:", result.stderr)
+        self.assertIn(message, result.stderr)
+
+    def test_split_runs_assemble_one_candidate_bound_to_both_contexts(self) -> None:
+        fixture = CombinedFixture(self.base / "valid", split=True)
+        result = fixture.run(self.base / "valid-root")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        bindings = json.loads(result.stdout)["bindings"]
+        self.assertEqual(bindings["source_context_sha256"], fixture.sdk_context_sha)
+        self.assertEqual(bindings["compiler_source_context_sha256"],
+                         fixture.compiler_fixture.context_sha)
+
+    def test_sdk_owners_bound_to_the_compiler_run_are_rejected(self) -> None:
+        fixture = CombinedFixture(self.base / "sdk-bound", split=True,
+                                  bind_sdk_fragment_to_compiler=True)
+        self.assert_failed(fixture.run(self.base / "sdk-bound-root"),
+                           "not bound to their selected run contexts")
+
+    def test_mismatched_sdk_run_contexts_are_rejected(self) -> None:
+        cases = {
+            "producer": ({"producer_commit": "f" * 40}, "commits differ"),
+            "ref": ({"source_ref": "refs/heads/other"}, "producer commit or ref"),
+            "repository": ({"repository": "example/other"}, "different repositories"),
+            "workflow": ({"workflow": SPLIT_COMPILER_WORKFLOW}, "compiler and SDK workflows"),
+        }
+        for name, (overrides, message) in cases.items():
+            with self.subTest(case=name):
+                fixture = CombinedFixture(self.base / f"case-{name}", split=True,
+                                          sdk_overrides=overrides)
+                self.assert_failed(fixture.run(self.base / f"case-{name}-root"), message)
+
+    def test_split_runs_with_different_events_are_rejected(self) -> None:
+        fixture = CombinedFixture(self.base / "events", split=True)
+        result = fixture.run(self.base / "events-root",
+                             environment=fixture.split_environment(sdk_event="push"))
+        self.assert_failed(result, "different provider events")
+
+    def test_compiler_context_requires_its_digest_and_a_distinct_run(self) -> None:
+        fixture = CombinedFixture(self.base / "pairing", split=True)
+        arguments = fixture.command(self.base / "pairing-root")
+        position = arguments.index("--compiler-source-context-sha256")
+        del arguments[position:position + 2]
+        result = subprocess.run(arguments, capture_output=True, text=True, check=False,
+                                env={**os.environ, **fixture.split_environment()}, timeout=240)
+        self.assert_failed(result, "must be selected together")
+        same = fixture.run(self.base / "same-root", replace={
+            "--source-context-sha256": fixture.compiler_fixture.context_sha,
+        })
+        self.assert_failed(same, "distinct runs")
 
 
 class ReleaseCandidateAssemblyTests(unittest.TestCase):
