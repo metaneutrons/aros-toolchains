@@ -1,0 +1,144 @@
+name: Retain the compiler run manifest
+description: Stage the compiler run manifest of the split qualification in its owning job and retain its separately signed original transport observation; no release admission.
+
+inputs:
+  context:
+    description: Canonical run context of this compiler qualification run.
+    required: true
+  context-sha256:
+    description: Digest of the run context.
+    required: true
+  summary:
+    description: Compiler candidate assembly summary of this run.
+    required: true
+  summary-sha256:
+    description: Digest of the assembly summary.
+    required: true
+  fragment:
+    description: Compiler owner collector fragment of this run.
+    required: true
+  fragment-sha256:
+    description: Digest of the collector fragment.
+    required: true
+  root:
+    description: Absent canonical transport root outside every operation root.
+    required: true
+  workflow:
+    description: Independently selected executing workflow path.
+    required: true
+  job-name:
+    description: Exact executing provider job name selected by the caller.
+    required: true
+
+outputs:
+  payload-id:
+    description: Manifest payload numeric artifact ID.
+    value: ${{ steps.payload.outputs.artifact-id }}
+  payload-sha256:
+    description: Manifest payload upload ZIP digest.
+    value: ${{ steps.payload.outputs.artifact-digest }}
+  proof-id:
+    description: Separately uploaded origin record and signature.
+    value: ${{ steps.proof.outputs.artifact-id }}
+  proof-sha256:
+    description: Separate proof ZIP digest.
+    value: ${{ steps.proof.outputs.artifact-digest }}
+  manifest-sha256:
+    description: Digest of the staged manifest.json.
+    value: ${{ steps.stage.outputs.manifest-sha256 }}
+
+runs:
+  using: composite
+  steps:
+    - id: stage
+      name: Stage the manifest from digest-bound assembly outputs only
+      shell: bash
+      env:
+        MANIFEST_CONTEXT: ${{ inputs.context }}
+        MANIFEST_CONTEXT_SHA256: ${{ inputs.context-sha256 }}
+        MANIFEST_SUMMARY: ${{ inputs.summary }}
+        MANIFEST_SUMMARY_SHA256: ${{ inputs.summary-sha256 }}
+        MANIFEST_FRAGMENT: ${{ inputs.fragment }}
+        MANIFEST_FRAGMENT_SHA256: ${{ inputs.fragment-sha256 }}
+        MANIFEST_ROOT: ${{ inputs.root }}
+        MANIFEST_WORKFLOW: ${{ inputs.workflow }}
+        MANIFEST_JOB_NAME: ${{ inputs.job-name }}
+      run: |
+        set -euo pipefail
+        test -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}"
+        test -n "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}"
+        [[ "$MANIFEST_WORKFLOW" == .github/workflows/toolchain-compilers-v2.yml ]]
+        [[ -n "$MANIFEST_JOB_NAME" && "$MANIFEST_JOB_NAME" != *$'\n'* && "$MANIFEST_JOB_NAME" != *$'\r'* ]]
+        [[ "$GITHUB_RUN_ID" =~ ^[1-9][0-9]{0,19}$ && "$GITHUB_RUN_ATTEMPT" =~ ^[1-9][0-9]{0,19}$ ]]
+        # upload-artifact interprets path inputs as globs. A canonical literal
+        # filesystem path alone would not constrain that upload expansion.
+        [[ "$MANIFEST_ROOT" =~ ^/[A-Za-z0-9._/+\-]+$ && ! -e "$MANIFEST_ROOT" && ! -L "$MANIFEST_ROOT" ]]
+        [[ "$MANIFEST_ROOT" == "$(cd "$(dirname "$MANIFEST_ROOT")" && pwd -P)/${MANIFEST_ROOT##*/}" ]]
+        mkdir -m 700 "$MANIFEST_ROOT"
+        result=$(python3 -B "$GITHUB_ACTION_PATH/../../../scripts/toolchain/stage-compiler-run-manifest-v2.py" \
+          --context "$MANIFEST_CONTEXT" --context-sha256 "$MANIFEST_CONTEXT_SHA256" \
+          --summary "$MANIFEST_SUMMARY" --summary-sha256 "$MANIFEST_SUMMARY_SHA256" \
+          --fragment "$MANIFEST_FRAGMENT" --fragment-sha256 "$MANIFEST_FRAGMENT_SHA256" \
+          --output-dir "$MANIFEST_ROOT/payload")
+        manifest_sha=$(jq -er '.manifest_sha256 | select(type == "string" and test("^[0-9a-f]{64}$"))' <<< "$result")
+        printf 'manifest-sha256=%s\n' "$manifest_sha" >> "$GITHUB_OUTPUT"
+        printf 'payload-name=compiler-manifest-v2-%s-%s\n' "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
+        printf 'proof-name=compiler-manifest-v2-proof-%s-%s\n' "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
+
+    - id: payload
+      name: Upload only the staged compiler run manifest
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: ${{ steps.stage.outputs.payload-name }}
+        path: ${{ inputs.root }}/payload/
+        if-no-files-found: error
+        include-hidden-files: true
+        retention-days: 14
+
+    - name: Bind the upload to this still-running owning job
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        PAYLOAD_ID: ${{ steps.payload.outputs.artifact-id }}
+        PAYLOAD_SHA256: ${{ steps.payload.outputs.artifact-digest }}
+        PAYLOAD_NAME: ${{ steps.stage.outputs.payload-name }}
+        MANIFEST_ROOT: ${{ inputs.root }}
+        MANIFEST_WORKFLOW: ${{ inputs.workflow }}
+        MANIFEST_JOB_NAME: ${{ inputs.job-name }}
+      run: |
+        set -euo pipefail
+        mkdir -m 700 "$MANIFEST_ROOT/proof"
+        python3 -B "$GITHUB_ACTION_PATH/../../../scripts/toolchain/artifact-origin.py" record \
+          --workflow "$MANIFEST_WORKFLOW" --job-name "$MANIFEST_JOB_NAME" \
+          --artifact-id "$PAYLOAD_ID" --artifact-name "$PAYLOAD_NAME" \
+          --artifact-sha256 "$PAYLOAD_SHA256" --payload-dir "$MANIFEST_ROOT/payload" \
+          --role comparison --group compilers --host linux-x86_64 \
+          --profile=manifest --copy none --output "$MANIFEST_ROOT/proof/origin.json"
+
+    - id: signature
+      name: Sign only this compiler run manifest observation
+      uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+      with:
+        subject-path: ${{ inputs.root }}/proof/origin.json
+
+    - name: Retain the unchanged signature outside the manifest payload
+      shell: bash
+      env:
+        MANIFEST_ROOT: ${{ inputs.root }}
+        MANIFEST_BUNDLE: ${{ steps.signature.outputs.bundle-path }}
+      run: |
+        set -euo pipefail
+        test -f "$MANIFEST_BUNDLE" && test ! -L "$MANIFEST_BUNDLE"
+        test ! -e "$MANIFEST_ROOT/proof/origin.sigstore.json"
+        test ! -L "$MANIFEST_ROOT/proof/origin.sigstore.json"
+        command cp "$MANIFEST_BUNDLE" "$MANIFEST_ROOT/proof/origin.sigstore.json"
+
+    - id: proof
+      name: Upload the separate manifest origin and signature
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: ${{ steps.stage.outputs.proof-name }}
+        path: ${{ inputs.root }}/proof/
+        if-no-files-found: error
+        include-hidden-files: true
+        retention-days: 14
