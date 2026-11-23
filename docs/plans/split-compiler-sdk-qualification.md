@@ -1,6 +1,6 @@
 # Initiative plan: split compiler and SDK qualification
 
-Epic: https://github.com/metaneutrons/aros-toolchains/issues/161
+Epic: [#161](https://github.com/metaneutrons/aros-toolchains/issues/161)
 Decision state: accepted by the maintainer on 2026-11-23, with these decisions:
 
 - binding policy (b), "same compiler inputs";
@@ -189,7 +189,7 @@ compiler run must not replace the compiler evidence of a tag.
 
 ### M1: compiler input closure
 
-Execution: https://github.com/metaneutrons/aros-toolchains/issues/162. Dependencies: none.
+Execution: [#162](https://github.com/metaneutrons/aros-toolchains/issues/162). Dependencies: none.
 
 - M1-A1: A script computes the closure digest from a Git tree and the
   classification file. Unit tests cover:
@@ -203,7 +203,7 @@ Execution: https://github.com/metaneutrons/aros-toolchains/issues/162. Dependenc
 
 ### M2: compiler qualification workflow and manifest
 
-Execution: https://github.com/metaneutrons/aros-toolchains/issues/163. Dependencies: M1.
+Execution: [#163](https://github.com/metaneutrons/aros-toolchains/issues/163). Dependencies: M1.
 
 - M2-A1: `toolchain-compilers-v2.yml` builds every compiler lane copy, compares
   A/B per lane and assembles the compiler candidate. It writes a signed manifest
@@ -215,7 +215,7 @@ Execution: https://github.com/metaneutrons/aros-toolchains/issues/163. Dependenc
 
 ### M3: cross-run owner consumption
 
-Execution: https://github.com/metaneutrons/aros-toolchains/issues/164. Dependencies: M1. Can proceed in parallel with M2.
+Execution: [#164](https://github.com/metaneutrons/aros-toolchains/issues/164). Dependencies: M1. Can proceed in parallel with M2.
 
 - M3-A1: The readers and the assembly accept a compiler source context from
   another run, as described in D4. The same-attempt path for SDK owners is
@@ -231,7 +231,7 @@ Execution: https://github.com/metaneutrons/aros-toolchains/issues/164. Dependenc
 
 ### M4: SDK qualification workflow
 
-Execution: https://github.com/metaneutrons/aros-toolchains/issues/165. Dependencies: M2, M3.
+Execution: [#165](https://github.com/metaneutrons/aros-toolchains/issues/165). Dependencies: M2, M3.
 
 - M4-A1: `toolchain-sdk-v2.yml` admits a compiler run per D3 and D5. It builds
   every SDK lane, then reads back, assembles, indexes and attests the
@@ -244,7 +244,7 @@ Execution: https://github.com/metaneutrons/aros-toolchains/issues/165. Dependenc
 
 ### M5: tag-bound product qualification on the split path
 
-Execution: https://github.com/metaneutrons/aros-toolchains/issues/167, tracked as a sub-task of aros-toolchains#106 under
+Execution: [#167](https://github.com/metaneutrons/aros-toolchains/issues/167), tracked as a sub-task of aros-toolchains#106 under
 aros-tools#526, not under this plan's epic. Dependencies: M4 and the S5
 sub-tasks of #106.
 
@@ -266,7 +266,7 @@ sub-tasks of #106.
 
 ### M6: remove the monolithic qualification mode
 
-Execution: https://github.com/metaneutrons/aros-toolchains/issues/166. Dependencies: M4.
+Execution: [#166](https://github.com/metaneutrons/aros-toolchains/issues/166). Dependencies: M4.
 
 - M6-A1: The `qualify-v2-full` mode is removed from `toolchain-release.yml`,
   together with scripts and tests used only by it. The same-attempt code
