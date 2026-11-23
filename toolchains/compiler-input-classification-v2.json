@@ -1,0 +1,20 @@
+{
+  "schema": "aros-compiler-input-classification-v2",
+  "sdk_only": [
+    {
+      "path": "CHANGELOG.md",
+      "kind": "file",
+      "reason": "Release notes; no workflow, action, script or the aros runtime reads this file."
+    },
+    {
+      "path": "README.md",
+      "kind": "file",
+      "reason": "Repository overview; no workflow, action, script or the aros runtime reads this file."
+    },
+    {
+      "path": "docs",
+      "kind": "directory",
+      "reason": "Plans and narrative documentation; no workflow, action, script or the aros runtime reads this directory."
+    }
+  ]
+}
