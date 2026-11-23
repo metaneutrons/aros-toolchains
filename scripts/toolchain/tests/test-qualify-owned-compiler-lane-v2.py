@@ -334,6 +334,25 @@ class QualifyOwnedCompilerLaneTests(unittest.TestCase):
         return subprocess.run(["/bin/bash", str(self.script), *args], capture_output=True,
                               text=True, check=False, env=self.env)
 
+    def test_split_sdk_run_reads_compiler_owners_from_the_compiler_run(self) -> None:
+        # Split qualification: the SDK run names the compiler workflow as the
+        # owner source and omits --same-attempt, so each read uses the
+        # prior-run verification path of read-native-owner-v2.sh.
+        compiler_workflow = ".github/workflows/toolchain-compilers-v2.yml"
+        args = self._owner_args()
+        args[args.index("--source-workflow") + 1] = compiler_workflow
+        args[args.index("--workflow") + 1] = ".github/workflows/toolchain-sdk-v2.yml"
+        result = self._run(args)
+        self.assertEqual(result.returncode, 77, result.stderr)
+        events = self._events()
+        self.assertEqual([event["stage"] for event in events],
+                         ["release-plan", "read-a", "read-b", "compare"])
+        for read in (event for event in events if str(event["stage"]).startswith("read-")):
+            read_args = read["args"]
+            self.assertNotIn("--same-attempt", read_args)
+            self.assertEqual(read_args[read_args.index("--source-workflow") + 1], compiler_workflow)
+            self.assertEqual(read_args[read_args.index("--source-ref") + 1], SOURCE_REF)
+
     def test_darwin_aliases_resolve_real_xcode_roles_before_sdk_selection(self) -> None:
         xcrun = '#!/bin/bash\n[[ "$1" == --find ]] || exit 8\ncase "$2" in ar|ranlib) printf "/usr/bin/%s\\n" "$2";; *) exit 9;; esac\n'
         result = self._probe_host_roles("llvm-arcc\nllvm-ranlibcc\n", xcrun)
