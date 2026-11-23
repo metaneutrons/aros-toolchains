@@ -30,7 +30,7 @@ contracts remain owned by AROS-NX.
    object against its selected source lock. Child configuration homes are private. Bounded step logs
    and a source-only report survive failures. These checks do not replace
    AROS-NX's required product CI or qualify SDK generation.
-   Diagnostic source `a36b4ad964ceeaa0a5b6afcff45700af06e1679f` contains the
+   Diagnostic source `777552199e803c7c0c6ec34800af7506cd022229` contains the
    SDK admission fixes found by the Linux qualification of
    AROS-NX pull request 120 and, merged from AROS-NX main, the generic host
    triple for GMP, ISL, MPFR and MPC in the release layout (AROS-NX pull
@@ -41,8 +41,9 @@ contracts remain owned by AROS-NX.
    of the build host, and explicit `CFLAGS_FOR_BUILD` for the release ISL
    (AROS-NX pull request 144), which stops ISL's configure from selecting
    `-march` from the build machine's cpuid so the GNU RV32 compiler copies
-   built on Intel and AMD runners no longer differ, which selects LLVM 23.1.0
-   for the native SDKs,
+   built on Intel and AMD runners no longer differ, and the refreshed native
+   SDK seal of the GNU crosstools recipe (AROS-NX pull request 145), which
+   selects LLVM 23.1.0 for the native SDKs,
    seals the ESP32-P4 contracts for it and pins `aros-tools` 0.6.11. It is not a
    claim that this head has passed protected-main product CI. The `llvm` group
    now locks the LLVM 23.1.0 monorepo archive with its six AROS patches, so its
