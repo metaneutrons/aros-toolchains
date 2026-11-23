@@ -326,8 +326,12 @@ def _compiler_args(args: argparse.Namespace, root: Path) -> argparse.Namespace:
         plan=args.plan, plan_sha256=args.plan_sha256,
         inputs_dir=args.inputs_dir, inputs_sha256=args.inputs_sha256,
         producer_commit=args.producer_commit, tools_commit=args.tools_commit,
-        source_context=args.source_context,
-        source_context_sha256=args.source_context_sha256,
+        # Split qualification: compiler owners belong to the compiler run.
+        source_context=(args.compiler_source_context
+                        if args.compiler_source_context is not None else args.source_context),
+        source_context_sha256=(args.compiler_source_context_sha256
+                               if args.compiler_source_context is not None
+                               else args.source_context_sha256),
         fragment=args.compiler_fragment,
         fragment_sha256=args.compiler_fragment_sha256,
         owner_root=args.compiler_owner_root,
@@ -352,8 +356,26 @@ def _sdk_args(args: argparse.Namespace, root: Path) -> argparse.Namespace:
     )
 
 
+def _read_split_sdk_context(args: argparse.Namespace) -> dict:
+    """Read the SDK run's context by its selected digest for the split pair check."""
+    path = _COMPILER._canonical_existing(args.source_context, "SDK source context",
+                                         directory=False)
+    measurement, raw = _STAGE.read_bounded(path, _ORIGIN.MAX_METADATA, "SDK source context")
+    _require(measurement["sha256"] == args.source_context_sha256,
+             "SDK source context bytes differ from the selected digest")
+    context = _ORIGIN.validate_context(_STAGE.parse_json(raw, "SDK source context"))
+    _require(raw == _ORIGIN.canonical(context), "SDK source context is not canonical JSON")
+    return context
+
+
 def _assemble(args: argparse.Namespace) -> dict:
     _digest(args.aros_sha256, "selected native CLI digest")
+    _require((args.compiler_source_context is None) == (args.compiler_source_context_sha256 is None),
+             "compiler source context and its digest must be selected together")
+    if args.compiler_source_context is not None:
+        _digest(args.compiler_source_context_sha256, "selected compiler source-context digest")
+        _require(args.compiler_source_context_sha256 != args.source_context_sha256,
+                 "compiler and SDK source contexts must be distinct runs")
     plan_sha = _digest(args.plan_sha256, "selected native plan digest")
     inputs_sha = _digest(args.inputs_sha256, "selected release-input digest")
     compiler_fragment_sha = _digest(args.compiler_fragment_sha256,
@@ -391,9 +413,24 @@ def _assemble(args: argparse.Namespace) -> dict:
     sdk_sources = _SDK._package_snapshots(
         sdk_packages, sdk_locations, sdk_files, sdk_directories
     )
-    _require(sdk_plan == compiler_data["plan"]
-             and sdk_source_context == compiler_data["fragment"]["source_context_sha256"],
-             "compiler and SDK selections do not share one exact plan and source context")
+    if args.compiler_source_context is None:
+        _require(sdk_plan == compiler_data["plan"]
+                 and sdk_source_context == compiler_data["fragment"]["source_context_sha256"],
+                 "compiler and SDK selections do not share one exact plan and source context")
+    else:
+        _require(sdk_plan == compiler_data["plan"],
+                 "compiler and SDK selections do not share one exact plan")
+        _require(compiler_data["fragment"]["source_context_sha256"]
+                 == args.compiler_source_context_sha256
+                 and sdk_source_context == args.source_context_sha256,
+                 "compiler and SDK selections are not bound to their selected run contexts")
+        try:
+            sdk_context = _read_split_sdk_context(args)
+            _ORIGIN.require_split_contexts(compiler_data["source_context"], sdk_context)
+            _ORIGIN.require_split_events(compiler_data["source_event"],
+                                         _ORIGIN.observe_run_event(sdk_context))
+        except _ORIGIN.OriginError as error:
+            raise AssemblyError(str(error)) from error
 
     support_dir = _COMPILER._canonical_existing(args.support_dir,
                                                  "selected native support directory",
@@ -787,6 +824,13 @@ def _assemble(args: argparse.Namespace) -> dict:
         raise AssemblyError(str(error)) from error
     _require(final_source_event == compiler_data["source_event"],
              "source run event changed during combined assembly")
+    if args.compiler_source_context is not None:
+        try:
+            final_sdk_event = _ORIGIN.observe_run_event(_read_split_sdk_context(args))
+        except _ORIGIN.OriginError as error:
+            raise AssemblyError(str(error)) from error
+        _require(final_sdk_event == compiler_data["source_event"],
+                 "SDK run event changed during combined assembly")
     return {
         "schema": "aros-toolchain-release-candidate-assembly-v2",
         "operation": "shared-native-pre-index-inventory",
@@ -803,6 +847,7 @@ def _assemble(args: argparse.Namespace) -> dict:
             "producer_commit": args.producer_commit,
             "tools_commit": args.tools_commit,
             "source_context_sha256": sdk_source_context,
+            "compiler_source_context_sha256": compiler_data["fragment"]["source_context_sha256"],
             "release_id": release_id,
             "base_url": args.base_url,
             "aros": str(args.aros),
@@ -852,6 +897,10 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--tools-commit", required=True)
     parser.add_argument("--source-context", type=Path, required=True)
     parser.add_argument("--source-context-sha256", required=True)
+    # Split qualification only: the compiler run's context. Without it the
+    # compiler and SDK owners must share --source-context (single run).
+    parser.add_argument("--compiler-source-context", type=Path)
+    parser.add_argument("--compiler-source-context-sha256")
     parser.add_argument("--compiler-fragment", type=Path, required=True)
     parser.add_argument("--compiler-fragment-sha256", required=True)
     parser.add_argument("--compiler-owner-root", type=Path, required=True)
