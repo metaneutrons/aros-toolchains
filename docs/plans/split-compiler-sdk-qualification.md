@@ -3,7 +3,7 @@
 Epic: [#161](https://github.com/metaneutrons/aros-toolchains/issues/161)
 Decision state: accepted by the maintainer on 2026-11-23, with these decisions:
 
-- binding policy (b), "same compiler inputs";
+- binding policy (a), same commit (changed from (b) on 2026-11-23, see "Decision changes");
 - the tag-bound product release also uses the split path, through a second dispatcher stage (D7);
 - the monolithic `qualify-v2-full` mode is removed.
 
@@ -23,11 +23,13 @@ recording (44849186858), the publication lock in compiler assembly
 (44919460955), and an A/B difference caused by ISL (45034602223, found in the
 SDK job because A/B comparison runs there).
 
-Outcome: a compiler qualification run and an SDK qualification run. The SDK
-run consumes the compiler run's owner artifacts across run boundaries. A defect
-that is fixed after the compiler phase costs one SDK run (about 9 h measured)
-instead of a full run (about 21.5 h measured). A compiler defect fails in the
-compiler run, before any SDK job starts.
+Outcome: a compiler qualification run and an SDK qualification run on the
+same producer commit. The SDK run consumes the compiler run's owner artifacts
+across run boundaries. A compiler defect fails in the compiler run, before any
+SDK job starts. A failure after the compiler phase that needs no code change,
+for example a provider outage, costs one SDK run (about 9 h measured) instead
+of a full run (about 21.5 h measured). A code fix after the compiler phase
+still needs a new compiler run, because the fix is a new producer commit.
 
 Scope: non-publishing qualification (today `qualify-v2-full`) and the
 tag-bound product qualification (today `push` on `v*` with the step "Record
@@ -50,13 +52,13 @@ assembly. `toolchain-sdk-v2.yml` takes `compiler_run_id` and runs its own
 prepare, sources, runtimes and Cargo catalog, then SDK lanes, owner readback,
 release candidate assembly, index and attestation.
 
-Separate files are required by D3: the compiler workflow is a compiler input,
-the SDK workflow is not. One file with two modes would make every SDK-stage
-workflow edit invalidate the compiler run.
+Separate files keep the two job graphs, permissions and triggers apart and
+let the second dispatcher stage of D7 dispatch exactly one of them. Under
+binding policy (a) both runs execute the same commit, so the split does not
+depend on which file an edit touches.
 
-Alternative rejected: two modes in `toolchain-release.yml`. It would keep the
-attestation signer path identical, but any edit of that file would count as a
-compiler-input change.
+Alternative rejected: two modes in `toolchain-release.yml`. It keeps one signer
+workflow path but mixes both graphs and their trigger conditions in one file.
 
 ### D2: compiler run manifest
 
@@ -68,43 +70,37 @@ owner payload. It contains:
 - the release plan digest and `release_id`
 - the inputs digest
 - the runtime digest
-- the compiler input closure digest (D3)
 - for every lane copy, the owner job, payload and proof identities
 - for every lane, the A/B comparison receipt digest
 
 Retention 14 days, equal to the owner payloads.
 
-### D3: compiler input closure (binding policy b)
+### D3: binding policy (a), same producer commit
 
-The SDK run may run on a newer producer commit than the compiler run. It admits
-the compiler run only if the compiler input closure digest it computes at its
-own commit equals the digest in the manifest.
+The SDK run admits a compiler run only if the compiler run's head commit equals
+the SDK run's own producer commit (`GITHUB_SHA`). The producer commit is part
+of the package identity: the release-input collection
+(`prepare-compiler-sdk-inputs-v2.py:853`), the native release plan (`:614`), the
+recipes and every compiler package identity carry it, and
+`read-native-owner-v2.sh:115-124` and `:187-188` require them to agree. A
+compiler run from another commit can therefore never form one consistent
+candidate with SDKs from this run.
 
-The closure is deny-by-default. `toolchains/compiler-input-classification-v2.json`
-lists path patterns that are SDK-stage only, for example the SDK workflow,
-SDK-only scripts and documentation. Every other tracked file is a compiler
-input, including the compiler workflow, `.github/actions/*`, the shared scripts,
-locks, profiles, the runtime lock, the AROS-NX pin and the classification file
-itself. The digest covers the sorted (path, Git blob ID) pairs of the
-closure, so it is content-addressed and does not depend on diff history.
+Rejected alternatives:
 
-A new or unclassified file therefore invalidates reuse. Classifying a file as
-SDK-only is a reviewed change to the classification file, which is itself a
-compiler input. The first SDK run after such a change needs a new compiler run.
+- Policy (b), same compiler inputs on a newer commit. It was chosen first and
+  abandoned after the finding above: plan, inputs and package identities of
+  two commits differ even when every compiler input file is identical.
+- Policy (b) with separate compiler and SDK producer identities in plan,
+  recipes, index and the family-v2 format. That is a separate cross-repository
+  initiative in aros-tools and aros-toolchains; it may be proposed later if
+  SDK-stage code fixes turn out to be frequent.
+- Running the SDK stage at the compiler commit while dispatching it from a
+  newer commit. It would execute the compiler commit's SDK-stage scripts, so a
+  fix such as #159 would never take effect.
 
-Strongest objection: a misclassified file could let an SDK run accept
-compilers built from different inputs. Mitigations:
-
-- Deny-by-default, with no allowlist of compiler inputs that could miss a new
-  file.
-- Counterprobes: changing any non-SDK file must fail admission.
-- The attestation of every compiler owner is still verified against the
-  compiler run's own commit and workflow (`verify` uses the source context).
-  The cryptographic provenance never depends on the classification. Only the
-  "same inputs" claim does.
-
-Alternative rejected: policy (a), same commit. It is simpler but makes every
-SDK-stage fix, such as #159, repeat the compiler phase.
+M1 (`compiler-input-closure-v2.py`) was delivered for policy (b). Under (a) its
+digest is identical by construction, so it adds no check. M6 removes it.
 
 ### D4: cross-run readback
 
@@ -121,16 +117,15 @@ Required changes:
   context.
 - **Owner readers.** `read-native-owner-v2.sh`, `collect-compiler-owners-v2.sh`
   and `qualify-compiler-sdk-lane-v2.sh` gain a prior-run mode. The source
-  context must name the compiler workflow, a `workflow_dispatch` on
-  `refs/heads/main`, and the manifest's producer commit.
+  context must name the compiler workflow, the same event kind and ref as the
+  SDK run, and a producer commit equal to the SDK run's own (D3).
 - **Release candidate assembly.** `assemble-release-candidate-v2.py`
   (:388-396) and `select-native-release-evidence-v2.py` (:688-695, :738, :778)
   require one source context for both fragments. They change to a compiler
   source context and an SDK source context, bound by the manifest digest.
-- **Commit checks.** `--producer-commit` checks that compare against the
-  source context (`collect-compiler-owners-v2.sh:126`,
-  `assemble-compiler-candidate-v2.py:205`) use the compiler run's commit for
-  compiler owners.
+- **Commit checks.** The `--producer-commit` checks against the source context
+  (`collect-compiler-owners-v2.sh:126`, `assemble-compiler-candidate-v2.py:205`)
+  stay as they are: under (a) the compiler and SDK contexts share one commit.
 
 ### D5: SDK-run inputs
 
@@ -138,6 +133,7 @@ The SDK run regenerates plan, inputs, sources, runtimes and its own Cargo
 catalog in its own attempt. The Cargo catalog stays bound to the current run
 (`collect-native-cargo-caches-v2.py:259`). Its prepare job requires:
 
+- the compiler run's head commit equals its own `GITHUB_SHA` (D3);
 - plan digest, `release_id`, inputs digest and runtime digest equal to the
   manifest's values;
 - the compiler run's conclusion is `success`;
@@ -179,8 +175,7 @@ trigger of the SDK workflow is rejected because it executes the default
 branch's workflow file, which violates START-A6. A `v*` tag push trigger is
 rejected because S5.5 removes `on.push.tags`.
 
-For tags, binding policy (b) degenerates to the same commit: both runs execute
-the tag. The tag record moves from the push-only step in v2-readback
+Both runs execute the tag, which satisfies binding policy (a). The tag record moves from the push-only step in v2-readback
 (`toolchain-release.yml:1299`) to the SDK run. It names both runs, their
 attempts (both 1), both bindings and the manifest digest. A rerun of the
 compiler run must not replace the compiler evidence of a tag.
@@ -200,6 +195,9 @@ Execution: [#162](https://github.com/metaneutrons/aros-toolchains/issues/162). D
   - rename across the boundary: different digest.
 - M1-A2: The classification of the current tree is reviewed. Every SDK-only
   pattern is justified in the file.
+
+M1 is accepted and superseded by the change to binding policy (a): its digest is
+identical by construction for one commit. M6 removes it.
 
 ### M2: compiler qualification workflow and manifest
 
@@ -225,7 +223,8 @@ Execution: [#164](https://github.com/metaneutrons/aros-toolchains/issues/164). D
   - other repository;
   - other workflow path;
   - other ref or event;
-  - manifest digest or closure digest mismatch;
+  - a different producer commit;
+  - manifest digest mismatch;
   - expired or missing owner artifact;
   - substituted receipt.
 
@@ -238,9 +237,9 @@ Execution: [#165](https://github.com/metaneutrons/aros-toolchains/issues/165). D
   candidate.
 - M4-A2: One SDK run against the M2-A3 compiler run is green. This needs a
   maintainer-approved dispatch; the measured cost is about 9 h.
-- M4-A3: A second SDK run on a newer commit that changes only an SDK-only
-  path admits the same compiler run. A run after a compiler-input change is
-  rejected before any SDK job starts.
+- M4-A3: A second SDK run on the same commit admits the same compiler run
+  without rebuilding compilers. An SDK run on any other commit is rejected
+  before any SDK job starts.
 
 ### M5: tag-bound product qualification on the split path
 
@@ -269,7 +268,8 @@ sub-tasks of #106.
 Execution: [#166](https://github.com/metaneutrons/aros-toolchains/issues/166). Dependencies: M4.
 
 - M6-A1: The `qualify-v2-full` mode is removed from `toolchain-release.yml`,
-  together with scripts and tests used only by it. The same-attempt code
+  together with scripts and tests used only by it, and the superseded M1
+  closure script, classification file and test. The same-attempt code
   paths that the SDK run still needs stay. The tag-bound single-run path is
   removed by M5.
 - M6-A2: `compiler-sdk-ci-v2.md`, `toolchains/README.md` and `README.md`
@@ -283,8 +283,6 @@ single-run path stays until M5 replaces it.
 
 Risks:
 
-- Misclassification (D3). Deny-by-default and the counterprobes above address
-  it.
 - The 14-day owner retention bounds how long a compiler run can be reused.
 - The assembly scripts encode the one-context assumption in several places
   (D4). Missing one fails closed, but costs an SDK run.
@@ -297,4 +295,9 @@ Open questions: none at proposal time.
 
 ## Decision changes
 
-None yet.
+- 2026-11-23: binding policy changed from (b), same compiler inputs, to (a),
+  same producer commit, by the maintainer. Reason: the producer commit is part
+  of the release inputs, the native plan, the recipes and every compiler
+  package identity (D3), so a compiler run and an SDK run from two commits
+  cannot form one candidate. Affected: D1, D2, D3, D4, D5, D7, M3-A2, M4-A3,
+  M6-A1, the outcome statement, and M1, which is superseded.
