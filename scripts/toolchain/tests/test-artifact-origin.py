@@ -274,6 +274,50 @@ class CanonicalMetadataTests(unittest.TestCase):
                     origin.parse_json(raw)
 
 
+class SplitQualificationContextTests(unittest.TestCase):
+    """The compiler and SDK runs of one producer commit form one admitted pair."""
+
+    def contexts(self, **compiler: object) -> tuple[dict, dict]:
+        sdk = {
+            "repository": "example/project", "repository_id": 7, "producer_commit": "a" * 40,
+            "source_ref": "refs/heads/main", "workflow": origin.SPLIT_SDK_WORKFLOW,
+            "run_id": 20, "run_attempt": 1,
+        }
+        return {**sdk, "workflow": origin.SPLIT_COMPILER_WORKFLOW, "run_id": 10, **compiler}, sdk
+
+    def test_a_matching_pair_is_admitted(self) -> None:
+        compiler, sdk = self.contexts()
+        self.assertEqual(origin.require_split_contexts(compiler, sdk), (compiler, sdk))
+        self.assertEqual(origin.require_split_events("workflow_dispatch", "workflow_dispatch"),
+                         "workflow_dispatch")
+
+    def test_mismatched_pairs_are_rejected(self) -> None:
+        cases = (
+            ({"producer_commit": "b" * 40}, "producer commit or ref"),
+            ({"source_ref": "refs/tags/v1.0.0"}, "producer commit or ref"),
+            ({"repository": "example/other"}, "different repositories"),
+            ({"repository_id": 8}, "different repositories"),
+            ({"run_id": 20}, "distinct runs"),
+            ({"workflow": origin.SPLIT_SDK_WORKFLOW}, "compiler and SDK workflows"),
+            ({"workflow": ".github/workflows/toolchain-release.yml"}, "compiler and SDK workflows"),
+        )
+        for overrides, message in cases:
+            with self.subTest(overrides=overrides):
+                compiler, sdk = self.contexts(**overrides)
+                with self.assertRaisesRegex(origin.OriginError, message):
+                    origin.require_split_contexts(compiler, sdk)
+        compiler, sdk = self.contexts()
+        with self.assertRaisesRegex(origin.OriginError, "compiler and SDK workflows"):
+            origin.require_split_contexts(sdk, compiler)
+        with self.assertRaises(origin.OriginError):
+            origin.require_split_contexts({**compiler, "extra": 1}, sdk)
+
+    def test_different_or_unsupported_events_are_rejected(self) -> None:
+        for pair in (("push", "workflow_dispatch"), ("schedule", "schedule")):
+            with self.subTest(pair=pair), self.assertRaisesRegex(origin.OriginError, "provider events"):
+                origin.require_split_events(*pair)
+
+
 class ProviderRunEventTests(unittest.TestCase):
     def test_observes_supported_actual_events_for_branch_and_tag_refs(self) -> None:
         cases = (

@@ -652,6 +652,7 @@ def _select_sdk(args: argparse.Namespace, plan: dict, bindings: dict,
                 snapshots: dict[Path, tuple[tuple[int, ...], dict[str, str]]],
                 source_context: dict,
                 source_context_sha256: str,
+                compiler_context_sha256: str,
                 ) -> tuple[dict, dict]:
     fragment = _canonical(args.sdk_fragment, "SDK selection fragment", directory=False)
     owner_root = _canonical(args.sdk_owner_root, "SDK owner root", directory=True)
@@ -688,7 +689,7 @@ def _select_sdk(args: argparse.Namespace, plan: dict, bindings: dict,
     for field in ("aros_sha256", "source_context_sha256"):
         _digest(raw_fragment[field], f"SDK fragment {field}")
     _require(raw_fragment["aros_sha256"] == bindings["aros_sha256"]
-             and raw_fragment["source_context_sha256"] == bindings["source_context_sha256"]
+             and bindings["source_context_sha256"] == compiler_context_sha256
              and raw_fragment["source_context_sha256"] == source_context_sha256
              and raw_fragment["source_producer_commit"] == source_context["producer_commit"]
              and raw_fragment["source_workflow"] == source_context["workflow"]
@@ -738,6 +739,31 @@ def select(args: argparse.Namespace) -> dict:
     _require(source_context["producer_commit"] == args.producer_commit,
              "source context producer commit differs from the selected producer")
     source_event = _ORIGIN.observe_run_event(source_context)
+    compiler_context, compiler_context_sha256 = source_context, source_context_sha256
+    compiler_context_path = compiler_context_raw = compiler_context_measurement = None
+    compiler_event = source_event
+    if args.compiler_source_context is not None or args.compiler_source_context_sha256 is not None:
+        _require(args.compiler_source_context is not None
+                 and args.compiler_source_context_sha256 is not None,
+                 "compiler source context and its digest must be selected together")
+        compiler_context_sha256 = _digest(args.compiler_source_context_sha256,
+                                          "selected compiler source-context digest")
+        compiler_context_path = _canonical(args.compiler_source_context,
+                                           "compiler source context", directory=False)
+        _require(compiler_context_path != source_context_path,
+                 "compiler and SDK source contexts must be separate files")
+        compiler_context, compiler_context_raw, compiler_context_measurement = _read_json(
+            compiler_context_path, MAX_METADATA, "compiler source context", selected
+        )
+        _require(compiler_context_measurement["sha256"] == compiler_context_sha256,
+                 "compiler source context bytes differ from the selected digest")
+        compiler_context = _ORIGIN.validate_context(compiler_context)
+        _require(compiler_context_raw == _ORIGIN.canonical(compiler_context),
+                 "compiler source context is not canonical JSON")
+        compiler_context, _sdk_context = _ORIGIN.require_split_contexts(
+            compiler_context, source_context)
+        compiler_event = _ORIGIN.observe_run_event(compiler_context)
+        _ORIGIN.require_split_events(compiler_event, source_event)
     plan, _plan_raw, _projection, families = _check_bound_inputs(
         args, selected, snapshots, source_context, source_event
     )
@@ -775,11 +801,11 @@ def select(args: argparse.Namespace) -> dict:
         inputs_sha=args.inputs_sha256, producer=args.producer_commit,
         tools=args.tools_commit, selected=selected, snapshots=snapshots,
     )
-    _require(bindings["source_context_sha256"] == source_context_sha256,
+    _require(bindings["source_context_sha256"] == compiler_context_sha256,
              "compiler evidence source-context digest differs from the selected context")
     sdk_before, sdk_fragment = _select_sdk(
         args, plan, bindings, selected, snapshots,
-        source_context, source_context_sha256,
+        source_context, source_context_sha256, compiler_context_sha256,
     )
     _require(sdk_before["schema"] == "aros-sdk-package-inputs-v2"
              and sdk_before["plan_sha256"] == args.plan_sha256
@@ -863,6 +889,20 @@ def select(args: argparse.Namespace) -> dict:
         raise SelectionError(str(error)) from error
     _require(final_event == source_event,
              "source run event changed during native release evidence selection")
+    if compiler_context_path is not None:
+        final_compiler, final_compiler_raw, final_compiler_measurement = _read_json(
+            compiler_context_path, MAX_METADATA, "compiler source context", selected
+        )
+        _require(final_compiler_measurement == compiler_context_measurement
+                 and final_compiler_raw == compiler_context_raw
+                 and final_compiler == compiler_context,
+                 "compiler source context changed before the final evidence barrier")
+        try:
+            final_compiler_event = _ORIGIN.observe_run_event(compiler_context)
+        except _ORIGIN.OriginError as error:
+            raise SelectionError(str(error)) from error
+        _require(final_compiler_event == compiler_event,
+                 "compiler run event changed during native release evidence selection")
     return output
 
 
@@ -876,6 +916,10 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--tools-commit", required=True)
     parser.add_argument("--source-context", required=True, type=Path)
     parser.add_argument("--source-context-sha256", required=True)
+    # Split qualification only: the compiler run's context. Without it the
+    # compiler and SDK evidence must share --source-context (single run).
+    parser.add_argument("--compiler-source-context", type=Path)
+    parser.add_argument("--compiler-source-context-sha256")
     parser.add_argument("--compiler-lanes", required=True, type=Path)
     parser.add_argument("--compiler-lanes-sha256", required=True)
     parser.add_argument("--compiler-evidence", required=True, type=Path)
