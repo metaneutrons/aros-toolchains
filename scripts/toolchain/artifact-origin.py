@@ -309,7 +309,7 @@ def gh_json(arguments: list[str], purpose: str = "GitHub observation") -> object
     raise OriginError(f"{purpose} failed{status}; no retry or credential fallback")
 
 
-def observe_run_event(context: dict) -> str:
+def observe_run_event(context: dict, *, require_success: bool = False) -> str:
     """Bind context to the exact Actions run attempt and return its actual event."""
     selected = validate_context(context)
     run = gh_json(["api", f'repos/{selected["repository"]}/actions/runs/{selected["run_id"]}'
@@ -338,6 +338,9 @@ def observe_run_event(context: dict) -> str:
             and type(head_repository.get("full_name")) is str
             and head_repository["full_name"] == selected["repository"],
             "provider run repository differs")
+    if require_success:
+        require(run.get("status") == "completed" and run.get("conclusion") == "success",
+                "selected run attempt did not complete successfully")
     event = run.get("event")
     require(type(event) is str and event in SUPPORTED_EVENTS,
             "provider run event is unsupported")

@@ -435,6 +435,7 @@ python3 -B "$source_root/scripts/toolchain/tests/test-origin-retention-workflow.
 python3 -B "$source_root/scripts/toolchain/tests/test-artifact-origin-source.py"
 python3 -B "$source_root/scripts/toolchain/tests/test-release-matrix-v2.py"
 python3 -B "$source_root/scripts/toolchain/tests/test-stage-compiler-run-manifest-v2.py"
+python3 -B "$source_root/scripts/toolchain/tests/test-read-compiler-run-manifest-v2.py"
 python3 -B "$source_root/scripts/toolchain/tests/test-compiler-qualification-workflow-v2.py"
 python3 -B "$source_root/scripts/toolchain/tests/test-compiler-input-closure-v2.py"
 python3 -B "$source_root/scripts/toolchain/tests/test-required-compiler-payload-v2.py"
