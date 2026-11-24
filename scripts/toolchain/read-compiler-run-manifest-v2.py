@@ -11,6 +11,7 @@ SDK preparation must still match its plan, inputs, runtime and freshness policy.
 
 import argparse
 from contextlib import redirect_stdout
+import datetime
 import hashlib
 import importlib.util
 from pathlib import Path
@@ -18,6 +19,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 import zipfile
 
 
@@ -33,6 +35,7 @@ ASSEMBLY_JOB = "Assemble and compare compiler candidates"
 MANIFEST_SCHEMA = "aros-toolchain-compiler-run-manifest-v2"
 DOCUMENTS = {"context.json", "assembly-summary.json", "compiler-owner-fragment.json",
              "compiler-index-lanes.json", "compiler-evidence-fragment.json"}
+MAX_MANIFEST_AGE_SECONDS = 13 * 24 * 60 * 60
 
 
 def read_member(archive, name):
@@ -145,6 +148,42 @@ def read_manifest(payload: Path, expected_sha256: str, context: dict) -> dict:
             "bindings": bindings, "comparisons": comparisons}
 
 
+def read_verified_summary(path: Path, expected_sha256: str) -> dict:
+    """Load the exact reader stdout pinned by the producing SDK job output."""
+    measured, raw = origin.normalized_file(path, origin.MAX_METADATA)
+    require(measured["sha256"] == expected_sha256,
+            "compiler manifest summary differs from the verified job output")
+    return origin.exact_keys(origin.parse_json(raw),
+                             {"context", "bindings", "comparisons", "manifest_sha256"})
+
+
+def require_fresh_manifest_artifact(context: dict, selection: dict) -> None:
+    """Require the selected manifest payload's provider creation timestamp.
+
+    A run's ``updated_at`` can change after the manifest was uploaded. The
+    numeric payload artifact is the freshness object: re-observe it and let
+    ``select_artifact`` validate its run, repository, digest and expiry before
+    trusting its provider ``created_at`` timestamp.
+    """
+    selected = selection["artifact"]
+    observed = origin.gh_json(
+        ["api", f'repos/{context["repository"]}/actions/artifacts/{selected["id"]}'],
+        "compiler manifest artifact lookup")
+    validated = origin.select_artifact(
+        observed, context, selected["id"], selected["name"], selected["sha256"])
+    require(validated == selected, "selected compiler manifest artifact changed during freshness check")
+    created_at = observed.get("created_at")
+    require(isinstance(created_at, str) and created_at.endswith("Z"),
+            "compiler manifest artifact creation timestamp is missing")
+    try:
+        created_epoch = datetime.datetime.fromisoformat(created_at[:-1] + "+00:00").timestamp()
+    except ValueError:
+        raise OriginError("compiler manifest artifact creation timestamp is invalid") from None
+    age = time.time() - created_epoch
+    require(age >= 0, "compiler manifest artifact creation timestamp is in the future")
+    require(age < MAX_MANIFEST_AGE_SECONDS, "compiler manifest artifact is 13 days old or older")
+
+
 def read_from_compiler_run(args):
     caller = origin.context_from_environment(origin.SPLIT_SDK_WORKFLOW)
     source = dict(caller, workflow=origin.SPLIT_COMPILER_WORKFLOW,
@@ -163,6 +202,8 @@ def read_from_compiler_run(args):
             job_name=ASSEMBLY_JOB, payload_name=f"compiler-manifest-v2-{suffix}",
             proof_name=f"compiler-manifest-v2-proof-{suffix}", role="comparison", group="compilers",
             host="linux-x86_64", profile="manifest", copy="none"))
+        if getattr(args, "require_fresh", False):
+            require_fresh_manifest_artifact(source, selection)
         selection_file = root / "selection.json"
         selection_file.write_bytes(origin.canonical(selection))
         transport = root / "verified"
@@ -183,6 +224,8 @@ def main():
     parser.add_argument("--compiler-run-attempt", required=True, type=origin.positive)
     parser.add_argument("--job-name", required=True, help="Exact executing SDK reader job name")
     parser.add_argument("--manifest-sha256", help="Independently selected digest of manifest.json")
+    parser.add_argument("--require-fresh", action="store_true",
+                        help="Require the selected compiler manifest artifact to be younger than 13 days")
     try:
         flags = [value.split("=", 1)[0] for value in sys.argv[1:] if value.startswith("--")]
         require(len(flags) == len(set(flags)), "duplicate argument selector")

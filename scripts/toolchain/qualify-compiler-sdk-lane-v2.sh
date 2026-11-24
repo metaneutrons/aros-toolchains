@@ -28,6 +28,7 @@ group='' preset='' host='' root='' jobs='' deadline='' runtime_sha=''
 owner_a_selection='' owner_b_selection='' source_workflow='' source_ref=''
 workflow='' job_name='' same_attempt=false owner_mode=false
 requested_release_id=''
+compiler_manifest='' compiler_manifest_sha='' manifest_mode=false
 seen='|'
 while (( $# )); do
     if [[ "$1" == --same-attempt ]]; then
@@ -53,6 +54,8 @@ while (( $# )); do
         --source-workflow) source_workflow=$value;; --source-ref) source_ref=$value;;
         --workflow) workflow=$value;; --job-name) job_name=$value;;
         --release-id) requested_release_id=$value;;
+        --compiler-manifest) compiler_manifest=$value;;
+        --compiler-manifest-sha256) compiler_manifest_sha=$value;;
         *) fail "unknown option $key";;
     esac
     shift 2
@@ -103,6 +106,19 @@ if (( owner_count > 0 )); then
 else
     [[ "$same_attempt" == false ]] || fail '--same-attempt requires explicit compiler owners'
 fi
+manifest_count=0
+for name in compiler_manifest compiler_manifest_sha; do
+    [[ -z "${!name}" ]] || ((manifest_count += 1))
+done
+if (( manifest_count > 0 )); then
+    (( manifest_count == 2 )) || fail 'compiler manifest selectors must be supplied together'
+    [[ "$owner_mode" == true ]] || fail 'compiler manifest mode requires authenticated compiler owners'
+    [[ "$same_attempt" == false ]] || fail 'compiler manifest mode cannot use --same-attempt'
+    [[ "$workflow" == .github/workflows/toolchain-sdk-v2.yml &&
+       "$source_workflow" == .github/workflows/toolchain-compilers-v2.yml ]] || \
+        fail 'compiler manifest mode requires the split compiler and SDK workflows'
+    manifest_mode=true
+fi
 [[ "$runtime_sha" =~ ^[0-9a-f]{64}$ && "$jobs" =~ ^[1-9][0-9]*$ && "$deadline" =~ ^[1-9][0-9]*$ ]] || fail 'invalid digest or execution budget'
 case "$host" in linux-x86_64|linux-aarch64|macos-aarch64) ;; *) fail 'unsupported native diagnostic host';; esac
 [[ "$aros" == /* && -x "$aros" && -f "$aros" && ! -L "$aros" && "$(digest "$aros")" == "$runtime_sha" ]] || fail 'runtime bytes differ from selection'
@@ -117,6 +133,20 @@ for directory in "$inputs" "$source" "$producer" "$tools" "$cache" "$upstream"; 
     canonical=$(cd "$directory" && pwd -P)
     [[ "$root" != "$canonical" && "$root" != "$canonical/"* && "$canonical" != "$root/"* ]] || fail 'operation root overlaps selected input'
 done
+script_dir=$(cd "$(dirname "$0")" && pwd -P)
+if [[ "$manifest_mode" == true ]]; then
+    [[ "$compiler_manifest" == /* && -f "$compiler_manifest" && ! -L "$compiler_manifest" ]] || \
+        fail 'compiler manifest must be an absolute regular nonlinked file'
+    manifest_parent=${compiler_manifest%/*}
+    manifest_name=${compiler_manifest##*/}
+    [[ -n "$manifest_parent" && -n "$manifest_name" &&
+       "$compiler_manifest" == "$(cd "$manifest_parent" && pwd -P)/$manifest_name" ]] || \
+        fail 'compiler manifest must use a canonical path'
+    [[ "$compiler_manifest_sha" =~ ^[0-9a-f]{64}$ ]] || fail 'compiler manifest digest is invalid'
+    [[ "$compiler_manifest" != "$root" && "$compiler_manifest" != "$root/"* &&
+       "$root" != "$compiler_manifest/"* ]] || \
+        fail 'operation root overlaps the compiler manifest'
+fi
 default_release_id="toolchain-dev-$(git -C "$producer" rev-parse --short=12 HEAD)"
 if [[ "$owner_mode" == true && "$source_ref" == refs/tags/* ]]; then
     [[ "$requested_release_id" == "${source_ref#refs/tags/}" ]] || fail 'tag-bound owner release ID differs from its source ref'
@@ -166,8 +196,23 @@ for copy in a b; do
     fi
 done
 phase_mark 'compiler comparison start'
-"$aros" toolchain producer compare --left "$root/compiler-a/payload/package" \
-    --right "$root/compiler-b/payload/package" --output "$root/comparison.json" --format json > "$root/comparison-result.json"
+if [[ "$manifest_mode" == true ]]; then
+    # The compiler run already compared these exact packages. Rejoin both
+    # authenticated owner transports to that signed lane selection and retain
+    # the original receipt bytes; invoking producer compare here would create
+    # a new, unbound observation in the SDK run.
+    python3 -B "$script_dir/consume-compiler-manifest-v2.py" \
+        --manifest "$compiler_manifest" --manifest-sha256 "$compiler_manifest_sha" \
+        --group "$group" --host "$host" --profile "$preset" \
+        --source-workflow "$source_workflow" --source-ref "$source_ref" \
+        --owner-a-selection "$owner_a_selection" --owner-b-selection "$owner_b_selection" \
+        --owner-a-root "$root/compiler-a" --owner-b-root "$root/compiler-b" \
+        --receipt-output "$root/comparison.json" || \
+        fail 'compiler manifest owners or receipt do not match the authenticated readbacks'
+else
+    "$aros" toolchain producer compare --left "$root/compiler-a/payload/package" \
+        --right "$root/compiler-b/payload/package" --output "$root/comparison.json" --format json > "$root/comparison-result.json"
+fi
 "$aros" toolchain producer materialize-engine-free-source --source-dir "$source" \
     --recipe "$recipe" --output-dir "$root/source-projection" --format json > "$root/source-projection.json"
 host_tools=()
