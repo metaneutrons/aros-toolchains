@@ -337,6 +337,16 @@ class ProviderRunEventTests(unittest.TestCase):
                     self.assertEqual(origin.observe_run_event(ctx), event)
                 mocked_gh.assert_called_once_with(["api", endpoint])
 
+    def test_reader_can_require_a_successfully_completed_source_attempt(self) -> None:
+        run = provider_run()
+        with mock.patch.object(origin, "gh_json", return_value=dict(run, status="completed", conclusion="success")):
+            self.assertEqual(origin.observe_run_event(context(), require_success=True), run["event"])
+        for status, conclusion in (("in_progress", None), ("completed", "failure"), ("completed", "cancelled")):
+            with self.subTest(status=status, conclusion=conclusion), mock.patch.object(
+                origin, "gh_json", return_value=dict(run, status=status, conclusion=conclusion)
+            ), self.assertRaisesRegex(origin.OriginError, "did not complete successfully"):
+                origin.observe_run_event(context(), require_success=True)
+
     def test_rejects_unsupported_missing_changed_and_malformed_run_fields(self) -> None:
         invalid = (
             ("missing event", lambda run: run.pop("event")),
