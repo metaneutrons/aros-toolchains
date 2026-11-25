@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import argparse
 import copy
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 import hashlib
 import importlib.util
 import io
@@ -843,10 +843,12 @@ class RecordVerifyCallFlowTests(unittest.TestCase):
             pages = [{"total_count": 1, "jobs": [active_job]}]
             provider_artifact = artifact()
             gh_calls = []
+            retry_404_flags = []
 
-            def mocked_gh_json(arguments, purpose="GitHub observation"):
+            def mocked_gh_json(arguments, purpose="GitHub observation", *, retry_404=False):
                 call = (list(arguments), purpose)
                 gh_calls.append(call)
+                retry_404_flags.append(retry_404)
                 run_endpoint = (f"repos/{REPOSITORY}/actions/runs/{RUN_ID}"
                                 f"/attempts/{RUN_ATTEMPT}")
                 if list(arguments) == ["api", run_endpoint]:
@@ -878,13 +880,14 @@ class RecordVerifyCallFlowTests(unittest.TestCase):
                 mocked_oidc.assert_called_once_with(ctx, expected_event="push")
                 self.assertEqual(gh_calls, [
                     (["api", f"repos/{REPOSITORY}/actions/runs/{RUN_ID}/attempts/{RUN_ATTEMPT}"],
-                     "GitHub observation"),
+                     "run attempt lookup"),
                     (["api", "--paginate", "--slurp",
                       f"repos/{REPOSITORY}/actions/runs/{RUN_ID}/attempts/{RUN_ATTEMPT}/jobs?per_page=100"],
-                     "GitHub observation"),
+                     "attempt job list lookup"),
                     (["api", f"repos/{REPOSITORY}/actions/artifacts/{ARTIFACT_ID}"],
-                     "GitHub observation"),
+                     "uploaded artifact lookup"),
                 ])
+                self.assertEqual(retry_404_flags, [True, True, True])
 
                 # An existing record cannot be replaced, and placing it under
                 # the payload root is rejected before any mocked observations.
@@ -1008,6 +1011,68 @@ class GitHubObservationRetryTests(unittest.TestCase):
     def _bad_gateway(self) -> subprocess.CompletedProcess:
         return self._completed(1, stderr=b"gh: HTTP 502: Server Error (https://api.github.com/x)")
 
+    OWNER_LOOKUPS = ("run attempt lookup", "attempt job list lookup", "uploaded artifact lookup")
+
+    def _exercise_record(self, lookup, *, misses=1, replacement=None, error=None):
+        """Inject HTTP responses at one lookup in a real owner-recording operation."""
+        position = self.OWNER_LOOKUPS.index(lookup)
+        active_job = dict(job(), status="in_progress", conclusion=None)
+        documents = [provider_run(), [{"total_count": 1, "jobs": [active_job]}], artifact()]
+        if replacement is not None:
+            documents[position] = replacement
+        replies = [self._completed(0, origin.canonical(doc)) for doc in documents]
+        missing = self._completed(1, stderr=b"gh: Not Found (HTTP 404)")
+        replies[position:position] = [missing] * misses
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            payload = root / "payload"
+            payload.mkdir()
+            (payload / "tool.bin").write_bytes(b"compiler")
+            output = root / "origin.json"
+            args = lane_args(artifact_sha256=ARTIFACT_DIGEST, payload_dir=payload, output=output)
+            diagnostics = io.StringIO()
+            with mock.patch.object(origin, "owning_check_id", return_value=CHECK_RUN_ID), \
+                    mock.patch.object(origin.subprocess, "run", side_effect=replies) as run, \
+                    mock.patch.object(origin.time, "sleep") as sleep, \
+                    redirect_stdout(io.StringIO()), redirect_stderr(diagnostics):
+                if error is None:
+                    origin.record(args, context())
+                    self.assertEqual(origin.parse_json(output.read_bytes())["artifact"]["id"], ARTIFACT_ID)
+                else:
+                    with self.assertRaisesRegex(origin.OriginError, error):
+                        origin.record(args, context())
+                    self.assertFalse(output.exists())
+            count = min(misses + 1, 5)
+            requests = run.call_args_list[position:position + count]
+            self.assertEqual(requests, [requests[0]] * count)
+            self.assertEqual(sleep.call_args_list, [mock.call(delay) for delay in (5, 15, 45, 90)[:count - 1]])
+            expected_calls = 3 + misses if error is None else position + count
+            self.assertEqual(run.call_count, expected_calls)
+            self.assertIn(lookup + " returned HTTP 404", diagnostics.getvalue())
+
+    def test_owner_records_after_each_kind_of_temporary_404(self):
+        for lookup in self.OWNER_LOOKUPS:
+            with self.subTest(lookup=lookup):
+                self._exercise_record(lookup)
+
+    def test_persistent_owner_404_identifies_the_lookup_and_stops(self):
+        for lookup in self.OWNER_LOOKUPS:
+            with self.subTest(lookup=lookup):
+                self._exercise_record(lookup, misses=5, error=lookup + r" failed after 5 attempts \(HTTP 404\)")
+
+    def test_owner_rejects_substituted_metadata_after_404(self):
+        wrong_job = dict(job(), run_id=RUN_ID + 1, status="in_progress", conclusion=None)
+        cases = (
+            ("run attempt lookup", dict(provider_run(), id=RUN_ID + 1), "run attempt identity differs"),
+            ("run attempt lookup", dict(provider_run(), run_attempt=RUN_ATTEMPT + 1), "run attempt identity differs"),
+            ("attempt job list lookup", [{"total_count": 1, "jobs": [wrong_job]}], "owning job identity differs"),
+            ("uploaded artifact lookup", dict(artifact(), id=ARTIFACT_ID + 1), "artifact ID/name/digest/state differs"),
+            ("uploaded artifact lookup", dict(artifact(), digest="sha256:" + "c" * 64), "artifact ID/name/digest/state differs"),
+        )
+        for lookup, response, error in cases:
+            with self.subTest(lookup=lookup, response=response):
+                self._exercise_record(lookup, replacement=response, error=error)
+
     def test_a_provider_error_is_retried_with_a_bounded_backoff(self) -> None:
         results = [self._bad_gateway(), self._bad_gateway(), self._completed(0, b'{"ok":true}')]
         with mock.patch.object(origin.subprocess, "run", side_effect=results) as run, \
@@ -1094,7 +1159,8 @@ class GitHubObservationRetryTests(unittest.TestCase):
             with self.assertRaisesRegex(
                     origin.OriginError,
                     "^origin signature authentication failed; no retry or credential fallback$"):
-                origin.gh_json(["attestation", "verify", "x"], "origin signature authentication")
+                origin.gh_json(["attestation", "verify", "x"], "origin signature authentication",
+                               retry_404=True)
         self.assertEqual(run.call_count, 1)
         sleep.assert_not_called()
         self.assertEqual(run.call_args.kwargs["stderr"], subprocess.DEVNULL)
