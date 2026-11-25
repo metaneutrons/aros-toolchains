@@ -246,9 +246,8 @@ def owning_check_id(context: dict, *, expected_event: str) -> int:
 GH_ATTEMPTS = 5
 # Seconds to wait before the second, third, fourth and fifth attempt.
 GH_BACKOFF_SECONDS = (5, 15, 45, 90)
-# Provider-side or transport-side failures of a read-only `gh api` call. A
-# client error (HTTP 4xx), a failed signature check or any other command is
-# never matched, so a real rejection fails at once with its original message.
+# Transient failures common to read-only API observations. The owning job
+# handles a just-created resource returning 404 separately below.
 GH_TRANSIENT = re.compile(
     rb"HTTP 5\d\d|error connecting|i/o timeout|connection reset|connection refused|"
     rb"TLS handshake timeout|unexpected EOF|no such host|temporary failure|"
@@ -261,22 +260,12 @@ GH_TRANSIENT = re.compile(
 GH_STATUS = re.compile(rb"\bHTTP (\d{3})\b")
 
 
-def http_status(stderr: bytes | None) -> str:
-    match = GH_STATUS.search(stderr or b"")
-    return f" (HTTP {match.group(1).decode()})" if match else ""
+def gh_json(arguments: list[str], purpose: str = "GitHub observation", *, retry_404: bool = False) -> object:
+    """Read provider JSON. Only the owner recorder opts into retrying a 404.
 
-
-def gh_json(arguments: list[str], purpose: str = "GitHub observation") -> object:
-    """Run one GitHub CLI observation and parse its JSON.
-
-    Only a read-only ``gh api`` call that fails with a provider or transport
-    error is retried, up to five attempts with a bounded backoff. Every attempt
-    is the same request with the same ambient token; there is no second
-    credential, no cached answer and no weaker check. A client error, a failed
-    signature check, any other command, and a body that does not parse or
-    validate fail at once, because only unavailability is transient. A run that
-    has spent hours on a build must not die on one provider error page
-    (aros-toolchains run 43048632908, 2026-11-11).
+    The run, its job list and the just-finalized upload can take time to become
+    visible. Repeat the same lookup with the existing bounded backoff. All
+    identity, digest and signature checks still apply to the resulting bytes.
     """
     retryable = bool(arguments) and arguments[0] == "api"
     attempts = GH_ATTEMPTS if retryable else 1
@@ -293,27 +282,36 @@ def gh_json(arguments: list[str], purpose: str = "GitHub observation") -> object
             unavailable = True
             continue
         except OSError:
-            raise OriginError("GitHub observation is unavailable") from None
+            raise OriginError(f"{purpose} is unavailable") from None
         if result.returncode == 0:
             return parse_json(result.stdout)
         unavailable = False
-        status = http_status(result.stderr) if retryable else ""
-        if not (retryable and GH_TRANSIENT.search(result.stderr or b"")):
+        stderr = result.stderr or b""
+        match = GH_STATUS.search(stderr) if retryable else None
+        status = f" (HTTP {match[1].decode()})" if match else ""
+        if match and match[1] == b"404":
+            if not retry_404:
+                break
+            if attempt + 1 < attempts:
+                print(f"{purpose} returned HTTP 404. Retrying in {GH_BACKOFF_SECONDS[attempt]}s.",
+                      file=sys.stderr)
+        elif not (retryable and GH_TRANSIENT.search(stderr)):
             break
     else:
         raise OriginError(
-            "GitHub observation is unavailable" if unavailable
+            f"{purpose} is unavailable" if unavailable
             else f"{purpose} failed after {attempts} attempts{status}; no credential fallback")
     if unavailable:
-        raise OriginError("GitHub observation is unavailable")
+        raise OriginError(f"{purpose} is unavailable")
     raise OriginError(f"{purpose} failed{status}; no retry or credential fallback")
 
 
-def observe_run_event(context: dict, *, require_success: bool = False) -> str:
+def observe_run_event(context: dict, *, require_success: bool = False, retry_404: bool = False) -> str:
     """Bind context to the exact Actions run attempt and return its actual event."""
     selected = validate_context(context)
-    run = gh_json(["api", f'repos/{selected["repository"]}/actions/runs/{selected["run_id"]}'
-                   f'/attempts/{selected["run_attempt"]}'])
+    query = ["api", f'repos/{selected["repository"]}/actions/runs/{selected["run_id"]}'
+             f'/attempts/{selected["run_attempt"]}']
+    run = gh_json(query, "run attempt lookup", retry_404=True) if retry_404 else gh_json(query)
     require(isinstance(run, dict), "provider run attempt is not an object")
     require(type(run.get("id")) is int and run["id"] == selected["run_id"]
             and type(run.get("run_attempt")) is int
@@ -347,10 +345,10 @@ def observe_run_event(context: dict, *, require_success: bool = False) -> str:
     return event
 
 
-def jobs_for(context: dict) -> list:
-    return gh_json(["api", "--paginate", "--slurp",
-                    f'repos/{context["repository"]}/actions/runs/{context["run_id"]}'
-                    f'/attempts/{context["run_attempt"]}/jobs?per_page=100'])
+def jobs_for(context: dict, *, retry_404: bool = False) -> list:
+    query = ["api", "--paginate", "--slurp", f'repos/{context["repository"]}/actions/runs/{context["run_id"]}'
+             f'/attempts/{context["run_attempt"]}/jobs?per_page=100']
+    return gh_json(query, "attempt job list lookup", retry_404=True) if retry_404 else gh_json(query)
 
 
 def complete_jobs(pages: list) -> list:
@@ -551,10 +549,11 @@ def record(args: argparse.Namespace, context: dict) -> None:
     require(not output.is_relative_to(args.payload_dir), "origin must stay outside the payload")
     selected = selection(args)
     files = measure_files(args.payload_dir)
-    event = observe_run_event(context)
+    event = observe_run_event(context, retry_404=True)
     check_id = owning_check_id(context, expected_event=event)
-    job = select_job(jobs_for(context), context, check_id, args.job_name, "in_progress")
-    artifact = gh_json(["api", f'repos/{context["repository"]}/actions/artifacts/{args.artifact_id}'])
+    job = select_job(jobs_for(context, retry_404=True), context, check_id, args.job_name, "in_progress")
+    artifact = gh_json(["api", f'repos/{context["repository"]}/actions/artifacts/{args.artifact_id}'],
+                       "uploaded artifact lookup", retry_404=True)
     metadata = select_artifact(artifact, context, args.artifact_id, args.artifact_name, args.artifact_sha256)
     require(files == measure_files(args.payload_dir), "payload changed before origin recording")
     origin = {"schema": SCHEMA, "context": context, "selection": selected,
