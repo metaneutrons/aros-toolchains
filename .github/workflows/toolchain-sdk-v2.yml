@@ -1,0 +1,733 @@
+name: Toolchain V2 SDK qualification
+
+on:
+  workflow_dispatch:
+    inputs:
+      compiler_run_id:
+        description: Successful compiler qualification run on this ref and commit
+        required: true
+        type: string
+      compiler_run_attempt:
+        description: Compiler run attempt that produced the signed manifest
+        type: string
+        default: '1'
+
+permissions:
+  contents: read
+  attestations: read
+
+concurrency:
+  group: toolchain-sdk-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  manifest:
+    name: Verify compiler manifest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      actions: read
+      attestations: read
+      id-token: write
+    outputs:
+      summary_sha256: ${{ steps.verify.outputs.summary_sha256 }}
+      manifest_sha256: ${{ steps.verify.outputs.manifest_sha256 }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Verify the selected compiler attempt and its signed manifest
+        id: verify
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COMPILER_RUN_ID: ${{ inputs.compiler_run_id }}
+          COMPILER_RUN_ATTEMPT: ${{ inputs.compiler_run_attempt }}
+        run: |
+          set -euo pipefail
+          # Tag-bound dispatch is handled separately by the protected start workflow.
+          [[ "$GITHUB_REF_TYPE" == branch ]]
+          directory="$RUNNER_TEMP/compiler-manifest"
+          mkdir -m 700 "$directory"
+          python3 -B scripts/toolchain/read-compiler-run-manifest-v2.py \
+            --compiler-run-id "$COMPILER_RUN_ID" --compiler-run-attempt "$COMPILER_RUN_ATTEMPT" \
+            --job-name 'Verify compiler manifest' --require-fresh > "$directory/manifest.json"
+          summary_sha=$(shasum -a 256 "$directory/manifest.json" | awk '{print $1}')
+          manifest_sha=$(jq -er '.manifest_sha256 | select(test("^[0-9a-f]{64}$"))' "$directory/manifest.json")
+          printf 'summary_sha256=%s\nmanifest_sha256=%s\n' "$summary_sha" "$manifest_sha" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sdk-compiler-manifest
+          path: ${{ runner.temp }}/compiler-manifest/manifest.json
+          if-no-files-found: error
+          retention-days: 14
+
+  inputs:
+    name: Inputs
+    needs: manifest
+    uses: ./.github/workflows/toolchain-v2-inputs.yml
+    with:
+      mode: qualify-v2-full
+      scope: full
+
+  admit:
+    name: Match SDK inputs to the compiler manifest
+    needs: [manifest, inputs]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    outputs:
+      summary_sha256: ${{ needs.manifest.outputs.summary_sha256 }}
+      manifest_sha256: ${{ needs.manifest.outputs.manifest_sha256 }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: sdk-compiler-manifest
+          path: ${{ runner.temp }}/compiler-manifest
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: diagnostic-v2-inputs
+          path: ${{ runner.temp }}/diagnostic-inputs
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: diagnostic-v2-native-runtime-linux-x86_64
+          path: ${{ runner.temp }}/diagnostic-runtime
+      - uses: ./.github/actions/verify-aros-tools-runtime-transport
+        with:
+          runtime-kind: ${{ needs.inputs.outputs.runtime_kind }}
+          root: ${{ runner.temp }}/diagnostic-runtime
+          host: linux-x86_64
+      - name: Regenerate the plan and check its signed bindings before SDK fan-out
+        env:
+          SUMMARY_SHA256: ${{ needs.manifest.outputs.summary_sha256 }}
+          FULL_MATRIX: ${{ needs.inputs.outputs.full_matrix }}
+          RELEASE_ID: ${{ needs.inputs.outputs.release_id }}
+          TOOLS_COMMIT: ${{ needs.inputs.outputs.tools_commit }}
+        run: |
+          set -euo pipefail
+          [[ "$FULL_MATRIX" == true ]]
+          python3 -B scripts/toolchain/admit-sdk-compiler-manifest-v2.py \
+            --manifest "$RUNNER_TEMP/compiler-manifest/manifest.json" --summary-sha256 "$SUMMARY_SHA256" \
+            --aros "$RUNNER_TEMP/diagnostic-runtime/bin/aros" --inputs-dir "$RUNNER_TEMP/diagnostic-inputs" \
+            --release-id "$RELEASE_ID" --tools-commit "$TOOLS_COMMIT"
+
+  v2-sdk:
+    name: SDK from owned compilers (${{ matrix.group_id }}, ${{ matrix.host }}, ${{ matrix.profile }})
+    needs: [inputs, admit]
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      # Only the lanes with an SDK generation in the native release plan (the
+      # llvm group is not generated on macOS, see aros-toolchains#119).
+      matrix: ${{ fromJSON(needs.inputs.outputs.sdk_lane_matrix) }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 360
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: ./.github/actions/checkout-pinned-recursive-source
+        with:
+          repository: metaneutrons/AROS-NX
+          ref: ${{ needs.inputs.outputs.source_commit }}
+          fetch-depth: 0
+          path: dependencies/aros
+      - uses: ./.github/actions/checkout-pinned-recursive-source
+        with:
+          repository: metaneutrons/AROS-NX
+          ref: ${{ needs.inputs.outputs.source_commit }}
+          fetch-depth: 0
+          path: dependencies/upstream-aros
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: metaneutrons/aros-tools
+          ref: ${{ needs.inputs.outputs.tools_commit }}
+          fetch-depth: 0
+          persist-credentials: false
+          path: dependencies/aros-tools
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: diagnostic-v2-native-runtime-${{ matrix.host }}
+          path: ${{ runner.temp }}/diagnostic-runtime
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: diagnostic-v2-inputs
+          path: ${{ runner.temp }}/diagnostic-inputs
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: diagnostic-v2-cache
+          path: ${{ runner.temp }}/diagnostic-cache-input
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: diagnostic-v2-cargo-cache-${{ matrix.host }}
+          path: ${{ runner.temp }}/diagnostic-cargo-input
+      - uses: ./.github/actions/disable-google-chrome-apt-source
+        if: runner.os == 'Linux'
+      - name: Install native SDK consumer prerequisites
+        run: bash dependencies/aros/scripts/ci/install-build-prerequisites.sh
+      - name: Select installed macOS LLVM tools
+        if: runner.os == 'macOS'
+        run: bash scripts/toolchain/select-macos-native-llvm.sh
+      - id: rust
+        uses: ./.github/actions/select-native-rust-toolchain
+        with:
+          producer-dir: ${{ github.workspace }}
+      - uses: ./.github/actions/verify-aros-tools-runtime-transport
+        with:
+          runtime-kind: ${{ needs.inputs.outputs.runtime_kind }}
+          root: ${{ runner.temp }}/diagnostic-runtime
+          host: ${{ matrix.host }}
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: sdk-compiler-manifest
+          path: ${{ runner.temp }}/compiler-manifest
+      - id: sdk
+        name: Build SDKs from the two authenticated compiler owners and their signed comparison
+        env:
+          SUMMARY_SHA256: ${{ needs.admit.outputs.summary_sha256 }}
+          GH_TOKEN: ${{ github.token }}
+          SELECTED_GROUP: ${{ matrix.group_id }}
+          SELECTED_HOST: ${{ matrix.host }}
+          SELECTED_PRESET: ${{ matrix.profile }}
+          CURRENT_JOB: SDK from owned compilers (${{ matrix.group_id }}, ${{ matrix.host }}, ${{ matrix.profile }})
+          SELECTED_RELEASE_ID: ${{ needs.inputs.outputs.release_id }}
+          CACHE_ARCHIVE_SHA256: ${{ needs.inputs.outputs.cache_archive_sha256 }}
+          CARGO_ARCHIVE_SHA256: ${{ fromJSON(needs.inputs.outputs.cache_archives)[matrix.host] }}
+        run: |
+          set -euo pipefail
+          runtime="$RUNNER_TEMP/diagnostic-runtime"
+          producer="$RUNNER_TEMP/diagnostic-producer"
+          git worktree add --detach "$producer" "$GITHUB_SHA"
+          runtime_sha=$(shasum -a 256 "$runtime/bin/aros" | awk '{print $1}')
+          python3 -B scripts/toolchain/cache-archive-transport.py \
+            --archive "$RUNNER_TEMP/diagnostic-cache-input/diagnostic-cache.tar.gz" \
+            --archive-sha256 "$CACHE_ARCHIVE_SHA256" --output-dir "$RUNNER_TEMP/diagnostic-cache"
+          python3 -B scripts/toolchain/cache-archive-transport.py \
+            --archive "$RUNNER_TEMP/diagnostic-cargo-input/native-cargo-cache.tar.gz" \
+            --archive-sha256 "$CARGO_ARCHIVE_SHA256" --output-dir "$RUNNER_TEMP/diagnostic-cache/cargo"
+          "$runtime/bin/aros" cache cargo verify --producer-dir "$producer" \
+            --tools-dir "$GITHUB_WORKSPACE/dependencies/aros-tools" --dir "$RUNNER_TEMP/diagnostic-cache" \
+            --cargo "${{ steps.rust.outputs.cargo }}"
+          manifest="$RUNNER_TEMP/compiler-manifest/manifest.json"
+          [[ "$(shasum -a 256 "$manifest" | awk '{print $1}')" == "$SUMMARY_SHA256" ]]
+          selectors="$RUNNER_TEMP/compiler-owner-selectors"
+          mkdir -m 700 "$selectors"
+          jq -ceS '.context' "$manifest" > "$selectors/context.json"
+          context_sha=$(jq -er '.bindings.source_context_sha256' "$manifest")
+          compiler_run=$(jq -er '.context.run_id' "$manifest")
+          compiler_attempt=$(jq -er '.context.run_attempt' "$manifest")
+          for copy in a b; do
+            lane_sha=$(printf '%s\0' "$SELECTED_GROUP" "$SELECTED_HOST" "$SELECTED_PRESET" "$copy" | shasum -a 256 | awk '{print $1}')
+            python3 -B scripts/toolchain/select-owner-artifacts-v2.py \
+              --source-context "$selectors/context.json" --source-context-sha256 "$context_sha" \
+              --job-name "Native compiler ($SELECTED_GROUP, $SELECTED_HOST, $SELECTED_PRESET, $copy)" \
+              --payload-name "native-v2-$lane_sha-$compiler_run-$compiler_attempt" \
+              --proof-name "native-v2-proof-$lane_sha-$compiler_run-$compiler_attempt" \
+              --role build --group "$SELECTED_GROUP" --host "$SELECTED_HOST" \
+              --profile="$SELECTED_PRESET" --copy "$copy" > "$selectors/$copy.json"
+          done
+          jq -se 'length == 2 and .[0].job.id != .[1].job.id' \
+            "$selectors/a.json" "$selectors/b.json" >/dev/null
+          bash scripts/toolchain/qualify-compiler-sdk-lane-v2.sh \
+            --aros "$runtime/bin/aros" --runtime-sha256 "$runtime_sha" \
+            --inputs-dir "$RUNNER_TEMP/diagnostic-inputs" \
+            --selection "$producer/toolchains/compiler-sdk-ci-selection-v2.json" \
+            --source-dir "$GITHUB_WORKSPACE/dependencies/aros" --producer-dir "$producer" \
+            --tools-dir "$GITHUB_WORKSPACE/dependencies/aros-tools" --cache-dir "$RUNNER_TEMP/diagnostic-cache" \
+            --upstream-source-dir "$GITHUB_WORKSPACE/dependencies/upstream-aros" \
+            --group "$SELECTED_GROUP" --preset "$SELECTED_PRESET" --host "$SELECTED_HOST" \
+            --compiler-manifest "$manifest" --compiler-manifest-sha256 "$SUMMARY_SHA256" \
+            --owner-a-selection "$selectors/a.json" --owner-b-selection "$selectors/b.json" \
+            --source-workflow .github/workflows/toolchain-compilers-v2.yml --source-ref "$GITHUB_REF" \
+            --release-id "$SELECTED_RELEASE_ID" \
+            --workflow .github/workflows/toolchain-sdk-v2.yml --job-name "$CURRENT_JOB" \
+            --root "$RUNNER_TEMP/owned-sdk-lane" --jobs 3 --timeout-seconds 20000
+          sdk_ids=$(jq -cse '[.[].id] | sort | if length > 0 and . == unique then . else error("invalid SDK lane selection") end' \
+            "$RUNNER_TEMP/owned-sdk-lane/sdk-selections.jsonl")
+          printf 'sdk-ids=%s\n' "$sdk_ids" >> "$GITHUB_OUTPUT"
+      - uses: ./.github/actions/retain-sdk-owner-payload-v2
+        with:
+          operation-root: ${{ runner.temp }}/owned-sdk-lane
+          sdk-ids: ${{ steps.sdk.outputs.sdk-ids }}
+          group: ${{ matrix.group_id }}
+          preset: ${{ matrix.profile }}
+          host: ${{ matrix.host }}
+          owner-role: sdk
+          root: ${{ runner.temp }}/owned-sdk-origin
+          workflow: .github/workflows/toolchain-sdk-v2.yml
+          job-name: SDK from owned compilers (${{ matrix.group_id }}, ${{ matrix.host }}, ${{ matrix.profile }})
+      - name: Retain SDK owner readback and failure diagnostics
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: diagnostic-v2-owned-sdk-${{ matrix.group_id }}-${{ matrix.host }}-${{ matrix.profile }}
+          path: |
+            ${{ runner.temp }}/compiler-owner-selectors/
+            ${{ runner.temp }}/owned-sdk-lane/*.json
+            ${{ runner.temp }}/owned-sdk-lane/compiler-*/observation.json
+            ${{ runner.temp }}/owned-sdk-lane/compiler-*/native-verification.json
+            ${{ runner.temp }}/owned-sdk-lane/compiler-*/origin-verification.log
+            ${{ runner.temp }}/owned-sdk-lane/sdk-*/result.json
+            ${{ runner.temp }}/owned-sdk-lane/sdk-*/generation.json
+            ${{ runner.temp }}/owned-sdk-lane/sdk-*/reports/
+            ${{ runner.temp }}/owned-sdk-lane/sdk-*/cmake/**/*.log
+            ${{ runner.temp }}/owned-sdk-lane/sdk-*/cmake/**/CMakeConfigureLog.yaml
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Retain both compiler packages when the SDK job fails
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: diagnostic-v2-owned-sdk-packages-${{ matrix.group_id }}-${{ matrix.host }}-${{ matrix.profile }}
+          path: ${{ runner.temp }}/owned-sdk-lane/compiler-*/payload/package/*.tar.xz
+          if-no-files-found: warn
+          compression-level: 0
+          retention-days: 3
+
+  v2-readback:
+    name: Assemble and attest SDK candidate
+    needs: [inputs, admit, v2-sdk]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: diagnostic-v2-native-runtime-linux-x86_64
+          path: ${{ runner.temp }}/diagnostic-runtime
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: diagnostic-v2-inputs
+          path: ${{ runner.temp }}/diagnostic-inputs
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: sdk-compiler-manifest
+          path: ${{ runner.temp }}/compiler-manifest
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: metaneutrons/aros-tools
+          ref: ${{ needs.inputs.outputs.tools_commit }}
+          fetch-depth: 0
+          persist-credentials: false
+          path: dependencies/aros-tools-fixtures
+      - uses: ./.github/actions/verify-aros-tools-runtime-transport
+        with:
+          runtime-kind: ${{ needs.inputs.outputs.runtime_kind }}
+          root: ${{ runner.temp }}/diagnostic-runtime
+          host: linux-x86_64
+      - id: manifest
+        name: Pin the admitted compiler manifest and canonical source context
+        env:
+          EXPECTED_MANIFEST_SHA: ${{ needs.admit.outputs.manifest_sha256 }}
+          EXPECTED_SUMMARY_SHA: ${{ needs.admit.outputs.summary_sha256 }}
+        run: |
+          set -euo pipefail
+          set -C
+          manifest="$RUNNER_TEMP/compiler-manifest/manifest.json"
+          context="$RUNNER_TEMP/compiler-manifest/.context"
+          [[ "$(shasum -a 256 "$manifest" | awk '{print $1}')" == "$EXPECTED_SUMMARY_SHA" ]]
+          [[ "$(jq -er '.manifest_sha256' "$manifest")" == "$EXPECTED_MANIFEST_SHA" ]]
+          jq -ceS '.context' "$manifest" > "$context"
+          [[ "$(shasum -a 256 "$context" | awk '{print $1}')" == "$(jq -er '.bindings.source_context_sha256' "$manifest")" ]]
+          printf 'manifest=%s\nsummary_sha256=%s\nmanifest_sha256=%s\ncontext=%s\ncontext_sha256=%s\n' \
+            "$manifest" "$EXPECTED_SUMMARY_SHA" "$EXPECTED_MANIFEST_SHA" "$context" \
+            "$(shasum -a 256 "$context" | awk '{print $1}')" >> "$GITHUB_OUTPUT"
+      - id: sdk-context
+        name: Record the current SDK run context canonically
+        run: |
+          set -euo pipefail
+          set -C
+          root="$RUNNER_TEMP/sdk-owner-context"
+          test ! -e "$root" && test ! -L "$root"
+          mkdir -m 700 "$root"
+          python3 -B - "$root/context.json" <<'PY'
+          import importlib.util
+          from pathlib import Path
+          import sys
+          spec = importlib.util.spec_from_file_location(
+              "sdk_context_origin", "scripts/toolchain/artifact-origin.py")
+          if spec is None or spec.loader is None:
+              raise SystemExit("artifact-origin helpers are unavailable")
+          origin = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(origin)
+          path = Path(sys.argv[1])
+          path.write_bytes(origin.canonical(
+              origin.context_from_environment(".github/workflows/toolchain-sdk-v2.yml")))
+          PY
+          printf 'context=%s\ncontext_sha256=%s\n' "$root/context.json" \
+            "$(shasum -a 256 "$root/context.json" | awk '{print $1}')" >> "$GITHUB_OUTPUT"
+      - id: owners
+        name: Authenticate prior compiler owners and current SDK owners
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_TOOLS: ${{ needs.inputs.outputs.tools_commit }}
+          SELECTED_RELEASE_ID: ${{ needs.inputs.outputs.release_id }}
+          CURRENT_JOB: Assemble and attest SDK candidate
+          COMPILER_CONTEXT: ${{ steps.manifest.outputs.context }}
+          COMPILER_CONTEXT_SHA256: ${{ steps.manifest.outputs.context_sha256 }}
+          SDK_CONTEXT: ${{ steps.sdk-context.outputs.context }}
+          SDK_CONTEXT_SHA256: ${{ steps.sdk-context.outputs.context_sha256 }}
+        run: |
+          set -euo pipefail
+          runtime="$RUNNER_TEMP/diagnostic-runtime"
+          inputs="$RUNNER_TEMP/diagnostic-inputs"
+          runtime_sha=$(shasum -a 256 "$runtime/bin/aros" | awk '{print $1}')
+          inputs_sha=$(shasum -a 256 "$inputs/toolchain-release-inputs-v2.json" | awk '{print $1}')
+          bash scripts/toolchain/collect-compiler-owners-v2.sh \
+            --aros "$runtime/bin/aros" --aros-sha256 "$runtime_sha" \
+            --inputs-dir "$inputs" --inputs-sha256 "$inputs_sha" \
+            --producer-commit "$GITHUB_SHA" --tools-commit "$EXPECTED_TOOLS" \
+            --source-context "$COMPILER_CONTEXT" --source-context-sha256 "$COMPILER_CONTEXT_SHA256" \
+            --source-workflow .github/workflows/toolchain-compilers-v2.yml --source-ref "$GITHUB_REF" \
+            --workflow .github/workflows/toolchain-sdk-v2.yml --job-name "$CURRENT_JOB" \
+            --release-id "$SELECTED_RELEASE_ID" \
+            --forbidden-prefix "$GITHUB_WORKSPACE" --forbidden-prefix "$RUNNER_TEMP" \
+            --root "$RUNNER_TEMP/complete-compiler-readback"
+          bash scripts/toolchain/collect-sdk-owners-v2.sh \
+            --aros "$runtime/bin/aros" --aros-sha256 "$runtime_sha" \
+            --inputs-dir "$inputs" --inputs-sha256 "$inputs_sha" \
+            --producer-commit "$GITHUB_SHA" --tools-commit "$EXPECTED_TOOLS" \
+            --source-context "$SDK_CONTEXT" --source-context-sha256 "$SDK_CONTEXT_SHA256" \
+            --source-workflow .github/workflows/toolchain-sdk-v2.yml --source-ref "$GITHUB_REF" \
+            --workflow .github/workflows/toolchain-sdk-v2.yml --job-name "$CURRENT_JOB" --same-attempt \
+            --root "$RUNNER_TEMP/complete-sdk-readback"
+          printf 'runtime_sha256=%s\ninputs_sha256=%s\n' "$runtime_sha" "$inputs_sha" >> "$GITHUB_OUTPUT"
+      - id: candidate
+        name: Assemble the combined candidate and bind signed compiler receipts
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_TOOLS: ${{ needs.inputs.outputs.tools_commit }}
+          SELECTED_RELEASE_ID: ${{ needs.inputs.outputs.release_id }}
+          COMPILER_CONTEXT: ${{ steps.manifest.outputs.context }}
+          COMPILER_CONTEXT_SHA256: ${{ steps.manifest.outputs.context_sha256 }}
+          SDK_CONTEXT: ${{ steps.sdk-context.outputs.context }}
+          SDK_CONTEXT_SHA256: ${{ steps.sdk-context.outputs.context_sha256 }}
+          COMPILER_MANIFEST: ${{ steps.manifest.outputs.manifest }}
+          COMPILER_MANIFEST_SHA256: ${{ steps.manifest.outputs.manifest_sha256 }}
+          COMPILER_SUMMARY_SHA256: ${{ steps.manifest.outputs.summary_sha256 }}
+        run: |
+          set -euo pipefail
+          set -C
+          runtime="$RUNNER_TEMP/diagnostic-runtime"
+          inputs="$RUNNER_TEMP/diagnostic-inputs"
+          runtime_sha="${{ steps.owners.outputs.runtime_sha256 }}"
+          inputs_sha="${{ steps.owners.outputs.inputs_sha256 }}"
+          plan="$RUNNER_TEMP/sdk-index-native-plan.json"
+          required_paths="$RUNNER_TEMP/compiler-candidate-required-paths.json"
+          candidate_summary="$RUNNER_TEMP/release-candidate-summary.json"
+          for selected in "$plan" "$required_paths" "$candidate_summary"; do
+            test ! -e "$selected" && test ! -L "$selected"
+          done
+          "$runtime/bin/aros" toolchain producer release-plan \
+            --directory "$inputs" --inputs-sha256 "$inputs_sha" --format json > "$plan"
+          plan_sha=$(shasum -a 256 "$plan" | awk '{print $1}')
+          fragment="$RUNNER_TEMP/complete-sdk-readback/selection-fragment.json"
+          fragment_sha=$(shasum -a 256 "$fragment" | awk '{print $1}')
+          policy="$GITHUB_WORKSPACE/toolchains/compiler-required-payload-v1.json"
+          policy_sha=$(shasum -a 256 "$policy" | awk '{print $1}')
+          python3 -B scripts/toolchain/required-compiler-payload-v2.py \
+            --policy "$policy" --policy-sha256 "$policy_sha" \
+            --plan "$plan" --plan-sha256 "$plan_sha" \
+            --inputs-sha256 "$inputs_sha" --producer-commit "$GITHUB_SHA" \
+            --tools-commit "$EXPECTED_TOOLS" > "$required_paths"
+          required_paths_sha=$(shasum -a 256 "$required_paths" | awk '{print $1}')
+          compiler_fragment="$RUNNER_TEMP/complete-compiler-readback/selection-fragment.json"
+          compiler_fragment_sha=$(shasum -a 256 "$compiler_fragment" | awk '{print $1}')
+          support="$GITHUB_WORKSPACE/dependencies/aros-tools-fixtures/crates/aros-common/tests/fixtures"
+          manifest_schema_sha=$(shasum -a 256 "$support/toolchain-manifest-v2.schema.json" | awk '{print $1}')
+          tree_fixture_sha=$(shasum -a 256 "$support/tree-digest-v1.fixture.json" | awk '{print $1}')
+          python3 -B scripts/toolchain/assemble-release-candidate-v2.py \
+            --aros "$runtime/bin/aros" --aros-sha256 "$runtime_sha" \
+            --plan "$plan" --plan-sha256 "$plan_sha" \
+            --inputs-dir "$inputs" --inputs-sha256 "$inputs_sha" \
+            --producer-commit "$GITHUB_SHA" --tools-commit "$EXPECTED_TOOLS" \
+            --source-context "$SDK_CONTEXT" --source-context-sha256 "$SDK_CONTEXT_SHA256" \
+            --compiler-source-context "$COMPILER_CONTEXT" --compiler-source-context-sha256 "$COMPILER_CONTEXT_SHA256" \
+            --compiler-fragment "$compiler_fragment" --compiler-fragment-sha256 "$compiler_fragment_sha" \
+            --compiler-owner-root "$RUNNER_TEMP/complete-compiler-readback" \
+            --sdk-fragment "$fragment" --sdk-fragment-sha256 "$fragment_sha" \
+            --sdk-owner-root "$RUNNER_TEMP/complete-sdk-readback" \
+            --required-paths "$required_paths" --required-paths-sha256 "$required_paths_sha" \
+            --support-dir "$support" --manifest-schema-sha256 "$manifest_schema_sha" \
+            --tree-fixture-sha256 "$tree_fixture_sha" --release-id "$SELECTED_RELEASE_ID" \
+            --base-url "https://github.com/$GITHUB_REPOSITORY/releases/download/$SELECTED_RELEASE_ID" \
+            --forbidden-prefix "$GITHUB_WORKSPACE" --forbidden-prefix "$RUNNER_TEMP" \
+            --root "$RUNNER_TEMP/release-candidate" > "$candidate_summary"
+          compiler_evidence="$RUNNER_TEMP/release-candidate/compiler-stage/compiler-evidence-fragment.json"
+          receipt_validation="$RUNNER_TEMP/compiler-manifest-receipt-validation.json"
+          test ! -e "$receipt_validation" && test ! -L "$receipt_validation"
+          python3 -B scripts/toolchain/verify-compiler-manifest-receipts-v2.py \
+            --manifest "$COMPILER_MANIFEST" --summary-sha256 "$COMPILER_SUMMARY_SHA256" \
+            --manifest-sha256 "$COMPILER_MANIFEST_SHA256" \
+            --compiler-evidence "$compiler_evidence" --candidate-summary "$candidate_summary" > "$receipt_validation"
+          compiler_lanes="$RUNNER_TEMP/release-candidate/compiler-stage/compiler-index-lanes.json"
+          candidate_index="$RUNNER_TEMP/release-candidate/release/toolchain-index-v2.json"
+          evidence_selection="$RUNNER_TEMP/native-release-evidence-selection.json"
+          test ! -e "$evidence_selection" && test ! -L "$evidence_selection"
+          compiler_lanes_sha=$(shasum -a 256 "$compiler_lanes" | awk '{print $1}')
+          compiler_evidence_sha=$(shasum -a 256 "$compiler_evidence" | awk '{print $1}')
+          candidate_index_sha=$(shasum -a 256 "$candidate_index" | awk '{print $1}')
+          python3 -B scripts/toolchain/select-native-release-evidence-v2.py \
+            --plan "$plan" --plan-sha256 "$plan_sha" --inputs-dir "$inputs" --inputs-sha256 "$inputs_sha" \
+            --producer-commit "$GITHUB_SHA" --tools-commit "$EXPECTED_TOOLS" \
+            --source-context "$SDK_CONTEXT" --source-context-sha256 "$SDK_CONTEXT_SHA256" \
+            --compiler-source-context "$COMPILER_CONTEXT" --compiler-source-context-sha256 "$COMPILER_CONTEXT_SHA256" \
+            --compiler-lanes "$compiler_lanes" --compiler-lanes-sha256 "$compiler_lanes_sha" \
+            --compiler-evidence "$compiler_evidence" --compiler-evidence-sha256 "$compiler_evidence_sha" \
+            --sdk-fragment "$fragment" --sdk-fragment-sha256 "$fragment_sha" \
+            --sdk-owner-root "$RUNNER_TEMP/complete-sdk-readback" \
+            --index "$candidate_index" --index-sha256 "$candidate_index_sha" > "$evidence_selection"
+          subject_manifest="$RUNNER_TEMP/release-candidate/subject-manifest.json"
+          held_index_sha=$(jq -er '.outputs.index.sha256 | select(type == "string" and test("^[0-9a-f]{64}$"))' "$candidate_summary")
+          subject_sha=$(jq -er '.outputs.subject_manifest.sha256 | select(type == "string" and test("^[0-9a-f]{64}$"))' "$candidate_summary")
+          measured_subject_sha=$(shasum -a 256 "$subject_manifest" | awk '{print $1}')
+          [[ "$candidate_index_sha" == "$held_index_sha" && "$measured_subject_sha" == "$subject_sha" ]]
+          evidence_sha=$(shasum -a 256 "$evidence_selection" | awk '{print $1}')
+          summary_sha=$(shasum -a 256 "$candidate_summary" | awk '{print $1}')
+          printf 'index_sha256=%s\nsubject_sha256=%s\nselection_sha256=%s\nsummary_sha256=%s\ninputs_sha256=%s\nruntime_sha256=%s\n' \
+            "$held_index_sha" "$subject_sha" "$evidence_sha" "$summary_sha" "$inputs_sha" "$runtime_sha" >> "$GITHUB_OUTPUT"
+      - id: candidate-provenance
+        name: Attest the combined candidate
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373
+        with:
+          subject-checksums: ${{ runner.temp }}/release-candidate/subject-manifest.json
+      - name: Verify genuine combined candidate provenance and final native evidence
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PROVENANCE_BUNDLE: ${{ steps.candidate-provenance.outputs.bundle-path }}
+          EXPECTED_INDEX_SHA: ${{ steps.candidate.outputs.index_sha256 }}
+          EXPECTED_SUBJECT_SHA: ${{ steps.candidate.outputs.subject_sha256 }}
+          EXPECTED_SELECTION_SHA: ${{ steps.candidate.outputs.selection_sha256 }}
+          SELECTED_RELEASE_ID: ${{ needs.inputs.outputs.release_id }}
+          EXPECTED_SUMMARY_SHA: ${{ steps.candidate.outputs.summary_sha256 }}
+          EXPECTED_INPUTS_SHA: ${{ steps.candidate.outputs.inputs_sha256 }}
+          EXPECTED_RUNTIME_SHA: ${{ steps.candidate.outputs.runtime_sha256 }}
+        run: |
+          set -euo pipefail
+          set -C
+          runtime="$RUNNER_TEMP/diagnostic-runtime/bin/aros"
+          candidate="$RUNNER_TEMP/release-candidate"
+          release="$candidate/release"
+          subject="$candidate/subject-manifest.json"
+          selection="$RUNNER_TEMP/native-release-evidence-selection.json"
+          summary="$RUNNER_TEMP/release-candidate-summary.json"
+          verified="$RUNNER_TEMP/verified-combined-provenance.json"
+          final_index="$RUNNER_TEMP/final-combined-index.json"
+          final_evidence="$RUNNER_TEMP/final-combined-evidence.json"
+          for digest in "$EXPECTED_INDEX_SHA" "$EXPECTED_SUBJECT_SHA" "$EXPECTED_SELECTION_SHA" "$EXPECTED_SUMMARY_SHA" "$EXPECTED_INPUTS_SHA" "$EXPECTED_RUNTIME_SHA"; do
+            [[ "$digest" =~ ^[0-9a-f]{64}$ ]]
+          done
+          check_sha() {
+            local actual
+            actual=$(shasum -a 256 "$1" | awk '{print $1}')
+            [[ "$actual" == "$2" ]]
+          }
+          check_sha "$runtime" "$EXPECTED_RUNTIME_SHA"
+          check_sha "$summary" "$EXPECTED_SUMMARY_SHA"
+          check_sha "$selection" "$EXPECTED_SELECTION_SHA"
+          check_sha "$release/toolchain-index-v2.json" "$EXPECTED_INDEX_SHA"
+          check_sha "$subject" "$EXPECTED_SUBJECT_SHA"
+          check_sha "$release/toolchain-release-inputs-v2.json" "$EXPECTED_INPUTS_SHA"
+          # Reject oversized/nonregular input before hashing or external parsing.
+          bundle_sha=$(python3 -B - "$PROVENANCE_BUNDLE" <<'PY'
+          import hashlib
+          import os
+          from pathlib import Path
+          import stat
+          import sys
+          source = Path(sys.argv[1])
+          if not source.is_absolute() or '..' in source.parts or source.resolve(strict=True) != source or any(parent.is_symlink() for parent in (source, *source.parents)):
+              raise SystemExit('noncanonical provenance source')
+          with os.fdopen(os.open(source, os.O_RDONLY | os.O_NOFOLLOW), 'rb') as handle:
+              before = os.fstat(handle.fileno())
+              if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1 or before.st_uid != os.geteuid() or not 0 < before.st_size <= 16 * 1024 * 1024:
+                  raise SystemExit('invalid provenance bundle file')
+              raw = handle.read(16 * 1024 * 1024 + 1)
+              after = os.fstat(handle.fileno())
+          def fingerprint(value):
+              return (value.st_dev, value.st_ino, value.st_mode, value.st_nlink, value.st_uid, value.st_size, value.st_mtime_ns, value.st_ctime_ns)
+          if fingerprint(before) != fingerprint(after) or len(raw) != before.st_size:
+              raise SystemExit('provenance source changed during bounded read')
+          print(hashlib.sha256(raw).hexdigest())
+          PY
+          )
+          bash scripts/toolchain/verify-provenance-attestation.sh \
+            --subject-manifest "$subject" --subject-manifest-sha256 "$EXPECTED_SUBJECT_SHA" \
+            --subject-dir "$release" --bundle "$PROVENANCE_BUNDLE" \
+            --repository "$GITHUB_REPOSITORY" \
+            --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/toolchain-sdk-v2.yml" \
+            --source-digest "$GITHUB_SHA" --source-ref "$GITHUB_REF" \
+            --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --output "$verified"
+          # Exclusive bounded copy. A diagnostic never fabricates provenance.
+          check_sha "$PROVENANCE_BUNDLE" "$bundle_sha"
+          python3 -B - "$PROVENANCE_BUNDLE" "$release/toolchain-provenance.sigstore.json" "$bundle_sha" <<'PY'
+          import hashlib
+          import os
+          from pathlib import Path
+          import stat
+          import sys
+          source, target, expected = sys.argv[1:]
+          for selected in (Path(source), Path(target).parent):
+              if not selected.is_absolute() or '..' in selected.parts or selected.resolve(strict=True) != selected or any(parent.is_symlink() for parent in (selected, *selected.parents)):
+                  raise SystemExit('noncanonical provenance path')
+          def fingerprint(value):
+              return (value.st_dev, value.st_ino, value.st_mode, value.st_nlink, value.st_uid, value.st_size, value.st_mtime_ns, value.st_ctime_ns)
+          flags = os.O_RDONLY | os.O_NOFOLLOW
+          with os.fdopen(os.open(source, flags), 'rb') as handle:
+              before = os.fstat(handle.fileno())
+              if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1 or before.st_uid != os.geteuid() or not 0 < before.st_size <= 16 * 1024 * 1024:
+                  raise SystemExit('invalid provenance bundle file')
+              raw = handle.read(16 * 1024 * 1024 + 1)
+              after = os.fstat(handle.fileno())
+          if fingerprint(before) != fingerprint(after) or len(raw) != before.st_size or hashlib.sha256(raw).hexdigest() != expected:
+              raise SystemExit('provenance bundle changed during copy')
+          with os.fdopen(os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600), 'wb') as handle:
+              handle.write(raw)
+              handle.flush()
+              os.fsync(handle.fileno())
+          PY
+          bash scripts/toolchain/verify-provenance-attestation.sh \
+            --subject-manifest "$subject" --subject-manifest-sha256 "$EXPECTED_SUBJECT_SHA" \
+            --subject-dir "$release" --bundle "$release/toolchain-provenance.sigstore.json" \
+            --repository "$GITHUB_REPOSITORY" \
+            --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/toolchain-sdk-v2.yml" \
+            --source-digest "$GITHUB_SHA" --source-ref "$GITHUB_REF" \
+            --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --output "$RUNNER_TEMP/verified-staged-combined-provenance.json"
+          check_sha "$runtime" "$EXPECTED_RUNTIME_SHA"
+          (ulimit -f 8192; timeout --signal=KILL 3600 "$runtime" toolchain producer index \
+            --directory "$release" --release-id "$SELECTED_RELEASE_ID" \
+            --base-url "https://github.com/$GITHUB_REPOSITORY/releases/download/$SELECTED_RELEASE_ID" \
+            --release-format family-v2 --lane-inputs "$candidate/lane-inputs.json" \
+            --subject-manifest "$subject" --subject-manifest-sha256 "$EXPECTED_SUBJECT_SHA" \
+            --forbidden-prefix "$GITHUB_WORKSPACE" --forbidden-prefix "$RUNNER_TEMP" \
+            --stage final --format json) > "$final_index" 2> "$RUNNER_TEMP/final-combined-index.stderr.log"
+          check_sha "$runtime" "$EXPECTED_RUNTIME_SHA"
+          check_sha "$selection" "$EXPECTED_SELECTION_SHA"
+          (ulimit -f 8192; timeout --signal=KILL 5400 "$runtime" toolchain producer verify-release-evidence \
+            --directory "$release" --release-id "$SELECTED_RELEASE_ID" \
+            --base-url "https://github.com/$GITHUB_REPOSITORY/releases/download/$SELECTED_RELEASE_ID" \
+            --inputs-sha256 "$EXPECTED_INPUTS_SHA" --index-sha256 "$EXPECTED_INDEX_SHA" \
+            --selection "$selection" --selection-sha256 "$EXPECTED_SELECTION_SHA" \
+            --subject-manifest "$subject" --subject-manifest-sha256 "$EXPECTED_SUBJECT_SHA" \
+            --forbidden-prefix "$GITHUB_WORKSPACE" --forbidden-prefix "$RUNNER_TEMP" \
+            --format json) > "$final_evidence" 2> "$RUNNER_TEMP/final-combined-evidence.stderr.log"
+          check_sha "$runtime" "$EXPECTED_RUNTIME_SHA"
+          check_sha "$summary" "$EXPECTED_SUMMARY_SHA"
+          check_sha "$selection" "$EXPECTED_SELECTION_SHA"
+          check_sha "$release/toolchain-index-v2.json" "$EXPECTED_INDEX_SHA"
+          check_sha "$subject" "$EXPECTED_SUBJECT_SHA"
+          checksums_sha=$(shasum -a 256 "$release/SHA256SUMS" | awk '{print $1}')
+          staged_bundle_sha=$(shasum -a 256 "$release/toolchain-provenance.sigstore.json" | awk '{print $1}')
+          staged_bundle_size=$(wc -c < "$release/toolchain-provenance.sigstore.json" | tr -d '[:space:]')
+          [[ "$staged_bundle_sha" == "$bundle_sha" ]]
+          jq -e --arg index "$EXPECTED_INDEX_SHA" --arg subject "$EXPECTED_SUBJECT_SHA" \
+            --arg release_id "$SELECTED_RELEASE_ID" --arg index_path "$release/toolchain-index-v2.json" \
+            --arg subject_path "$subject" --arg checksums_path "$release/SHA256SUMS" \
+            --arg checksums "$checksums_sha" --arg provenance "$staged_bundle_sha" \
+            --argjson provenance_size "$staged_bundle_size" \
+            --slurpfile summary "$summary" '
+            .schema == "aros-toolchain-producer-stage-v2" and .operation == "index" and
+            .release_format == "family-v2" and .stage == "final" and
+            .release_id == $release_id and .index == $index_path and .subject_manifest == $subject_path and
+            .index_sha256 == $index and .subject_manifest_sha256 == $subject and
+            .checksums == $checksums_path and .checksums_sha256 == $checksums and .provenance_sha256 == $provenance and
+            .provenance_size == $provenance_size and
+            .subject_manifest_size == $summary[0].outputs.subject_manifest.size and
+            .subject_count == $summary[0].counts.subject_count and
+            .inventory_count == $summary[0].counts.inventory_count and
+            .lane_count == $summary[0].counts.lane_count and .sdk_count == $summary[0].counts.sdk_count
+          ' "$final_index" >/dev/null
+          jq -e --arg inputs "$EXPECTED_INPUTS_SHA" --arg index "$EXPECTED_INDEX_SHA" \
+            --arg selection "$EXPECTED_SELECTION_SHA" --arg subject "$EXPECTED_SUBJECT_SHA" \
+            --arg release_id "$SELECTED_RELEASE_ID" --arg checksums "$checksums_sha" --arg provenance "$staged_bundle_sha" \
+            --slurpfile summary "$summary" --slurpfile selected "$selection" '
+            .schema == "aros-toolchain-producer-stage-v2" and .operation == "verify-release-evidence" and
+            .release_format == "family-v2" and .assurance == "byte-consistency-only" and
+            .release_id == $release_id and .checksums_sha256 == $checksums and .provenance_sha256 == $provenance and
+            .inputs_sha256 == $inputs and .index_sha256 == $index and
+            .selection_sha256 == $selection and .subject_manifest_sha256 == $subject and
+            .lane_count == $summary[0].counts.lane_count and .build_count == (.lane_count * 2) and
+            (.lanes | length) == .lane_count and .sdk_count == $summary[0].counts.sdk_count and
+            (.sdks | length) == .sdk_count and
+            .sdk_generation_count == ($selected[0].sdk_generations | length) and
+            (.sdk_generations | length) == .sdk_generation_count and
+            ([.lanes[].asset] | sort) == ($selected[0].lanes | keys | sort) and
+            ([.sdks[].sdk_id] | sort) == ($selected[0].sdk_packages | keys | sort) and
+            ([.sdk_generations[] | [.sdk_id,.group_id,.target_profile,.host]] | sort) ==
+              ([$selected[0].sdk_generations[] | [.sdk_id,.group_id,.target_profile,.host]] | sort) and
+            all(.lanes[]; . as $lane | $selected[0].lanes[$lane.asset] as $expected |
+              $lane.comparison_sha256 == $expected.comparison.sha256 and
+              $lane.compatibility_inputs_sha256 == $expected.compatibility.inputs.sha256 and
+              $lane.compatibility_manifest_sha256 == $expected.compatibility.manifest_sha256) and
+            all(.sdks[]; . as $sdk | $selected[0].sdk_packages[$sdk.sdk_id] as $expected |
+              $sdk.tree_sha256 == $expected.tree_sha256 and $sdk.archive_sha256 == $expected.archive_sha256 and
+              $sdk.archive_size == $expected.archive_size) and
+            all(.sdk_generations[]; . as $generation |
+              any($selected[0].sdk_generations[]; .sdk_id == $generation.sdk_id and .group_id == $generation.group_id and
+                .target_profile == $generation.target_profile and .host == $generation.host and
+                .record.sha256 == $generation.generation_record_sha256 and
+                .compatibility.manifest_sha256 == $generation.compatibility_manifest_sha256))
+          ' "$final_evidence" >/dev/null
+          # Byte readback is not publication permission. Only a separately
+          # authenticated product-tag route may record complete qualification.
+      - name: Retain SDK candidate readback and attestation
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: diagnostic-v2-sdk-candidate
+          path: |
+            ${{ runner.temp }}/compiler-manifest/
+            ${{ runner.temp }}/compiler-manifest-receipt-validation.json
+            ${{ runner.temp }}/sdk-owner-context/
+            ${{ runner.temp }}/sdk-index-native-plan.json
+            ${{ runner.temp }}/compiler-candidate-required-paths.json
+            ${{ runner.temp }}/release-candidate-summary.json
+            ${{ runner.temp }}/native-release-evidence-selection.json
+            ${{ runner.temp }}/verified-combined-provenance.json
+            ${{ runner.temp }}/verified-staged-combined-provenance.json
+            ${{ runner.temp }}/final-combined-index.json
+            ${{ runner.temp }}/final-combined-index.stderr.log
+            ${{ runner.temp }}/final-combined-evidence.json
+            ${{ runner.temp }}/final-combined-evidence.stderr.log
+            ${{ runner.temp }}/release-candidate/lane-inputs.json
+            ${{ runner.temp }}/release-candidate/subject-manifest.json
+            ${{ runner.temp }}/release-candidate/release/toolchain-provenance.sigstore.json
+            ${{ runner.temp }}/release-candidate/release/toolchain-index-v2.json
+            ${{ runner.temp }}/release-candidate/compiler-stage/compiler-index-lanes.json
+            ${{ runner.temp }}/release-candidate/compiler-stage/compiler-evidence-fragment.json
+            ${{ runner.temp }}/release-candidate/compiler-stage/reports/
+            ${{ runner.temp }}/release-candidate/compiler-stage/native/
+            ${{ runner.temp }}/release-candidate/sdk-stage/native/
+            ${{ runner.temp }}/release-candidate/native/
+            ${{ runner.temp }}/complete-compiler-readback/matrix.json
+            ${{ runner.temp }}/complete-compiler-readback/selection-fragment.json
+            ${{ runner.temp }}/complete-compiler-readback/owners/*/selection.json
+            ${{ runner.temp }}/complete-compiler-readback/owners/*/readback/observation.json
+            ${{ runner.temp }}/complete-compiler-readback/owners/*/readback/origin-verification.log
+            ${{ runner.temp }}/complete-sdk-readback/matrix.json
+            ${{ runner.temp }}/complete-sdk-readback/selection-fragment.json
+            ${{ runner.temp }}/complete-sdk-readback/owners/*/selection.json
+            ${{ runner.temp }}/complete-sdk-readback/owners/*/readback/readback.json
+            ${{ runner.temp }}/complete-sdk-readback/owners/*/readback/origin-verification.log
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 7
