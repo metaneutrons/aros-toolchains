@@ -47,6 +47,23 @@ class SdkQualificationWorkflowTests(unittest.TestCase):
         self.assertIn("needs: [inputs, admit]", self.sdk)
         self.assertIn("fromJSON(needs.inputs.outputs.sdk_lane_matrix)", self.sdk)
 
+    def test_reuse_predictions_precede_full_build_and_final_observation_is_signed(self):
+        self.assertIn("read-sdk-reuse-baseline.py", self.admit)
+        self.assertIn("sdk-reuse-observation.py predict", self.admit)
+        self.assertIn('needs: [inputs, admit]', self.sdk)
+        self.assertNotIn('reuse-candidate', self.sdk)
+        self.assertIn("if: matrix.host == 'linux-x86_64'", self.sdk)
+        self.assertIn("sdk-reuse-observation.py capture", self.sdk)
+        self.assertIn("pattern: sdk-surface-*-", self.readback)
+        index = self.readback.index("--stage final")
+        record = self.readback.index("sdk-reuse-observation.py observe")
+        sign = self.readback.index("id: reuse-signature")
+        self.assertLess(index, record)
+        self.assertLess(record, sign)
+        self.assertIn('subject-path: ${{ runner.temp }}/sdk-reuse-observation/sdk-reuse-observation.json',
+                      self.readback[sign:])
+        self.assertIn('name: sdk-reuse-${{ github.run_id }}-${{ github.run_attempt }}', self.readback[sign:])
+
     def test_sdk_lane_reads_the_admitted_compiler_attempt(self):
         self.assertIn("needs.admit.outputs.summary_sha256", self.sdk)
         self.assertIn("jq -ceS '.context'", self.sdk)
