@@ -133,25 +133,27 @@ def stage_iso(root, image, binary, nonce):
     script = root / "User-Startup"
     script.write_text(
         f"""FailAt 255
-Echo "AROS-SDK-RUNTIME:{nonce}:START" >SER:
+Echo "AROS-SDK-RUNTIME:{nonce}:START" >DEBUG:
 C:SDKReuseProbe
 If $RC EQ 0 VAL
-    Echo "AROS-SDK-RUNTIME:{nonce}:PASS" >SER:
+    Echo "AROS-SDK-RUNTIME:{nonce}:PASS" >DEBUG:
 Else
-    Echo "AROS-SDK-RUNTIME:{nonce}:FAIL" >SER:
+    Echo "AROS-SDK-RUNTIME:{nonce}:FAIL" >DEBUG:
 EndIf
 """,
         encoding="ascii",
     )
-    # Some boot images ship SER.info and L:port-handler but omit the mount file.
+    # The AROS debug handler writes to the kernel debug console (serial on these images).
     # Startup-Sequence mounts Devs:DOSDrivers before it executes User-Startup.
-    ser_member = "/Devs/DOSDrivers/SER"
-    ser = root / "SER"
-    xorriso(*extract, image, "-extract", ser_member, ser)
+    debug_member = "/Devs/DOSDrivers/DEBUG"
+    mount = root / "DEBUG"
+    xorriso(*extract, image, "-extract", debug_member, mount)
     mount_mapping = []
-    if not ser.is_file():
-        ser.write_text("Handler = port-handler\nPriority = 5\nGlobVec = -1\nStartup = 0\n", encoding="ascii")
-        mount_mapping = ["-map", ser, ser_member]
+    if not mount.is_file():
+        mount.write_text(
+            "Handler = debug-handler\nPriority = 5\nGlobVec = -1\nStartup = 0\n", encoding="ascii"
+        )
+        mount_mapping = ["-map", mount, debug_member]
     staged = root / "guest.iso"
     result = xorriso(
         "-indev",

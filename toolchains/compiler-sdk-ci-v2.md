@@ -400,8 +400,8 @@ run. Skipping a build will require validated predictions and a release format
 that can bind an older SDK to its original qualification.
 
 For a local PC replay, supply the digest of the authenticated observation and
-the expected digest of a bootable PC x86-64 AROS CD with a working serial
-handler. The tool stages a private copy, checks the embedded executable and
+the expected digest of a bootable PC x86-64 AROS CD configured for serial
+kernel debug output with L:debug-handler installed. The tool stages a private copy, checks the embedded executable and
 reads its exit status in the guest through QEMU's serial port.
 
 ```sh
