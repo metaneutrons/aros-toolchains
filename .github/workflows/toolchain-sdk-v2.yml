@@ -74,10 +74,15 @@ jobs:
     name: Match SDK inputs to the compiler manifest
     needs: [manifest, inputs]
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 35
+    permissions:
+      contents: read
+      actions: read
+      attestations: read
     outputs:
       summary_sha256: ${{ needs.manifest.outputs.summary_sha256 }}
       manifest_sha256: ${{ needs.manifest.outputs.manifest_sha256 }}
+      reuse_plan_sha256: ${{ steps.reuse-plan.outputs.sha256 }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -112,6 +117,43 @@ jobs:
             --manifest "$RUNNER_TEMP/compiler-manifest/manifest.json" --summary-sha256 "$SUMMARY_SHA256" \
             --aros "$RUNNER_TEMP/diagnostic-runtime/bin/aros" --inputs-dir "$RUNNER_TEMP/diagnostic-inputs" \
             --release-id "$RELEASE_ID" --tools-commit "$TOOLS_COMMIT"
+
+      - name: Check out the SDK source used by the input fingerprints
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          repository: metaneutrons/AROS-NX
+          ref: ${{ needs.inputs.outputs.source_commit }}
+          fetch-depth: 1
+          path: dependencies/aros
+      - name: Predict SDK reuse before building the full matrix
+        id: reuse-plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SUMMARY_SHA256: ${{ needs.manifest.outputs.summary_sha256 }}
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/sdk-reuse-plan"
+          mkdir -m 700 "$root"
+          python3 -B scripts/toolchain/read-sdk-reuse-baseline.py > "$root/baseline.json" || {
+            echo "::warning::Previous SDK observation could not be authenticated. All SDKs will be built without that baseline."
+            printf 'null\n' > "$root/baseline.json"
+          }
+          manifest="$RUNNER_TEMP/compiler-manifest/manifest.json"
+          python3 -B scripts/toolchain/sdk-reuse-inputs.py \
+            --inputs-dir "$RUNNER_TEMP/diagnostic-inputs" --compiler-manifest "$manifest" \
+            --source-dir "$GITHUB_WORKSPACE/dependencies/aros" --producer-dir "$GITHUB_WORKSPACE" \
+            > "$root/fingerprints.json"
+          python3 -B scripts/toolchain/sdk-reuse-observation.py predict \
+            --compiler-manifest "$manifest" --compiler-summary-sha256 "$SUMMARY_SHA256" \
+            --inputs "$root/fingerprints.json" --baseline "$root/baseline.json" > "$root/plan.json"
+          printf 'sha256=%s\n' "$(shasum -a 256 "$root/plan.json" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sdk-reuse-plan-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/sdk-reuse-plan/
+          if-no-files-found: error
+          retention-days: 14
 
   v2-sdk:
     name: SDK from owned compilers (${{ matrix.group_id }}, ${{ matrix.host }}, ${{ matrix.profile }})
@@ -264,6 +306,19 @@ jobs:
           root: ${{ runner.temp }}/owned-sdk-origin
           workflow: .github/workflows/toolchain-sdk-v2.yml
           job-name: SDK from owned compilers (${{ matrix.group_id }}, ${{ matrix.host }}, ${{ matrix.profile }})
+      - name: Measure public ABI and retain the original linked consumer
+        if: matrix.host == 'linux-x86_64'
+        run: |
+          python3 -B scripts/toolchain/sdk-reuse-observation.py capture \
+            --lane "$RUNNER_TEMP/owned-sdk-lane" --output "$RUNNER_TEMP/sdk-surfaces"
+      - name: Retain representative SDK measurements
+        if: matrix.host == 'linux-x86_64'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sdk-surface-${{ matrix.group_id }}-${{ matrix.profile }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/sdk-surfaces/
+          if-no-files-found: error
+          retention-days: 14
       - name: Retain SDK owner readback and failure diagnostics
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -689,6 +744,44 @@ jobs:
           ' "$final_evidence" >/dev/null
           # Byte readback is not publication permission. Only a separately
           # authenticated product-tag route may record complete qualification.
+      - name: Download the pre-build reuse predictions
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: sdk-reuse-plan-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/sdk-reuse-plan
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          pattern: sdk-surface-*-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/sdk-surfaces
+      - name: Score the predictions against the verified SDK trees
+        env:
+          REUSE_PLAN_SHA256: ${{ needs.admit.outputs.reuse_plan_sha256 }}
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/sdk-reuse-plan"
+          output="$RUNNER_TEMP/sdk-reuse-observation"
+          mkdir -m 700 "$output"
+          python3 -B scripts/toolchain/sdk-reuse-observation.py observe \
+            --plan "$root/plan.json" --plan-sha256 "$REUSE_PLAN_SHA256" --baseline "$root/baseline.json" \
+            --surfaces "$RUNNER_TEMP/sdk-surfaces" --evidence "$RUNNER_TEMP/final-combined-evidence.json" \
+            > "$output/sdk-reuse-observation.json"
+          jq -r '.targets | to_entries[] | "- \(.key): \(.value.prediction) → \(.value.outcome), ABI: \(.value.abi.status), runtime: \(.value.runtime.status)"' \
+            "$output/sdk-reuse-observation.json" >> "$GITHUB_STEP_SUMMARY"
+      - name: Sign the SDK reuse observation
+        id: reuse-signature
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373
+        with:
+          subject-path: ${{ runner.temp }}/sdk-reuse-observation/sdk-reuse-observation.json
+      - name: Retain the observation signature with its subject
+        env:
+          BUNDLE: ${{ steps.reuse-signature.outputs.bundle-path }}
+        run: cp "$BUNDLE" "$RUNNER_TEMP/sdk-reuse-observation/observation.sigstore.json"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sdk-reuse-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/sdk-reuse-observation/
+          if-no-files-found: error
+          retention-days: 90
       - name: Retain SDK candidate readback and attestation
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

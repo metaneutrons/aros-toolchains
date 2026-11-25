@@ -565,6 +565,24 @@ def record(args: argparse.Namespace, context: dict) -> None:
     print("Recorded unsigned owning-job observation; signature and independent verification remain required.")
 
 
+def verify_signed_subject(subject: Path, sha256: str, bundle: Path, context: dict) -> None:
+    """Bind one local subject to GitHub's signer, source and exact run attempt."""
+    verified = gh_json([
+        "attestation", "verify", str(subject), "--bundle", str(bundle),
+        "--repo", context["repository"], "--signer-workflow", f'{context["repository"]}/{context["workflow"]}',
+        "--signer-digest", context["producer_commit"],
+        "--source-digest", context["producer_commit"], "--source-ref", context["source_ref"],
+        "--deny-self-hosted-runners", "--format", "json",
+    ], "origin signature authentication")
+    invocation = f'https://github.com/{context["repository"]}/actions/runs/{context["run_id"]}/attempts/{context["run_attempt"]}'
+    require(isinstance(verified, list) and len(verified) == 1, "origin must have one verified signature result")
+    result = verified[0]["verificationResult"]
+    require(result["signature"]["certificate"]["runInvocationURI"] == invocation,
+            "origin certificate differs from the exact run attempt")
+    require(result["statement"]["subject"] == [{"name": subject.name, "digest": {"sha256": sha256}}],
+            "origin attestation subject differs from the exact record bytes")
+
+
 def verify(args: argparse.Namespace, context: dict, *, expected_job: dict | None = None,
            expected_artifact: dict | None = None,
            payload_archive: Path | None = None, report: bool = True,
@@ -588,20 +606,7 @@ def verify(args: argparse.Namespace, context: dict, *, expected_job: dict | None
         require(type(identity) is int and positive(identity) == identity, "signed identity is not an integer")
     require(job["name"] == args.job_name and artifact["id"] == args.artifact_id
             and artifact["name"] == args.artifact_name, "signed job/artifact selection differs")
-    verified = gh_json([
-        "attestation", "verify", str(args.origin), "--bundle", str(args.bundle),
-        "--repo", context["repository"], "--signer-workflow", f'{context["repository"]}/{context["workflow"]}',
-        "--signer-digest", context["producer_commit"],
-        "--source-digest", context["producer_commit"], "--source-ref", context["source_ref"],
-        "--deny-self-hosted-runners", "--format", "json",
-    ], "origin signature authentication")
-    invocation = f'https://github.com/{context["repository"]}/actions/runs/{context["run_id"]}/attempts/{context["run_attempt"]}'
-    require(isinstance(verified, list) and len(verified) == 1, "origin must have one verified signature result")
-    result = verified[0]["verificationResult"]
-    require(result["signature"]["certificate"]["runInvocationURI"] == invocation,
-            "origin certificate differs from the exact run attempt")
-    require(result["statement"]["subject"] == [{"name": args.origin.name, "digest": {"sha256": measured["sha256"]}}],
-            "origin attestation subject differs from the exact record bytes")
+    verify_signed_subject(args.origin, measured["sha256"], args.bundle, context)
     require(select_job(jobs_for(context), context, positive(job["check_run_id"]), args.job_name, "completed") == job,
             "completed owning job differs from signed origin")
     observed = gh_json(["api", f'repos/{context["repository"]}/actions/artifacts/{args.artifact_id}'])

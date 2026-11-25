@@ -362,3 +362,53 @@ development build, and original-owner verification, complete native matrix
 readback, combined inventory, signatures and isolated release gates remain
 required. Do not dispatch the full matrix while a known compiler A/B defect
 still requires a narrowed diagnostic.
+
+## Observing SDK reuse and ABI changes
+
+The split SDK workflow records a prediction for each product before starting
+its generation jobs. The first run builds a baseline. Later runs compare the
+selected source, target contract, build settings, tools pin and signed compiler
+archive digests with the preceding successful SDK dispatch on the same branch.
+Unclassified source or producer changes predict a build. A compiler archive
+repacked with different bytes also predicts a build.
+
+Every SDK still builds on every selected host. The workflow compares its
+verified installed tree digest with the baseline after native readback. The
+Actions summary reports each prediction and its outcome. A `false-reuse`
+means the inputs appeared equal but SDK files changed. A `conservative-build`
+means the inputs changed and the installed files remained identical. The
+archive digest is recorded separately because its embedded provenance can change.
+
+The signed `sdk-reuse-<run>-<attempt>` artifact contains the per-product
+observations. Download and authenticate the previous report against its
+workflow, branch, commit and exact attempt before using it as a baseline. The
+workflow does this automatically. A missing, expired or unauthenticated report
+starts a new baseline.
+
+The representative Linux x86-64 generation measures public library vectors
+and selected Exec structure sizes, alignments and member offsets with the
+target compiler. Its generation record, link receipt, SDK identity and tree
+digest must agree with the final native readback. A changed public slot or
+member offset can identify a break even when a sample program does not use
+that interface. `no-break-observed` covers only the measured interfaces.
+
+The report also retains the original C application from the native link proof
+for later execution against a new OS image. The SDK workflow has no bootable
+OS image, so its runtime result is `not-run`. Changed headers, static libraries
+or startup objects can justify a new SDK even when existing applications still
+run. Skipping a build will require validated predictions and a release format
+that can bind an older SDK to its original qualification.
+
+For a local PC replay, supply the digest of the authenticated observation and
+the expected digest of a bootable PC x86-64 AROS CD configured for serial
+kernel debug output with L:debug-handler installed. The tool stages a private copy, checks the embedded executable and
+reads its exit status in the guest through QEMU's serial port.
+
+```sh
+python3 scripts/toolchain/sdk-runtime-probe-v1.py replay \
+  --report sdk-reuse-observation.json --report-sha256 "$VERIFIED_REPORT_SHA256" \
+  --iso "$CANDIDATE_AROS_ISO" --iso-sha256 "$EXPECTED_ISO_SHA256"
+```
+
+Only a guest pass returns success. A failed application, a missing boot hook
+or a timeout leaves runtime compatibility unconfirmed.
