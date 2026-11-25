@@ -121,7 +121,11 @@ def stage_iso(root, image, binary, nonce):
     startup = root / "Startup-Sequence"
     extract = ("-osirrox", "on", "-indev")
     read = xorriso(*extract, image, "-extract", "/S/Startup-Sequence", startup)
-    if read.returncode or not re.search(rb'(?im)^\s*Execute\s+"?S:User-Startup\b', startup.read_bytes()):
+    if (
+        read.returncode
+        or not startup.is_file()
+        or not re.search(rb'(?im)^\s*Execute\s+"?S:User-Startup\b', startup.read_bytes())
+    ):
         return None
     guest = root / "SDKReuseProbe"
     guest.write_bytes(binary)
@@ -139,6 +143,15 @@ EndIf
 """,
         encoding="ascii",
     )
+    # Some boot images ship SER.info and L:port-handler but omit the mount file.
+    # Startup-Sequence mounts Devs:DOSDrivers before it executes User-Startup.
+    ser_member = "/Devs/DOSDrivers/SER"
+    ser = root / "SER"
+    xorriso(*extract, image, "-extract", ser_member, ser)
+    mount_mapping = []
+    if not ser.is_file():
+        ser.write_text("Handler = port-handler\nPriority = 5\nGlobVec = -1\nStartup = 0\n", encoding="ascii")
+        mount_mapping = ["-map", ser, ser_member]
     staged = root / "guest.iso"
     result = xorriso(
         "-indev",
@@ -156,6 +169,7 @@ EndIf
         "-map",
         script,
         "/S/User-Startup",
+        *mount_mapping,
         "-commit",
     )
     origin.require(
