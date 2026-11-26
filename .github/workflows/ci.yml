@@ -175,7 +175,7 @@ jobs:
     needs: plan
     if: needs.plan.outputs.scope == 'full'
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 60
     steps:
       - name: Checkout producer
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -200,6 +200,27 @@ jobs:
           repository: ${{ env.AROS_SOURCE_REPOSITORY }}
           ref: ${{ steps.v2-source.outputs.commit }}
           path: aros-v2-source
+      - name: Select exact SDK measurement implementation
+        id: sdk-tools
+        working-directory: producer
+        run: |
+          set -euo pipefail
+          commit=$(jq -er '.tools_commit | select(type == "string" and test("^[0-9a-f]{40}$"))' toolchains/compiler-sdk-ci-selection-v2.json)
+          printf 'commit=%s\n' "$commit" >> "$GITHUB_OUTPUT"
+      - name: Checkout exact SDK measurement implementation
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: metaneutrons/aros-tools
+          ref: ${{ steps.sdk-tools.outputs.commit }}
+          path: aros-sdk-test-tools
+          persist-credentials: false
+      - name: Select pinned Rust toolchain
+        uses: ./producer/.github/actions/select-native-rust-toolchain
+        with:
+          producer-dir: ${{ github.workspace }}/producer
+      - name: Test diagnostic release ID through native SDK measurement
+        working-directory: producer
+        run: python3 -B scripts/toolchain/tests/test-sdk-diagnostic-release-integration.py "$GITHUB_WORKSPACE/aros-sdk-test-tools"
       - name: Run complete offline producer contract suite
         working-directory: producer
         env:

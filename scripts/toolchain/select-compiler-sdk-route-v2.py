@@ -204,7 +204,7 @@ def select(args):
         outputs.update(event="workflow_dispatch", scope=args.scope,
                        full_qualification=str(full).lower(), runtime_kind="development",
                        full_matrix=str(split).lower(), route="diagnostic",
-                       release_id=f"toolchain-dev-{args.producer_commit[:12]}")
+                       release_id=f"v0.0.0-dev.sha{args.producer_commit[:12]}")
     return outputs
 
 
