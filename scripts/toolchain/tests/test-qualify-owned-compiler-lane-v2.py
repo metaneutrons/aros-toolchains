@@ -315,7 +315,7 @@ class QualifyOwnedCompilerLaneTests(unittest.TestCase):
             self.assertEqual(values["--preset"], PRESET)
             self.assertEqual(values["--host"], HOST)
             self.assertEqual(values["--copy"], copy)
-            self.assertEqual(values["--release-id"], "toolchain-dev-0123456789ab")
+            self.assertEqual(values["--release-id"], "v0.0.0-dev.sha0123456789ab")
             self.assertEqual(values["--root"], str(self.root / f"compiler-{copy}"))
             self.assertEqual(values["--forbidden-prefix"], str(self.operations))
         compare = events[-1]["args"]
@@ -408,7 +408,7 @@ class QualifyOwnedCompilerLaneTests(unittest.TestCase):
         args = self._owner_args()
         args[args.index("--source-ref") + 1] = "refs/tags/v0.2.0"
         for suffix in ([], ["--release-id", "v0.2.1"],
-                       ["--release-id", "toolchain-dev-0123456789ab"]):
+                       ["--release-id", "v0.0.0-dev.sha0123456789ab"]):
             with self.subTest(suffix=suffix):
                 result = self._run(args + suffix)
                 self.assertNotEqual(result.returncode, 0)

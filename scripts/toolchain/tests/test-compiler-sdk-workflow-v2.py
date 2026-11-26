@@ -605,7 +605,7 @@ def validate_v2_policy(documents: Documents) -> dict[str, int]:
         and 'runtime_kind="development"' in manual_route
         and 'full_matrix=str(split).lower()' in manual_route
         and 'split = full or args.mode == "qualify-v2-split"' in manual_route
-        and 'release_id=f"toolchain-dev-{args.producer_commit[:12]}"' in manual_route
+        and 'release_id=f"v0.0.0-dev.sha{args.producer_commit[:12]}"' in manual_route
         and 'args.event == "workflow_dispatch"' in manual_route
         and 'args.run_attempt == "1"' in route_script
         and 'args.mode == args.scope == args.group == ""' in route_script
@@ -2076,7 +2076,7 @@ class CompilerSdkWorkflowV2Tests(unittest.TestCase):
                         self.assertEqual(outputs["runtime_kind"], "development")
                         self.assertEqual(outputs["full_matrix"], str(mode == "qualify-v2-full").lower())
                         self.assertEqual(outputs["full_qualification"], str(mode == "qualify-v2-full").lower())
-                        self.assertEqual(outputs["release_id"], f"toolchain-dev-{producer_commit[:12]}")
+                        self.assertEqual(outputs["release_id"], f"v0.0.0-dev.sha{producer_commit[:12]}")
                     else:
                         self.assertEqual(output.read_bytes(), b"")
 

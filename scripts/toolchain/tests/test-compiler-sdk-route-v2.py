@@ -325,7 +325,7 @@ class CompilerSdkRouteTests(unittest.TestCase):
         self.assertEqual(small["full_qualification"], "false")
         self.assertEqual(small["full_matrix"], "false")
         self.assertEqual(small["scope"], "linux-x86_64")
-        self.assertEqual(small["release_id"], f"toolchain-dev-{self.fixture.producer_commit[:12]}")
+        self.assertEqual(small["release_id"], f"v0.0.0-dev.sha{self.fixture.producer_commit[:12]}")
         self.assertEqual(self.fixture.gh_calls(), [])
 
         self.fixture.mode = "qualify-v2-full"

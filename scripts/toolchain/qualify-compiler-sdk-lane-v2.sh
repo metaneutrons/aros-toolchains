@@ -147,7 +147,7 @@ if [[ "$manifest_mode" == true ]]; then
        "$root" != "$compiler_manifest/"* ]] || \
         fail 'operation root overlaps the compiler manifest'
 fi
-default_release_id="toolchain-dev-$(git -C "$producer" rev-parse --short=12 HEAD)"
+default_release_id="v0.0.0-dev.sha$(git -C "$producer" rev-parse HEAD | cut -c1-12)"
 if [[ "$owner_mode" == true && "$source_ref" == refs/tags/* ]]; then
     [[ "$requested_release_id" == "${source_ref#refs/tags/}" ]] || fail 'tag-bound owner release ID differs from its source ref'
 else
