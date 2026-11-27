@@ -517,7 +517,7 @@ def _validate_compiler(evidence: dict, lanes_doc: dict, index: dict,
     _require(bindings["plan_sha256"] == plan_sha and bindings["inputs_sha256"] == inputs_sha
              and bindings["producer_commit"] == producer and bindings["tools_commit"] == tools,
              "compiler evidence bindings differ from the explicit inputs")
-    _MATRIX._require_safe_id(bindings["release_id"], "compiler evidence release ID")
+    _MATRIX._require_release_id(bindings["release_id"], "compiler evidence release ID")
     _MATRIX._require_commit(bindings["producer_commit"], "compiler evidence producer commit")
     _MATRIX._require_commit(bindings["tools_commit"], "compiler evidence tools commit")
 

@@ -389,7 +389,7 @@ def _assemble(args: argparse.Namespace) -> dict:
                                "selected tree-fixture digest")
     _COMPILER._commit(args.producer_commit, "selected producer commit")
     _COMPILER._commit(args.tools_commit, "selected tools commit")
-    release_id = _COMPILER._MATRIX._require_safe_id(args.release_id,
+    release_id = _COMPILER._MATRIX._require_release_id(args.release_id,
                                                      "selected release identifier")
     _require(isinstance(args.base_url, str) and 0 < len(args.base_url.encode("utf-8")) <= 4096
              and "\n" not in args.base_url and "\r" not in args.base_url,

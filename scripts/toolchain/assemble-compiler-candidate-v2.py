@@ -188,7 +188,7 @@ def _read_bound_inputs(args: argparse.Namespace) -> dict:
     runtime_sha = _digest(args.aros_sha256, "selected native CLI digest")
     producer = _commit(args.producer_commit, "selected producer commit")
     tools = _commit(args.tools_commit, "selected tools commit")
-    release_id = _MATRIX._require_safe_id(args.release_id, "selected release identifier")
+    release_id = _MATRIX._require_release_id(args.release_id, "selected release identifier")
     selected_files: dict[Path, tuple[int, dict, tuple[int, ...]]] = {}
     snapshots: dict[Path, tuple[tuple[int, ...], dict[str, str]]] = {}
 
