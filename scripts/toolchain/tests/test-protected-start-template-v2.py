@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Static policy checks for the inactive protected-start workflow template.
+"""Static policy checks for the installed protected-start workflow.
 
 These checks inspect YAML text and reject targeted policy mutations. They do
 not parse or execute GitHub Actions, call a provider, verify an attestation,
@@ -14,10 +14,9 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parents[3]
-TEMPLATE_RELATIVE = "toolchains/workflow-templates/compiler-sdk-release-start.yml"
-ACTIVE_RELATIVE = ".github/workflows/compiler-sdk-release-start.yml"
+TEMPLATE_RELATIVE = ".github/workflows/compiler-sdk-release-start.yml"
+OLD_TEMPLATE_RELATIVE = "toolchains/workflow-templates/compiler-sdk-release-start.yml"
 TEMPLATE = ROOT / TEMPLATE_RELATIVE
-ACTIVE = ROOT / ACTIVE_RELATIVE
 
 CHECKOUT = "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1"
 COSIGN = "sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6"
@@ -114,7 +113,7 @@ def flatten_shell(body: str) -> str:
 
 
 def validate_template(text: str) -> None:
-    require(text.startswith("# Inactive future caller."), "template must identify itself as inactive")
+    require(text.startswith("# Protected compiler and SDK start."), "workflow must identify itself")
     require(
         top_level_block(text, "on")
         == "on:\n  workflow_run:\n    workflows: ['Producer contracts']\n"
@@ -152,7 +151,8 @@ def validate_template(text: str) -> None:
         "      github.event.workflow_run.conclusion == 'success' &&\n"
         "      github.event.workflow_run.run_attempt == 1 &&\n"
         "      github.event.workflow_run.repository.full_name == 'metaneutrons/aros-toolchains' &&\n"
-        "      github.event.workflow_run.head_repository.full_name == 'metaneutrons/aros-toolchains'\n"
+        "      github.event.workflow_run.head_repository.full_name == 'metaneutrons/aros-toolchains' &&\n"
+        "      startsWith(github.event.workflow_run.head_commit.message, 'chore(main): release ')\n"
     )
     require(expected_gate in job, "job must require the exact successful first main push attempt in this repository")
 
@@ -418,11 +418,11 @@ class ProtectedStartTemplateTests(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.text = TEMPLATE.read_text(encoding="utf-8")
 
-    def test_template_is_inactive_at_the_exact_future_caller_path(self) -> None:
+    def test_workflow_is_installed_at_the_readers_fixed_path_only(self) -> None:
         self.assertEqual(TEMPLATE.relative_to(ROOT).as_posix(), TEMPLATE_RELATIVE)
-        self.assertFalse(ACTIVE.exists(), f"active workflow unexpectedly exists: {ACTIVE_RELATIVE}")
-        for path in (ROOT / ".github/workflows").glob("*.yml"):
-            self.assertNotIn(TEMPLATE_RELATIVE, path.read_text(encoding="utf-8"))
+        self.assertTrue(TEMPLATE.is_file())
+        self.assertFalse((ROOT / OLD_TEMPLATE_RELATIVE).exists(),
+                         "the staged copy must not remain next to the installed workflow")
 
     def test_template_satisfies_the_static_policy(self) -> None:
         validate_template(self.text)
@@ -430,6 +430,8 @@ class ProtectedStartTemplateTests(unittest.TestCase):
     def test_policy_rejects_effective_mutation_counterprobes(self) -> None:
         mutations = [
             ("remove ready guard", READY_GUARD, "if: success()"),
+            ("release commit gate removed", " &&\n      startsWith(github.event.workflow_run.head_commit.message, 'chore(main): release ')", ""),
+            ("release commit gate widened", "'chore(main): release '", "'chore'"),
             ("wrong reviewed source ref", "ref: ${{ github.sha }}", "ref: ${{ github.event.workflow_run.head_sha }}"),
             ("wrong source branch", "github.event.workflow_run.head_branch == 'main'", "github.event.workflow_run.head_branch == 'release'"),
             ("local derived config passed to action", "config-file: toolchains/release-please-draft-config-v2.json", "config-file: ${{ steps.private-root.outputs.root }}/draft-config-check.json"),
