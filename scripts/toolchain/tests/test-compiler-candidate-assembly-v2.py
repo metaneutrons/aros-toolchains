@@ -52,7 +52,7 @@ SOURCE_COMMIT = "c" * 40
 SOURCE_TREE = "d" * 40
 GROUP = "compiler-family"
 PROFILES = ("-generic", "debug")
-RELEASE_ID = "r2026-10"
+RELEASE_ID = f"v0.0.0-dev.sha{PRODUCER[:12]}"
 WORKFLOW = ".github/workflows/compiler-candidate-assembly.yml"
 SOURCE_WORKFLOW = ".github/workflows/native-compiler.yml"
 SOURCE_REF = "refs/heads/main"
@@ -735,6 +735,13 @@ class CompilerCandidateAssemblyTests(unittest.TestCase):
         )
         self.assert_rejected(result, root, release_absent=False)
         self.assertIn("source run event changed", result.stderr)
+
+    def test_release_identifier_rejects_path_and_unsafe_values(self) -> None:
+        for invalid in ("../escape", "v1..2", "v1/2", "v1 2", "v1.", "a" * 129):
+            with self.subTest(release_id=invalid):
+                with self.assertRaises(assembler._MATRIX.PlanError):
+                    assembler._MATRIX._require_release_id(invalid, "release ID")
+        self.assertEqual(assembler._MATRIX._require_release_id("r2026--10", "release ID"), "r2026--10")
 
     def test_full_generic_three_host_matrix_reverifies_compares_and_stages_only_a(self) -> None:
         root = self.base / "operation"

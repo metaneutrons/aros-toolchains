@@ -169,6 +169,15 @@ def _require_commit(value: Any, description: str) -> str:
     return value
 
 
+def _require_release_id(value: Any, description: str) -> str:
+    # Release IDs may be SemVer tags, while lane and group IDs remain stricter.
+    if (not isinstance(value, str) or len(value) > 128
+            or ".." in value
+            or re.fullmatch(r"[a-z0-9](?:[a-z0-9.-]{0,126}[a-z0-9])?", value) is None):
+        raise PlanError(f"{description} is not a safe release identifier")
+    return value
+
+
 def _require_safe_id(value: Any, description: str) -> str:
     if not isinstance(value, str) or SAFE_ID.fullmatch(value) is None:
         raise PlanError(f"{description} is not a safe identifier")

@@ -174,7 +174,7 @@ class Fixture:
         source_context_sha = (self.source_context_sha256 if self.bind_compiler_evidence_to_sdk
                               else self.compiler_context_sha256)
         runtime_sha = self.sdk.fragment["aros_sha256"]
-        release_id = "fixture-release-2026"
+        release_id = "v0.0.0-dev.sha0123456789ab"
         bindings = {
             "aros_sha256": runtime_sha,
             "plan_sha256": self.sdk.plan_sha256,
